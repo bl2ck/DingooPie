@@ -1,0 +1,907 @@
+diff --git a/Core/MIPS/IR/IRCompALU.cpp b/Core/MIPS/IR/IRCompALU.cpp
+index d3813ba..4bfc692 100644
+--- a/Core/MIPS/IR/IRCompALU.cpp
++++ b/Core/MIPS/IR/IRCompALU.cpp
+@@ -97,9 +97,11 @@ void IRFrontend::Comp_RType2(MIPSOpcode op) {
+ 		return;
+ 
+ 	switch (op & 63) {
++	case 32: // MIPS32 SPECIAL2 clz.
+ 	case 22: //clz
+ 		ir.Write(IROp::Clz, rd, rs);
+ 		break;
++	case 33: // MIPS32 SPECIAL2 clo.
+ 	case 23: //clo
+ 		ir.Write(IROp::Not, IRTEMP_0, rs);
+ 		ir.Write(IROp::Clz, rd, IRTEMP_0);
+@@ -176,6 +178,10 @@ void IRFrontend::Comp_RType3(MIPSOpcode op) {
+ 		ir.Write(IROp::Min, rd, rs, rt);
+ 		break;
+ 
++	case 2: // MIPS32 SPECIAL2 mul: R(rd) = low32(R(rs) * R(rt)).
++		ir.Write(IROp::MulLow, rd, rs, rt);
++		break;
++
+ 	default:
+ 		INVALIDOP;
+ 		break;
+@@ -376,18 +382,22 @@ void IRFrontend::Comp_MulDivType(MIPSOpcode op) {
+ 		ir.Write(IROp::DivU, 0, rs, rt);
+ 		break;
+ 
++	case 0: // MIPS32 SPECIAL2 madd.
+ 	case 28: //madd
+ 		ir.Write(IROp::Madd, 0, rs, rt);
+ 		break;
+ 
++	case 1: // MIPS32 SPECIAL2 maddu.
+ 	case 29: //maddu
+ 		ir.Write(IROp::MaddU, 0, rs, rt);
+ 		break;
+ 
++	case 4: // MIPS32 SPECIAL2 msub.
+ 	case 46: // msub
+ 		ir.Write(IROp::Msub, 0, rs, rt);
+ 		break;
+ 
++	case 5: // MIPS32 SPECIAL2 msubu.
+ 	case 47: // msubu
+ 		ir.Write(IROp::MsubU, 0, rs, rt);
+ 		break;
+diff --git a/Core/MIPS/IR/IRInst.cpp b/Core/MIPS/IR/IRInst.cpp
+index 62f6375..6894ba0 100644
+--- a/Core/MIPS/IR/IRInst.cpp
++++ b/Core/MIPS/IR/IRInst.cpp
+@@ -35,6 +35,7 @@ static const IRMeta irMeta[] = {
+ 	{ IROp::And, "And", "GGG" },
+ 	{ IROp::Or, "Or", "GGG" },
+ 	{ IROp::Xor, "Xor", "GGG" },
++	{ IROp::MulLow, "MulLow", "GGG" },
+ 	{ IROp::AddConst, "AddConst", "GGC" },
+ 	{ IROp::OptAddConst, "OptAddConst", "GC" },
+ 	{ IROp::SubConst, "SubConst", "GGC" },
+diff --git a/Core/MIPS/IR/IRInst.h b/Core/MIPS/IR/IRInst.h
+index 4348d52..d62b8e5 100644
+--- a/Core/MIPS/IR/IRInst.h
++++ b/Core/MIPS/IR/IRInst.h
+@@ -34,6 +34,7 @@ enum class IROp : uint8_t {
+ 	And,
+ 	Or,
+ 	Xor,
++	MulLow,
+ 
+ 	AddConst,
+ 	OptAddConst,
+diff --git a/Core/MIPS/IR/IRInterpreter.cpp b/Core/MIPS/IR/IRInterpreter.cpp
+index ac8bd08..f271380 100644
+--- a/Core/MIPS/IR/IRInterpreter.cpp
++++ b/Core/MIPS/IR/IRInterpreter.cpp
+@@ -185,6 +185,9 @@ u32 IRInterpret(MIPSState *mips, const IRInst *inst) {
+ 		case IROp::Xor:
+ 			mips->r[inst->dest] = mips->r[inst->src1] ^ mips->r[inst->src2];
+ 			break;
++		case IROp::MulLow:
++			mips->r[inst->dest] = mips->r[inst->src1] * mips->r[inst->src2];
++			break;
+ 		case IROp::Mov:
+ 			mips->r[inst->dest] = mips->r[inst->src1];
+ 			break;
+diff --git a/Core/MIPS/IR/IRJit.cpp b/Core/MIPS/IR/IRJit.cpp
+index f495d4f..8ac3a94 100644
+--- a/Core/MIPS/IR/IRJit.cpp
++++ b/Core/MIPS/IR/IRJit.cpp
+@@ -44,6 +44,10 @@
+ #include "Common/TimeUtil.h"
+ #include "Core/MIPS/MIPSTracer.h"
+ 
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++#include "ppsspp_irjit_backend.h"
++#endif
++
+ 
+ namespace MIPSComp {
+ 
+@@ -185,6 +189,20 @@ void IRJit::RunLoopUntil(u64 globalticks) {
+ 		compilerEnabled_ = false;
+ #endif
+ 		while (mips->downcount >= 0) {
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++			// Dingoo SDK calls are installed as per-PC hooks. The standalone
++			// interpreter checks hooks before every instruction; the IR block
++			// dispatcher must do the same at block boundaries or SDK HLE calls
++			// such as malloc, LCD submit, input and file I/O can be skipped.
++			u32 hookPC = mips->pc;
++			u32 afterHookPC = ppssppShimRunCodeHook(hookPC);
++			if (coreState != 0) {
++				break;
++			}
++			if (afterHookPC != hookPC || mips->pc != hookPC) {
++				continue;
++			}
++#endif
+ 			u32 inst = Memory::ReadUnchecked_U32(mips->pc);
+ 			u32 opcode = inst & 0xFF000000;
+ 			if (opcode == MIPS_EMUHACK_OPCODE) {
+diff --git a/Core/MIPS/IR/IRNativeCommon.cpp b/Core/MIPS/IR/IRNativeCommon.cpp
+index 3197d8c..2767b7d 100644
+--- a/Core/MIPS/IR/IRNativeCommon.cpp
++++ b/Core/MIPS/IR/IRNativeCommon.cpp
+@@ -214,6 +214,7 @@ void IRNativeBackend::CompileIRInst(IRInst inst) {
+ 	case IROp::And:
+ 	case IROp::Or:
+ 	case IROp::Xor:
++	case IROp::MulLow:
+ 	case IROp::AndConst:
+ 	case IROp::OrConst:
+ 	case IROp::XorConst:
+diff --git a/Core/MIPS/IR/IRPassSimplify.cpp b/Core/MIPS/IR/IRPassSimplify.cpp
+index 30b96a2..2eef05c 100644
+--- a/Core/MIPS/IR/IRPassSimplify.cpp
++++ b/Core/MIPS/IR/IRPassSimplify.cpp
+@@ -23,6 +23,7 @@ u32 Evaluate(u32 a, u32 b, IROp op) {
+ 	case IROp::And: case IROp::AndConst: return a & b;
+ 	case IROp::Or: case IROp::OrConst: return a | b;
+ 	case IROp::Xor: case IROp::XorConst: return a ^ b;
++	case IROp::MulLow: return a * b;
+ 	case IROp::Shr: case IROp::ShrImm: return a >> b;
+ 	case IROp::Sar: case IROp::SarImm: return (s32)a >> b;
+ 	case IROp::Ror: case IROp::RorImm: return (a >> b) | (a << (32 - b));
+@@ -188,6 +189,7 @@ bool ThreeOpToTwoOp(const IRWriter &in, IRWriter &out, const IROptions &opts) {
+ 		case IROp::And:
+ 		case IROp::Or:
+ 		case IROp::Xor:
++		case IROp::MulLow:
+ 			if (inst.src1 != inst.dest && inst.src2 != inst.dest) {
+ 				out.Write(IROp::Mov, inst.dest, inst.src1);
+ 				out.Write(inst.op, inst.dest, inst.dest, inst.src2);
+@@ -490,6 +492,7 @@ bool PropagateConstants(const IRWriter &in, IRWriter &out, const IROptions &opts
+ 		case IROp::And:
+ 		case IROp::Or:
+ 		case IROp::Xor:
++		case IROp::MulLow:
+ 			// Regularize, for the add/or check below.
+ 			if (symmetric && inst.src2 == inst.dest && inst.src1 != inst.src2) {
+ 				std::swap(inst.src1, inst.src2);
+@@ -507,6 +510,9 @@ bool PropagateConstants(const IRWriter &in, IRWriter &out, const IROptions &opts
+ 					// Add / Sub / Or / Xor with zero is just a Mov.  Add / Or are most common.
+ 					if (inst.dest != inst.src1)
+ 						out.Write(IROp::Mov, inst.dest, inst.src1);
++				} else if (inst.op == IROp::MulLow) {
++					out.Write(IROp::SetConst, IRTEMP_0, out.AddConstant(imm2));
++					out.Write(IROp::MulLow, inst.dest, inst.src1, IRTEMP_0);
+ 				} else {
+ 					out.Write(ArithToArithConst(inst.op), inst.dest, inst.src1, out.AddConstant(imm2));
+ 				}
+@@ -517,6 +523,9 @@ bool PropagateConstants(const IRWriter &in, IRWriter &out, const IROptions &opts
+ 					// Add / Or / Xor with zero is just a Mov.
+ 					if (inst.dest != inst.src2)
+ 						out.Write(IROp::Mov, inst.dest, inst.src2);
++				} else if (inst.op == IROp::MulLow) {
++					out.Write(IROp::SetConst, IRTEMP_0, out.AddConstant(imm1));
++					out.Write(IROp::MulLow, inst.dest, IRTEMP_0, inst.src2);
+ 				} else {
+ 					out.Write(ArithToArithConst(inst.op), inst.dest, inst.src2, out.AddConstant(imm1));
+ 				}
+@@ -1525,6 +1534,7 @@ bool ReorderLoadStore(const IRWriter &in, IRWriter &out, const IROptions &opts)
+ 		case IROp::And:
+ 		case IROp::Or:
+ 		case IROp::Xor:
++		case IROp::MulLow:
+ 		case IROp::Shl:
+ 		case IROp::Shr:
+ 		case IROp::Ror:
+diff --git a/Core/MIPS/MIPSTables.cpp b/Core/MIPS/MIPSTables.cpp
+index 4e3e820..14e5127 100644
+--- a/Core/MIPS/MIPSTables.cpp
++++ b/Core/MIPS/MIPSTables.cpp
+@@ -152,7 +152,7 @@ static const MIPSInstruction tableImmediate[64] = // xxxxxx ..... ..... ........
+ 	INSTR("ll", JITFUNC(Comp_StoreSync), Dis_ITypeMem, Int_StoreSync, IN_MEM|IN_IMM16|IN_RS_ADDR|OUT_RT|OUT_OTHER|MEMTYPE_WORD),
+ 	INSTR("lwc1", JITFUNC(Comp_FPULS), Dis_FPULS, Int_FPULS, IN_MEM|IN_IMM16|IN_RS_ADDR|OUT_FT|MEMTYPE_FLOAT|IS_FPU),
+ 	INSTR("lv.s", JITFUNC(Comp_SV), Dis_SV, Int_SV, IN_MEM|IN_IMM16|IN_RS_ADDR|OUT_OTHER|IS_VFPU|VFPU_NO_PREFIX|MEMTYPE_FLOAT),
+-	INVALID,
++	INSTR("pref", JITFUNC(Comp_DoNothing), Dis_ITypeMem, Int_Sync, IN_MEM|IN_IMM16|IN_RS_ADDR),
+ 	ENCODING(VFPU4Jump),
+ 	INSTR("lv", JITFUNC(Comp_SVQ), Dis_SVLRQ, Int_SVQ, IN_MEM|IN_IMM16|IN_RS_ADDR|OUT_OTHER|IS_VFPU|VFPU_NO_PREFIX|MEMTYPE_VQUAD),
+ 	INSTR("lv.q", JITFUNC(Comp_SVQ), Dis_SVQ, Int_SVQ, IN_MEM|IN_IMM16|IN_RS_ADDR|OUT_OTHER|IS_VFPU|VFPU_NO_PREFIX|MEMTYPE_VQUAD), //copU
+@@ -249,14 +249,21 @@ static const MIPSInstruction tableSpecial[64] = // 000000 ..... ..... ..... ....
+ // Theoretically should not hit these.
+ static const MIPSInstruction tableSpecial2[64] = // 011100 ..... ..... ..... ..... xxxxxx
+ {
+-	INSTR("halt", JITFUNC(Comp_Generic), Dis_Generic, 0, 0),
+-	INVALID, INVALID, INVALID, INVALID, INVALID, INVALID, INVALID,
++	INSTR("madd", JITFUNC(Comp_MulDivType), Dis_MulDivType, Int_MulDivType, IN_RS|IN_RT|IN_HI|IN_LO|OUT_HI|OUT_LO),
++	INSTR("maddu", JITFUNC(Comp_MulDivType), Dis_MulDivType, Int_MulDivType, IN_RS|IN_RT|IN_HI|IN_LO|OUT_HI|OUT_LO),
++	INSTR("mul", JITFUNC(Comp_RType3), Dis_RType3, Int_RType3, IN_RS|IN_RT|OUT_RD),
++	INVALID,
++	INSTR("msub", JITFUNC(Comp_MulDivType), Dis_MulDivType, Int_MulDivType, IN_RS|IN_RT|IN_HI|IN_LO|OUT_HI|OUT_LO),
++	INSTR("msubu", JITFUNC(Comp_MulDivType), Dis_MulDivType, Int_MulDivType, IN_RS|IN_RT|IN_HI|IN_LO|OUT_HI|OUT_LO),
++	INVALID, INVALID,
+ 	//8
+ 	INVALID_X_8,
+ 	INVALID_X_8,
+ 	INVALID_X_8,
+ 	//32
+-	INVALID, INVALID, INVALID, INVALID,
++	INSTR("clz", JITFUNC(Comp_RType2), Dis_RType2, Int_RType2, OUT_RD|IN_RS),
++	INSTR("clo", JITFUNC(Comp_RType2), Dis_RType2, Int_RType2, OUT_RD|IN_RS),
++	INVALID, INVALID,
+ 	INSTR("mfic", JITFUNC(Comp_Generic), Dis_Generic, Int_Special2, OUT_OTHER),
+ 	INVALID,
+ 	INSTR("mtic", JITFUNC(Comp_Generic), Dis_Generic, Int_Special2, OUT_OTHER),
+diff --git a/Core/MIPS/x86/X64IRAsm.cpp b/Core/MIPS/x86/X64IRAsm.cpp
+index 5cf4136..83107d0 100644
+--- a/Core/MIPS/x86/X64IRAsm.cpp
++++ b/Core/MIPS/x86/X64IRAsm.cpp
+@@ -26,6 +26,9 @@
+ #include "Core/MIPS/JitCommon/JitCommon.h"
+ #include "Core/MIPS/JitCommon/JitState.h"
+ #include "Core/Core.h"
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++#include "ppsspp_irjit_backend.h"
++#endif
+ 
+ namespace MIPSComp {
+ 
+@@ -225,15 +228,56 @@ void X64JitBackend::GenerateFixedCode(MIPSState *mipsState) {
+ 
+ 			MovFromPC(SCRATCH1);
+ 			WriteDebugPC(SCRATCH1);
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++			SaveStaticRegisters();
++			ABI_CallFunctionR(reinterpret_cast<void *>(&ppssppShimRunCodeHook), SCRATCH1);
++			// ppssppShimRunCodeHook returns the next guest PC in RAX/SCRATCH1.
++			// Store it before restoring static registers and keep SCRATCH1 as the
++			// fetch PC; otherwise the dispatcher can fetch from the pre-hook PC.
++			MovToPC(SCRATCH1);
++			LoadStaticRegisters();
++			MovFromPC(SCRATCH1);
++#endif
+ #ifdef MASKED_PSP_MEMORY
+ 			AND(32, R(SCRATCH1), Imm32(Memory::MEMVIEW32_MASK));
+ #endif
+ 			hooks_.dispatchFetch = GetCodePtr();
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++			if (ppssppShimFastPageBases()) {
++#if PPSSPP_ARCH(AMD64)
++				MOV(32, R(R8), R(SCRATCH1));
++				AND(32, R(R8), Imm32(0xFFF));
++				CMP(32, R(R8), Imm32(0xFFC));
++				FixupBranch fallbackCrossPage = J_CC(CC_A);
++				MOV(32, R(R8), R(SCRATCH1));
++				SHR(32, R(R8), Imm8(12));
++				MOV(64, R(R10), ImmPtr(ppssppShimFastPageBases()));
++				MOV(64, R(R10), MComplex(R10, R8, SCALE_8, 0));
++				TEST(64, R(R10), R(R10));
++				FixupBranch fallbackUnmapped = J_CC(CC_Z);
++				MOV(32, R(SCRATCH1), MComplex(R10, SCRATCH1, SCALE_1, 0));
++				FixupBranch doneFetch = J();
++				SetJumpTarget(fallbackCrossPage);
++				SetJumpTarget(fallbackUnmapped);
++#endif
++				SaveStaticRegisters();
++				ABI_CallFunctionR(reinterpret_cast<void *>(&ppssppShimRead32), SCRATCH1);
++				LoadStaticRegisters();
++#if PPSSPP_ARCH(AMD64)
++				SetJumpTarget(doneFetch);
++#endif
++			} else {
++				SaveStaticRegisters();
++				ABI_CallFunctionR(reinterpret_cast<void *>(&ppssppShimRead32), SCRATCH1);
++				LoadStaticRegisters();
++			}
++#else
+ #if PPSSPP_ARCH(X86)
+ 			_assert_msg_( Memory::base != 0, "Memory base bogus");
+ 			MOV(32, R(SCRATCH1), MDisp(SCRATCH1, (u32)Memory::base));
+ #elif PPSSPP_ARCH(AMD64)
+ 			MOV(32, R(SCRATCH1), MComplex(MEMBASEREG, SCRATCH1, SCALE_1, 0));
++#endif
+ #endif
+ 			_assert_msg_(MIPS_JITBLOCK_MASK == 0xFF000000, "Hardcoded assumption of emuhack mask");
+ 			if (cpu_info.bBMI2) {
+diff --git a/Core/MIPS/x86/X64IRCompALU.cpp b/Core/MIPS/x86/X64IRCompALU.cpp
+index 66fe205..81b39e8 100644
+--- a/Core/MIPS/x86/X64IRCompALU.cpp
++++ b/Core/MIPS/x86/X64IRCompALU.cpp
+@@ -590,6 +590,18 @@ void X64JitBackend::CompIR_Logic(IRInst inst) {
+ 		}
+ 		break;
+ 
++	case IROp::MulLow:
++		regs_.Map(inst);
++		if (inst.dest == inst.src1) {
++			IMUL(32, regs_.RX(inst.dest), regs_.R(inst.src2));
++		} else if (inst.dest == inst.src2) {
++			IMUL(32, regs_.RX(inst.dest), regs_.R(inst.src1));
++		} else {
++			MOV(32, regs_.R(inst.dest), regs_.R(inst.src1));
++			IMUL(32, regs_.RX(inst.dest), regs_.R(inst.src2));
++		}
++		break;
++
+ 	case IROp::AndConst:
+ 		regs_.Map(inst);
+ 		if (inst.dest != inst.src1)
+diff --git a/Core/MIPS/x86/X64IRCompBranch.cpp b/Core/MIPS/x86/X64IRCompBranch.cpp
+index a3e4631..f7f1280 100644
+--- a/Core/MIPS/x86/X64IRCompBranch.cpp
++++ b/Core/MIPS/x86/X64IRCompBranch.cpp
+@@ -48,8 +48,10 @@ void X64JitBackend::CompIR_Exit(IRInst inst) {
+ 
+ 	case IROp::ExitToReg:
+ 		exitReg = regs_.MapGPR(inst.src1);
+-		FlushAll();
+ 		MOV(32, R(SCRATCH1), R(exitReg));
++		FlushAll();
++		MovToPC(SCRATCH1);
++		SaveStaticRegisters();
+ 		JMP(dispatcherPCInSCRATCH1_, true);
+ 		break;
+ 
+diff --git a/Core/MIPS/x86/X64IRCompLoadStore.cpp b/Core/MIPS/x86/X64IRCompLoadStore.cpp
+index 9b3eea1..856c7f0 100644
+--- a/Core/MIPS/x86/X64IRCompLoadStore.cpp
++++ b/Core/MIPS/x86/X64IRCompLoadStore.cpp
+@@ -21,6 +21,9 @@
+ #include "Core/MemMap.h"
+ #include "Core/MIPS/x86/X64IRJit.h"
+ #include "Core/MIPS/x86/X64IRRegCache.h"
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++#include "ppsspp_irjit_backend.h"
++#endif
+ 
+ // This file contains compilation for load/store instructions.
+ //
+@@ -28,7 +31,11 @@
+ // Currently known non working ones should have DISABLE.  No flags because that's in IR already.
+ 
+ // #define CONDITIONAL_DISABLE { CompIR_Generic(inst); return; }
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++#define CONDITIONAL_DISABLE { CompIR_Generic(inst); return; }
++#else
+ #define CONDITIONAL_DISABLE {}
++#endif
+ #define DISABLE { CompIR_Generic(inst); return; }
+ #define INVALIDOP { _assert_msg_(false, "Invalid IR inst %d", (int)inst.op); CompIR_Generic(inst); return; }
+ 
+@@ -151,6 +158,123 @@ void X64JitBackend::CompIR_FStore(IRInst inst) {
+ }
+ 
+ void X64JitBackend::CompIR_Load(IRInst inst) {
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	switch (inst.op) {
++	case IROp::Load8:
++	case IROp::Load8Ext:
++	case IROp::Load16:
++	case IROp::Load16Ext:
++	case IROp::Load32:
++	case IROp::Load32Linked:
++		break;
++	default:
++		CompIR_Generic(inst);
++		return;
++	}
++
++	FlushAll();
++	MOV(32, R(SCRATCH1), MDisp(CTXREG, -128 + inst.src1 * 4));
++	if (inst.constant != 0) {
++		ADD(32, R(SCRATCH1), Imm32(inst.constant));
++	}
++
++#if PPSSPP_ARCH(AMD64)
++	if (ppssppShimFastPageBases()) {
++		const int accessSize =
++			(inst.op == IROp::Load8 || inst.op == IROp::Load8Ext) ? 1 :
++			(inst.op == IROp::Load16 || inst.op == IROp::Load16Ext) ? 2 : 4;
++
++		FixupBranch fallbackCrossPage;
++		if (accessSize > 1) {
++			MOV(32, R(R8), R(SCRATCH1));
++			AND(32, R(R8), Imm32(0xFFF));
++			CMP(32, R(R8), Imm32(0x1000 - accessSize));
++			fallbackCrossPage = J_CC(CC_A);
++		}
++
++		MOV(32, R(R8), R(SCRATCH1));
++		SHR(32, R(R8), Imm8(12));
++		MOV(64, R(R10), ImmPtr(ppssppShimFastPageBases()));
++		MOV(64, R(R10), MComplex(R10, R8, SCALE_8, 0));
++		TEST(64, R(R10), R(R10));
++		FixupBranch fallbackUnmapped = J_CC(CC_Z);
++
++		switch (inst.op) {
++		case IROp::Load8:
++		case IROp::Load8Ext:
++			MOVZX(32, 8, SCRATCH1, MComplex(R10, SCRATCH1, SCALE_1, 0));
++			break;
++		case IROp::Load16:
++		case IROp::Load16Ext:
++			MOVZX(32, 16, SCRATCH1, MComplex(R10, SCRATCH1, SCALE_1, 0));
++			break;
++		case IROp::Load32:
++		case IROp::Load32Linked:
++			MOV(32, R(SCRATCH1), MComplex(R10, SCRATCH1, SCALE_1, 0));
++			break;
++		default:
++			break;
++		}
++
++		FixupBranch doneFastLoad = J();
++		if (accessSize > 1) {
++			SetJumpTarget(fallbackCrossPage);
++		}
++		SetJumpTarget(fallbackUnmapped);
++		SaveStaticRegisters();
++		switch (inst.op) {
++		case IROp::Load8:
++		case IROp::Load8Ext:
++			ABI_CallFunctionR(reinterpret_cast<const void *>(&ppssppShimRead8), SCRATCH1);
++			break;
++		case IROp::Load16:
++		case IROp::Load16Ext:
++			ABI_CallFunctionR(reinterpret_cast<const void *>(&ppssppShimRead16), SCRATCH1);
++			break;
++		case IROp::Load32:
++		case IROp::Load32Linked:
++			ABI_CallFunctionR(reinterpret_cast<const void *>(&ppssppShimRead32), SCRATCH1);
++			break;
++		default:
++			break;
++		}
++		LoadStaticRegisters();
++		SetJumpTarget(doneFastLoad);
++	} else
++#endif
++	{
++	SaveStaticRegisters();
++	switch (inst.op) {
++	case IROp::Load8:
++	case IROp::Load8Ext:
++		ABI_CallFunctionR(reinterpret_cast<const void *>(&ppssppShimRead8), SCRATCH1);
++		break;
++	case IROp::Load16:
++	case IROp::Load16Ext:
++		ABI_CallFunctionR(reinterpret_cast<const void *>(&ppssppShimRead16), SCRATCH1);
++		break;
++	case IROp::Load32:
++	case IROp::Load32Linked:
++		ABI_CallFunctionR(reinterpret_cast<const void *>(&ppssppShimRead32), SCRATCH1);
++		break;
++	default:
++		break;
++	}
++	LoadStaticRegisters();
++	}
++	if (inst.op == IROp::Load8Ext) {
++		MOVSX(32, 8, SCRATCH1, R(SCRATCH1));
++	} else if (inst.op == IROp::Load16Ext) {
++		MOVSX(32, 16, SCRATCH1, R(SCRATCH1));
++	}
++	if (inst.dest != MIPS_REG_ZERO) {
++		MOV(32, MDisp(CTXREG, -128 + inst.dest * 4), R(SCRATCH1));
++	}
++	if (inst.op == IROp::Load32Linked) {
++		MOV(32, MDisp(CTXREG, -128 + IRREG_LLBIT * 4), Imm32(1));
++	}
++	return;
++#endif
+ 	CONDITIONAL_DISABLE;
+ 
+ 	regs_.SpillLockGPR(inst.dest, inst.src1);
+@@ -210,6 +334,102 @@ void X64JitBackend::CompIR_LoadShift(IRInst inst) {
+ }
+ 
+ void X64JitBackend::CompIR_Store(IRInst inst) {
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	switch (inst.op) {
++	case IROp::Store8:
++	case IROp::Store16:
++	case IROp::Store32:
++		break;
++	default:
++		CompIR_Generic(inst);
++		return;
++	}
++
++	FlushAll();
++	MOV(32, R(SCRATCH1), MDisp(CTXREG, -128 + inst.src1 * 4));
++	if (inst.constant != 0) {
++		ADD(32, R(SCRATCH1), Imm32(inst.constant));
++	}
++	MOV(32, R(EDX), MDisp(CTXREG, -128 + inst.src3 * 4));
++
++#if PPSSPP_ARCH(AMD64)
++	if (ppssppShimFastPageBases()) {
++		const int accessSize =
++			inst.op == IROp::Store8 ? 1 :
++			inst.op == IROp::Store16 ? 2 : 4;
++
++		FixupBranch fallbackCrossPage;
++		if (accessSize > 1) {
++			MOV(32, R(R8), R(SCRATCH1));
++			AND(32, R(R8), Imm32(0xFFF));
++			CMP(32, R(R8), Imm32(0x1000 - accessSize));
++			fallbackCrossPage = J_CC(CC_A);
++		}
++
++		MOV(32, R(R8), R(SCRATCH1));
++		SHR(32, R(R8), Imm8(12));
++		MOV(64, R(R10), ImmPtr(ppssppShimFastPageBases()));
++		MOV(64, R(R10), MComplex(R10, R8, SCALE_8, 0));
++		TEST(64, R(R10), R(R10));
++		FixupBranch fallbackUnmapped = J_CC(CC_Z);
++
++		switch (inst.op) {
++		case IROp::Store8:
++			MOV(8, MComplex(R10, SCRATCH1, SCALE_1, 0), R(EDX));
++			break;
++		case IROp::Store16:
++			MOV(16, MComplex(R10, SCRATCH1, SCALE_1, 0), R(EDX));
++			break;
++		case IROp::Store32:
++			MOV(32, MComplex(R10, SCRATCH1, SCALE_1, 0), R(EDX));
++			break;
++		default:
++			break;
++		}
++
++		FixupBranch doneFastStore = J();
++		if (accessSize > 1) {
++			SetJumpTarget(fallbackCrossPage);
++		}
++		SetJumpTarget(fallbackUnmapped);
++		SaveStaticRegisters();
++		switch (inst.op) {
++		case IROp::Store8:
++			ABI_CallFunctionRR(reinterpret_cast<const void *>(&ppssppShimWrite8), SCRATCH1, EDX);
++			break;
++		case IROp::Store16:
++			ABI_CallFunctionRR(reinterpret_cast<const void *>(&ppssppShimWrite16), SCRATCH1, EDX);
++			break;
++		case IROp::Store32:
++			ABI_CallFunctionRR(reinterpret_cast<const void *>(&ppssppShimWrite32), SCRATCH1, EDX);
++			break;
++		default:
++			break;
++		}
++		LoadStaticRegisters();
++		SetJumpTarget(doneFastStore);
++		return;
++	} else
++#endif
++	{
++	SaveStaticRegisters();
++	switch (inst.op) {
++	case IROp::Store8:
++		ABI_CallFunctionRR(reinterpret_cast<const void *>(&ppssppShimWrite8), SCRATCH1, EDX);
++		break;
++	case IROp::Store16:
++		ABI_CallFunctionRR(reinterpret_cast<const void *>(&ppssppShimWrite16), SCRATCH1, EDX);
++		break;
++	case IROp::Store32:
++		ABI_CallFunctionRR(reinterpret_cast<const void *>(&ppssppShimWrite32), SCRATCH1, EDX);
++		break;
++	default:
++		break;
++	}
++	LoadStaticRegisters();
++	}
++	return;
++#endif
+ 	CONDITIONAL_DISABLE;
+ 
+ 	regs_.SpillLockGPR(inst.src3, inst.src1);
+diff --git a/Core/MIPS/x86/X64IRCompSystem.cpp b/Core/MIPS/x86/X64IRCompSystem.cpp
+index b137ee1..378901e 100644
+--- a/Core/MIPS/x86/X64IRCompSystem.cpp
++++ b/Core/MIPS/x86/X64IRCompSystem.cpp
+@@ -381,6 +381,22 @@ void X64JitBackend::CompIR_ValidateAddress(IRInst inst) {
+ 		break;
+ 	}
+ 
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	regs_.Map(inst);
++	LEA(32, SCRATCH1, MDisp(regs_.RX(inst.src1), inst.constant));
++	MOV(32, MDisp(CTXREG, tempOffset), R(SCRATCH1));
++	// The Dingoo validator is a native helper call.  Flush the register cache
++	// before entering it so Win64 caller-saved registers cannot corrupt guest
++	// registers that are still live in this IR block.
++	FlushAll();
++	SaveStaticRegisters();
++	ABI_CallFunctionACC(reinterpret_cast<const void *>(&ppssppShimValidateAddress), MDisp(CTXREG, tempOffset), alignment, isWrite);
++	LoadStaticRegisters();
++	TEST(32, R(SCRATCH1), R(SCRATCH1));
++	J_CC(CC_NZ, dispatcherCheckCoreState_, true);
++	return;
++#endif
++
+ 	if (regs_.IsGPRMappedAsPointer(inst.src1)) {
+ 		LEA(PTRBITS, SCRATCH1, MDisp(regs_.RXPtr(inst.src1), inst.constant));
+ #if defined(MASKED_PSP_MEMORY)
+diff --git a/Core/MIPS/x86/X64IRJit.cpp b/Core/MIPS/x86/X64IRJit.cpp
+index fbfcf9f..d89420b 100644
+--- a/Core/MIPS/x86/X64IRJit.cpp
++++ b/Core/MIPS/x86/X64IRJit.cpp
+@@ -19,11 +19,15 @@
+ #if PPSSPP_ARCH(X86) || PPSSPP_ARCH(AMD64)
+ 
+ #include <cstddef>
++#include <cstdlib>
+ #include "Common/StringUtils.h"
+ #include "Core/MemMap.h"
+ #include "Core/MIPS/MIPSTables.h"
+ #include "Core/MIPS/x86/X64IRJit.h"
+ #include "Core/MIPS/x86/X64IRRegCache.h"
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++#include "ppsspp_irjit_backend.h"
++#endif
+ 
+ namespace MIPSComp {
+ 
+@@ -47,6 +51,20 @@ X64JitBackend::X64JitBackend(JitOptions &jitopt, IRBlockCache &blocks)
+ 	AllocCodeSpace(1024 * 1024 * 16);
+ 
+ 	regs_.Init(this);
++
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	const char *trace = std::getenv("DINGOO_PIE_IRJIT_TRACE");
++	if (trace && trace[0] && trace[0] != '0') {
++		logBlocks_ = 8;
++	}
++	const char *logBlocks = std::getenv("DINGOO_PIE_IRJIT_LOG_BLOCKS");
++	if (logBlocks && logBlocks[0] && logBlocks[0] != '0') {
++		logBlocks_ = std::atoi(logBlocks);
++		if (logBlocks_ < 1) {
++			logBlocks_ = 1;
++		}
++	}
++#endif
+ }
+ 
+ X64JitBackend::~X64JitBackend() {}
+@@ -183,6 +201,8 @@ void X64JitBackend::WriteConstExit(uint32_t pc) {
+ 		JMP(GetBasePtr() + nativeBlock->checkedOffset, true);
+ 	} else {
+ 		MOV(32, R(SCRATCH1), Imm32(pc));
++		MovToPC(SCRATCH1);
++		SaveStaticRegisters();
+ 		JMP(dispatcherPCInSCRATCH1_, true);
+ 	}
+ 
+@@ -256,7 +276,11 @@ void X64JitBackend::CompIR_Interpret(IRInst inst) {
+ 	if (DebugStatsEnabled()) {
+ 		ABI_CallFunctionP((const void *)&NotifyMIPSInterpret, (void *)MIPSGetName(op));
+ 	}
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	ABI_CallFunctionC((const void *)&ppssppShimInterpretFallback, inst.constant);
++#else
+ 	ABI_CallFunctionC((const void *)MIPSGetInterpretFunc(op), inst.constant);
++#endif
+ 	WriteDebugProfilerStatus(IRProfilerStatus::IN_JIT);
+ 	LoadStaticRegisters();
+ }
+diff --git a/Core/MemMap.h b/Core/MemMap.h
+index 6e9fa3b..e92fe5c 100644
+--- a/Core/MemMap.h
++++ b/Core/MemMap.h
+@@ -30,6 +30,10 @@
+ #include "Common/Swap.h"
+ #include "Core/Opcode.h"
+ 
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++#include "ppsspp_irjit_backend.h"
++#endif
++
+ // PPSSPP is very aggressive about trying to do memory accesses directly, for speed.
+ // This can be a problem when debugging though, as stray memory reads and writes will
+ // crash the whole emulator.
+@@ -143,83 +147,128 @@ u32 Read_U32(const u32 _Address);
+ u64 Read_U64(const u32 _Address);
+ 
+ inline u8* GetPointerWriteUnchecked(const u32 address) {
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	return ppssppShimGetPointer(address, 1);
++#else
+ #ifdef MASKED_PSP_MEMORY
+ 	return (u8 *)(base + (address & MEMVIEW32_MASK));
+ #else
+ 	return (u8 *)(base + address);
+ #endif
++#endif
+ }
+ 
+ inline const u8* GetPointerUnchecked(const u32 address) {
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	return ppssppShimGetPointer(address, 1);
++#else
+ #ifdef MASKED_PSP_MEMORY
+ 	return (const u8 *)(base + (address & MEMVIEW32_MASK));
+ #else
+ 	return (const u8 *)(base + address);
+ #endif
++#endif
+ }
+ 
+ inline u32 ReadUnchecked_U32(const u32 address) {
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	return ppssppShimRead32(address);
++#else
+ #ifdef MASKED_PSP_MEMORY
+ 	return *(u32_le *)(base + (address & MEMVIEW32_MASK));
+ #else
+ 	return *(u32_le *)(base + address);
+ #endif
++#endif
+ }
+ 
+ inline float ReadUnchecked_Float(const u32 address) {
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	u32 value = ppssppShimRead32(address);
++	float f;
++	memcpy(&f, &value, sizeof(f));
++	return f;
++#else
+ #ifdef MASKED_PSP_MEMORY
+ 	return *(float_le *)(base + (address & MEMVIEW32_MASK));
+ #else
+ 	return *(float_le *)(base + address);
+ #endif
++#endif
+ }
+ 
+ inline u16 ReadUnchecked_U16(const u32 address) {
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	return (u16)ppssppShimRead16(address);
++#else
+ #ifdef MASKED_PSP_MEMORY
+ 	return *(u16_le *)(base + (address & MEMVIEW32_MASK));
+ #else
+ 	return *(u16_le *)(base + address);
+ #endif
++#endif
+ }
+ 
+ inline u8 ReadUnchecked_U8(const u32 address) {
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	return (u8)ppssppShimRead8(address);
++#else
+ #ifdef MASKED_PSP_MEMORY
+ 	return (*(u8 *)(base + (address & MEMVIEW32_MASK)));
+ #else
+ 	return (*(u8 *)(base + address));
+ #endif
++#endif
+ }
+ 
+ inline void WriteUnchecked_U32(u32 data, u32 address) {
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	ppssppShimWrite32(address, data);
++#else
+ #ifdef MASKED_PSP_MEMORY
+ 	*(u32_le *)(base + (address & MEMVIEW32_MASK)) = data;
+ #else
+ 	*(u32_le *)(base + address) = data;
+ #endif
++#endif
+ }
+ 
+ inline void WriteUnchecked_Float(float data, u32 address) {
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	u32 value;
++	memcpy(&value, &data, sizeof(value));
++	ppssppShimWrite32(address, value);
++#else
+ #ifdef MASKED_PSP_MEMORY
+ 	*(float_le *)(base + (address & MEMVIEW32_MASK)) = data;
+ #else
+ 	*(float_le *)(base + address) = data;
+ #endif
++#endif
+ }
+ 
+ inline void WriteUnchecked_U16(u16 data, u32 address) {
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	ppssppShimWrite16(address, data);
++#else
+ #ifdef MASKED_PSP_MEMORY
+ 	*(u16_le *)(base + (address & MEMVIEW32_MASK)) = data;
+ #else
+ 	*(u16_le *)(base + address) = data;
+ #endif
++#endif
+ }
+ 
+ inline void WriteUnchecked_U8(u8 data, u32 address) {
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	ppssppShimWrite8(address, data);
++#else
+ #ifdef MASKED_PSP_MEMORY
+ 	(*(u8 *)(base + (address & MEMVIEW32_MASK))) = data;
+ #else
+ 	(*(u8 *)(base + address)) = data;
+ #endif
++#endif
+ }
+ 
+ inline float Read_Float(u32 address) 
+@@ -282,18 +331,44 @@ inline bool IsKernelAndNotVolatileAddress(const u32 address) {
+ bool IsScratchpadAddress(const u32 address);
+ 
+ inline void MemcpyUnchecked(void *to_data, const u32 from_address, const u32 len) {
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	ppssppShimReadBlock(from_address, to_data, len);
++#else
+ 	memcpy(to_data, GetPointerUnchecked(from_address), len);
++#endif
+ }
+ 
+ inline void MemcpyUnchecked(const u32 to_address, const void *from_data, const u32 len) {
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	ppssppShimWriteBlock(to_address, from_data, len);
++#else
+ 	memcpy(GetPointerWriteUnchecked(to_address), from_data, len);
++#endif
+ }
+ 
+ inline void MemcpyUnchecked(const u32 to_address, const u32 from_address, const u32 len) {
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	u32 remaining = len;
++	u32 readAddress = from_address;
++	u32 writeAddress = to_address;
++	u8 buffer[256];
++	while (remaining) {
++		u32 chunk = remaining > sizeof(buffer) ? (u32)sizeof(buffer) : remaining;
++		ppssppShimReadBlock(readAddress, buffer, chunk);
++		ppssppShimWriteBlock(writeAddress, buffer, chunk);
++		readAddress += chunk;
++		writeAddress += chunk;
++		remaining -= chunk;
++	}
++#else
+ 	MemcpyUnchecked(GetPointerWriteUnchecked(to_address), from_address, len);
++#endif
+ }
+ 
+ inline bool IsValidAddress(const u32 address) {
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	return ppssppShimIsValidRange(address, 1) != 0;
++#else
+ 	if ((address & 0x3E000000) == 0x08000000) {
+ 		return true;
+ 	} else if ((address & 0x3F800000) == 0x04000000) {
+@@ -305,9 +380,13 @@ inline bool IsValidAddress(const u32 address) {
+ 	} else {
+ 		return false;
+ 	}
++#endif
+ }
+ 
+ inline bool IsValid4AlignedAddress(const u32 address) {
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	return ppssppShimIsValid4AlignedAddress(address) != 0;
++#else
+ 	if ((address & 0x3E000003) == 0x08000000) {
+ 		return true;
+ 	} else if ((address & 0x3F800003) == 0x04000000) {
+@@ -319,9 +398,13 @@ inline bool IsValid4AlignedAddress(const u32 address) {
+ 	} else {
+ 		return false;
+ 	}
++#endif
+ }
+ 
+ inline u32 MaxSizeAtAddress(const u32 address){
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	return ppssppShimMaxSizeAtAddress(address);
++#else
+ 	if ((address & 0x3E000000) == 0x08000000) {
+ 		return 0x08000000 + g_MemorySize - (address & 0x3FFFFFFF);
+ 	} else if ((address & 0x3F800000) == 0x04000000) {
+@@ -337,6 +420,7 @@ inline u32 MaxSizeAtAddress(const u32 address){
+ 	} else {
+ 		return 0;
+ 	}
++#endif
+ }
+ 
+ inline const char *GetCharPointerUnchecked(const u32 address) {

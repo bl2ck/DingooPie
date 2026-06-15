@@ -1,0 +1,6 @@
+#ifndef DINGOO_PIE_RESOURCE_IDS_H
+#define DINGOO_PIE_RESOURCE_IDS_H
+
+#define IDI_DINGOO_PIE 101
+
+#endif
