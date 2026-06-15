@@ -379,15 +379,3 @@ FodyWeavers.xsd
 dingoo-screenshot-*.png
 codex_*/
 codex_*.png
-
-# Curated Windows release artifacts are committed so a checkout includes a
-# runnable build. Build directories, user config, logs, screenshots, and game
-# samples remain ignored.
-!/release/
-/release/*
-!/release/DingooPie.exe
-!/release/SDL2.dll
-!/release/libcapstone.dll
-!/release/libwinpthread-1.dll
-!/release/README.md
-!/release/manifest.sha256

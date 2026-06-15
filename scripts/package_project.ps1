@@ -1,10 +1,10 @@
 param(
-    [string]$PackageName = 'DingooPie-win64-source-release'
+    [string]$PackageName = 'DingooPie-source'
 )
 
 $ErrorActionPreference = 'Stop'
 
-$ProjectRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $DistDir = Join-Path $ProjectRoot 'dist'
 $StageRoot = Join-Path $DistDir $PackageName
 $ArchivePath = Join-Path $DistDir "$PackageName.zip"
@@ -14,7 +14,9 @@ $ExcludedFilePatterns = @(
     '*.app',
     '*.apk',
     '*.bmp',
+    '*.dll',
     '*.err',
+    '*.exe',
     '*.log',
     'codex_*.png',
     'dingoo-screenshot-*.png'
@@ -40,6 +42,44 @@ function Require-File($Path) {
     if (!(Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "Missing required file: $Path"
     }
+}
+
+function Copy-GitTrackedPath($RelativePath) {
+    $source = Join-Path $ProjectRoot $RelativePath
+    $destination = Join-Path $StageRoot $RelativePath
+    Copy-File $source $destination
+}
+
+function Copy-GitTrackedTree($RelativeRoot) {
+    $entries = git -C $ProjectRoot ls-files -- $RelativeRoot
+    foreach ($entry in $entries) {
+        Copy-GitTrackedPath $entry
+    }
+}
+
+function Test-GitWorkspace {
+    try {
+        $inside = git -C $ProjectRoot rev-parse --is-inside-work-tree 2>$null
+        return $LASTEXITCODE -eq 0 -and $inside -eq 'true'
+    } catch {
+        return $false
+    }
+}
+
+function Copy-SourceTree($RelativeRoot) {
+    if ($UseGitTrackedFiles) {
+        Copy-GitTrackedTree $RelativeRoot
+        return
+    }
+    Copy-Tree (Join-Path $ProjectRoot $RelativeRoot) (Join-Path $StageRoot $RelativeRoot)
+}
+
+function Copy-SourceFile($RelativePath) {
+    if ($UseGitTrackedFiles) {
+        Copy-GitTrackedPath $RelativePath
+        return
+    }
+    Copy-File (Join-Path $ProjectRoot $RelativePath) (Join-Path $StageRoot $RelativePath)
 }
 
 function Write-Manifest($Root) {
@@ -101,32 +141,28 @@ if (Test-Path -LiteralPath $ArchivePath) {
 }
 New-Item -ItemType Directory -Path $StageRoot -Force | Out-Null
 
-Copy-Tree (Join-Path $ProjectRoot 'dingoo_pie') (Join-Path $StageRoot 'dingoo_pie')
-Copy-Tree (Join-Path $ProjectRoot 'docs') (Join-Path $StageRoot 'docs')
-Copy-Tree (Join-Path $ProjectRoot 'patches') (Join-Path $StageRoot 'patches')
-Copy-Tree (Join-Path $ProjectRoot 'resources') (Join-Path $StageRoot 'resources')
-Copy-Tree (Join-Path $ProjectRoot 'scripts') (Join-Path $StageRoot 'scripts')
-New-Item -ItemType Directory -Path (Join-Path $StageRoot 'release') -Force | Out-Null
-Copy-File (Join-Path $ProjectRoot 'release\DingooPie.exe') (Join-Path $StageRoot 'release\DingooPie.exe')
-Copy-File (Join-Path $ProjectRoot 'release\SDL2.dll') (Join-Path $StageRoot 'release\SDL2.dll')
-Copy-File (Join-Path $ProjectRoot 'release\libcapstone.dll') (Join-Path $StageRoot 'release\libcapstone.dll')
-Copy-File (Join-Path $ProjectRoot 'release\libwinpthread-1.dll') (Join-Path $StageRoot 'release\libwinpthread-1.dll')
-Copy-File (Join-Path $ProjectRoot 'release\README.md') (Join-Path $StageRoot 'release\README.md')
-if (Test-Path -LiteralPath (Join-Path $ProjectRoot 'release\manifest.sha256')) {
-    Copy-File (Join-Path $ProjectRoot 'release\manifest.sha256') (Join-Path $StageRoot 'release\manifest.sha256')
-}
+$UseGitTrackedFiles = Test-GitWorkspace
 
-Copy-Item -LiteralPath (Join-Path $ProjectRoot 'CMakeLists.txt') -Destination $StageRoot -Force
-Copy-Item -LiteralPath (Join-Path $ProjectRoot 'README.md') -Destination $StageRoot -Force
-Copy-Item -LiteralPath (Join-Path $ProjectRoot 'RELEASE_README.md') -Destination $StageRoot -Force
-Copy-Item -LiteralPath (Join-Path $ProjectRoot 'THIRD_PARTY.md') -Destination $StageRoot -Force
-Copy-Item -LiteralPath (Join-Path $ProjectRoot '.gitignore') -Destination $StageRoot -Force
-Copy-Item -LiteralPath (Join-Path $ProjectRoot 'configure_win64.bat') -Destination $StageRoot -Force
+Copy-SourceTree 'dingoo_pie'
+Copy-SourceTree 'docs'
+Copy-SourceTree 'patches'
+Copy-SourceTree 'resources'
+Copy-SourceTree 'scripts'
+Copy-SourceTree 'tools'
+
+Copy-SourceFile 'CMakeLists.txt'
+Copy-SourceFile 'LICENSE'
+Copy-SourceFile 'README.md'
+Copy-SourceFile 'RELEASE_README.md'
+Copy-SourceFile 'THIRD_PARTY.md'
+Copy-SourceFile '.gitignore'
+Copy-SourceFile 'configure_win64.bat'
 
 Assert-NoForbiddenFiles $StageRoot
 
 $required = @(
     'CMakeLists.txt',
+    'LICENSE',
     'README.md',
     'THIRD_PARTY.md',
     'dingoo_pie\main.cpp',
@@ -151,14 +187,11 @@ $required = @(
     'scripts\profile_sample.ps1',
     'scripts\profile_samples.ps1',
     'scripts\smoke_test.ps1',
+    'tools\dingoo_app_tool\README.md',
+    'tools\dingoo_app_tool\src\main.cpp',
     'patches\ppsspp-irjit-dingoo.patch',
     'resources\app_icon.ico',
-    'resources\app_icon.png',
-    'release\DingooPie.exe',
-    'release\SDL2.dll',
-    'release\libcapstone.dll',
-    'release\libwinpthread-1.dll',
-    'release\README.md'
+    'resources\app_icon.png'
 )
 foreach ($item in $required) {
     Require-File (Join-Path $StageRoot $item)

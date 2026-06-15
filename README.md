@@ -169,8 +169,9 @@ DingooPie.exe "D:\Games\Dingoo\Your Game.app"
 .\scripts\package_project.ps1
 ```
 
-打包脚本会收集源码、脚本、文档、补丁、资源和 release 可运行文件，
-生成 `manifest.files.txt` 与 `manifest.sha256`，压缩后再解压到临时
+打包脚本会收集源码、脚本、文档、补丁和资源，不包含本地生成的
+`release/` 发布产物。脚本会生成 `manifest.files.txt` 与 `manifest.sha256`，
+压缩后再解压到临时
 校验目录，逐项验证 hash、必需文件，并在发现任何样本 app 文件、日志、
 调试截图或生成的分析产物时失败。
 
@@ -358,10 +359,11 @@ commands, and current sample baselines.
 .\scripts\package_project.ps1
 ```
 
-The packaging script stages source, scripts, docs, patches, resources, and the
-release binary set. It generates `manifest.files.txt` and `manifest.sha256`,
-compresses the package, extracts it to a temporary verification directory,
-validates every hash, checks required files, and fails if any sample app file,
-log, debug screenshot, or generated analysis artifact is present.
+The packaging script stages source, scripts, docs, patches, and resources; it
+does not include locally generated `release/` artifacts. It generates
+`manifest.files.txt` and `manifest.sha256`, compresses the package, extracts it
+to a temporary verification directory, validates every hash, checks required
+files, and fails if any sample app file, log, debug screenshot, or generated
+analysis artifact is present.
 
 See `docs\PACKAGING.md` for package contents and policy.
