@@ -12,6 +12,7 @@
 #include "semaphore.h"
 #include <assert.h>
 #include "framebuffer.h"
+#include "pause_gate.h"
 #include "sdl_frontend.h"
 #include "guest_filesystem.h"
 #include "task_scheduler.h"
@@ -42,7 +43,7 @@ static std::atomic<bool> s_bridgeProfileEnabled(false);
 static std::atomic<double> s_runtimeSpeedScale(1.0);
 static std::atomic<bool> s_runtimeSpeedScaleForced(false);
 static std::atomic<double> s_hostDelayScale(1.0);
-static const double kAutoRuntimeSpeedScale = 0.60;
+static const double kAutoRuntimeSpeedScale = 0.65;
 static const double kAutoHostDelayScale = 1.0;
 static const uint32_t kGuestExitPc = 0xFFFFFFFFu;
 
@@ -475,13 +476,13 @@ static bool isMainRuntimeContext(NativeRuntime* runtime)
     return isMainRuntime;
 }
 
-static bool shouldPromoteTaskStopToGuestExit(uint32_t ra)
+static CompatGuestExitDecision taskStopGuestExitDecision(uint32_t ra)
 {
-    // A few games use a subtask OSTaskDel as their final quit-confirm path
-    // instead of calling a global system exit API. Keep these rules tied to the
-    // app file hash so normal short-lived subtasks in other games are not
-    // promoted to emulator shutdown, and renamed files still match.
-    return compatShouldPromoteTaskStopToGuestExit(s_bridgeAppSha256.c_str(), ra);
+    CompatTaskStopExitContext context;
+    context.returnAddress = ra;
+    context.frontendQuitRequested = frontendQuitRequested();
+    context.sawSuspiciousFileOpenFailure = fsys_saw_suspicious_open_failure();
+    return compatTaskStopGuestExitDecision(s_bridgeAppSha256.c_str(), &context);
 }
 
 static void requestGuestExit(NativeRuntime* runtime, const char* reason)
@@ -511,14 +512,24 @@ static void stopCurrentGuestRuntime(NativeRuntime* runtime, const char* reason)
         "%s pc=0x%08x ra=0x%08x a0=0x%08x sp=0x%08x main=%u",
         reason ? reason : "<unknown>", pc, ra, a0, sp,
         isMainRuntimeContext(runtime) ? 1u : 0u);
-    printf("hle: task stop reason=%s app_sha256=%s pc=0x%08x ra=0x%08x a0=0x%08x main=%u promoted=%u\n",
+    CompatGuestExitDecision exitDecision = taskStopGuestExitDecision(ra);
+    printf("hle: task stop reason=%s app_sha256=%s pc=0x%08x ra=0x%08x a0=0x%08x main=%u promoted=%u",
         reason ? reason : "<unknown>",
         s_bridgeAppSha256.c_str(),
         pc,
         ra,
         a0,
         isMainRuntimeContext(runtime) ? 1u : 0u,
-        shouldPromoteTaskStopToGuestExit(ra) ? 1u : 0u);
+        exitDecision.shouldExit ? 1u : 0u);
+    if (exitDecision.matched)
+    {
+        printf(" compat=%s", exitDecision.label ? exitDecision.label : "task-stop exit");
+    }
+    if (fsys_saw_suspicious_open_failure())
+    {
+        printf(" fs_suspicious_open_failure=1");
+    }
+    printf("\n");
     if (envTraceEnabled("DINGOO_PIE_TRACE_HLE"))
     {
         printf("trace-hle: guest task stop requested by %s ra=0x%08x\n",
@@ -529,7 +540,7 @@ static void stopCurrentGuestRuntime(NativeRuntime* runtime, const char* reason)
         printf("trace-task: %s pc=0x%08x ra=0x%08x a0=0x%08x sp=0x%08x main=%u\n",
             reason ? reason : "<unknown>", pc, ra, a0, sp, isMainRuntimeContext(runtime) ? 1u : 0u);
     }
-    if (shouldPromoteTaskStopToGuestExit(ra))
+    if (exitDecision.shouldExit)
     {
         requestGuestExit(runtime, reason);
         return;
@@ -2306,6 +2317,7 @@ bool bridge_try_fast_return_hook(uint32_t address, uint32_t* returnValue)
     {
         if (_hook_code_func_map[i].fast_return_enabled && _hook_code_func_map[i].offset == address)
         {
+            pauseGateWaitForResume();
             _hook_code_func_map[i].trigger_times++;
             _hook_code_func_map[i].profile_times++;
             if (returnValue)
@@ -2465,6 +2477,10 @@ static void hook_code(NativeRuntime* runtime, uint64_t address, uint32_t size, v
     {
         return;
     }
+    // Some games keep running through audio/input/timer SDK calls without
+    // submitting a new frame. Gate every resolved HLE hook so pause is not
+    // limited to LCD frame boundaries.
+    pauseGateWaitForResume();
 
     if (hookFunc->name)
     {
@@ -2552,17 +2568,6 @@ static void hook_code(NativeRuntime* runtime, uint64_t address, uint32_t size, v
         if (hookFunc->lock)
         {
             pthread_mutex_unlock(&hook_code_mutex);
-        }
-
-        if (0)
-        {
-            for (int i = 0; i < sizeof(_hook_code_func_map) / sizeof(_hook_code_func_map[0]); ++i)
-            {
-                if (_hook_code_func_map[i].func)
-                {
-                    printf("times: %10d \t%s\n", _hook_code_func_map[i].trigger_times, _hook_code_func_map[i].name);
-                }
-            }
         }
 
         static int debugger = 0;

@@ -82,6 +82,18 @@ function Copy-SourceFile($RelativePath) {
     Copy-File (Join-Path $ProjectRoot $RelativePath) (Join-Path $StageRoot $RelativePath)
 }
 
+function Copy-WorkspaceSourceFile($RelativePath) {
+    Copy-File (Join-Path $ProjectRoot $RelativePath) (Join-Path $StageRoot $RelativePath)
+}
+
+function Copy-OptionalSourceFile($RelativePath) {
+    $source = Join-Path $ProjectRoot $RelativePath
+    if (!(Test-Path -LiteralPath $source -PathType Leaf)) {
+        return
+    }
+    Copy-SourceFile $RelativePath
+}
+
 function Write-Manifest($Root) {
     $manifestFiles = Join-Path $Root 'manifest.files.txt'
     $manifestHash = Join-Path $Root 'manifest.sha256'
@@ -150,10 +162,12 @@ Copy-SourceTree 'resources'
 Copy-SourceTree 'scripts'
 Copy-SourceTree 'tools'
 
+Copy-WorkspaceSourceFile 'dingoo_pie\app_metadata.h'
+
 Copy-SourceFile 'CMakeLists.txt'
 Copy-SourceFile 'LICENSE'
 Copy-SourceFile 'README.md'
-Copy-SourceFile 'RELEASE_README.md'
+Copy-OptionalSourceFile 'RELEASE_README.md'
 Copy-SourceFile 'THIRD_PARTY.md'
 Copy-SourceFile '.gitignore'
 Copy-SourceFile 'configure_win64.bat'
@@ -174,6 +188,7 @@ $required = @(
     'dingoo_pie\instruction_compat.cpp',
     'dingoo_pie\runtime_debug.cpp',
     'dingoo_pie\platform_win32.cpp',
+    'dingoo_pie\app_metadata.h',
     'dingoo_pie\app_icon.rc',
     'dingoo_pie\resource_ids.h',
     'dingoo_pie\ui_strings.cpp',

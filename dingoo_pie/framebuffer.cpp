@@ -1,4 +1,5 @@
 #include "framebuffer.h"
+#include "pause_gate.h"
 #include "runtime_debug.h"
 
 #include <atomic>
@@ -165,6 +166,14 @@ static uint64_t paceFramebufferSubmission(void)
     return nowMicros;
 }
 
+static void resetFramebufferPacing(void)
+{
+    std::lock_guard<std::mutex> lock(s_FramePacingMutex);
+    s_FramePacingLastMicros = 0;
+    s_FramePacingFastStreak = 0;
+    s_LastSubmittedFrameMicros.store(0, std::memory_order_release);
+}
+
 void framebufferSetProfileEnabled(bool enabled)
 {
     s_FramebufferProfileEnabled.store(enabled);
@@ -327,12 +336,7 @@ int InitFb(NativeRuntime* runtime)
     memcpy(s_presentedFrameBuffers[0], s_LcdFrameBufferPtr, sizeof(s_presentedFrameBuffers[0]));
     s_presentedFrameIndex.store(0, std::memory_order_release);
     s_SubmittedFrameCount.store(0, std::memory_order_release);
-    s_LastSubmittedFrameMicros.store(0, std::memory_order_release);
-    {
-        std::lock_guard<std::mutex> lock(s_FramePacingMutex);
-        s_FramePacingLastMicros = 0;
-        s_FramePacingFastStreak = 0;
-    }
+    resetFramebufferPacing();
     return 0;
 }
 
@@ -403,6 +407,12 @@ void requestFbUpdate(void)
 {
     // Snapshot on lcd_set_frame/lcd_flip boundaries. This keeps visual pacing
     // tied to the Dingoo SDK frame submission point instead of host refresh.
+    // Pausing here freezes guest execution at a complete frame boundary while
+    // leaving the frontend event loop responsive for menu commands.
+    if (pauseGateWaitForResume())
+    {
+        resetFramebufferPacing();
+    }
     uint64_t beginMicros = paceFramebufferSubmission();
     uint64_t previousMicros = s_LastSubmittedFrameMicros.exchange(beginMicros, std::memory_order_acq_rel);
     if (previousMicros)

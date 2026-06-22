@@ -4,6 +4,7 @@
 #include "input_state.h"
 
 #include <SDL2/SDL.h>
+#include <string>
 
 #define CONTROL_POWER         7 /*!< Dingoo A320 power slider; HOLD is not tracked separately. */
 
@@ -23,10 +24,16 @@
 #define CONTROL_DPAD_RIGHT    18 /*!< Directional pad right. */
 
 void inputClearControls(void);
+void inputClearSyntheticControls(void);
 void inputSetSyntheticControl(uint32_t controlBit, bool pressed);
 void inputHandleHostScancode(SDL_Scancode scancode, bool pressed);
 void inputHandleHostVirtualKey(int virtualKey, bool pressed);
 void inputPollKeyboardState(void);
+void inputApplyKeyboardMapping(const std::string& mapping);
+std::string inputCurrentKeyboardMapping(void);
+std::string inputKeyboardSourceForControl(uint32_t controlBit);
+bool inputSetKeyboardMappingForControl(uint32_t controlBit, SDL_Scancode scancode);
+void inputResetKeyboardMapping(void);
 
 
 #endif

@@ -146,7 +146,7 @@ static void clearRecentAppIfStillCurrent(const char* reason)
         return;
     }
 
-    settings.lastAppPath.clear();
+    emulatorRemoveRecentApp(&settings, g_appLoadPath);
     if (emulatorSaveSettings(settings))
     {
         printf("DingooPie: cleared recent app after %s: %s\n", reason, g_appLoadPath.c_str());
@@ -165,13 +165,12 @@ static void saveRecentAppPath(const std::string& appPath, const char* reason)
     }
 
     EmulatorSettings settings = emulatorLoadSettings();
-    if (appPathsMatch(settings.lastAppPath, appPath))
+    if (!emulatorRememberRecentApp(&settings, appPath))
     {
         printf("DingooPie: recent app already current after %s: %s\n", reason, appPath.c_str());
         return;
     }
 
-    settings.lastAppPath = appPath;
     if (emulatorSaveSettings(settings))
     {
         printf("DingooPie: saved recent app after %s: %s\n", reason, appPath.c_str());
@@ -533,6 +532,28 @@ static void logEmulationFailure(NativeRuntime* runtime, RuntimeError err)
     dumpAsm(runtime);
 }
 
+static CompatGuestExitDecision noGuestExitDecision(void)
+{
+    CompatGuestExitDecision decision;
+    decision.matched = false;
+    decision.shouldExit = false;
+    decision.label = NULL;
+    return decision;
+}
+
+static CompatGuestExitDecision runtimeExceptionGuestExitDecision(NativeRuntime* runtime, const std::string& appSha256)
+{
+    CompatRuntimeExceptionExitContext context;
+    context.pc = 0;
+    context.returnAddress = 0;
+    context.v0 = 0;
+    nativeRuntimeReadRegister(runtime, RUNTIME_REG_PC, &context.pc);
+    nativeRuntimeReadRegister(runtime, RUNTIME_REG_RA, &context.returnAddress);
+    nativeRuntimeReadRegister(runtime, RUNTIME_REG_V0, &context.v0);
+
+    return compatRuntimeExceptionGuestExitDecision(appSha256.c_str(), &context);
+}
+
 static NativeRuntime* initDingooPie(void)
 {
     taskSchedulerResetShutdown();
@@ -667,6 +688,18 @@ static NativeRuntime* initDingooPie(void)
     printf("DingooPie: native runtime returned err=%u (%s)\n", err, nativeRuntimeErrorString(err));
     if (err)
     {
+        CompatGuestExitDecision exitDecision = (err == RUNTIME_ERROR_EXCEPTION)
+            ? runtimeExceptionGuestExitDecision(runtime, appSha256)
+            : noGuestExitDecision();
+        if (exitDecision.shouldExit)
+        {
+            printf("DingooPie: treating %s as normal guest exit\n",
+                exitDecision.label ? exitDecision.label : "compat exception");
+            g_lastRunAppPath = g_appLoadPath;
+            g_lastRunExitedNormally.store(true, std::memory_order_release);
+            frontendRequestQuit();
+            return runtime;
+        }
         g_lastRunExitedNormally.store(false, std::memory_order_release);
         logEmulationFailure(runtime, err);
         frontendRequestQuit();

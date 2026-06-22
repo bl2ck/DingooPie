@@ -29,6 +29,11 @@ $Dependencies = @{
         Url = 'https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-capstone-5.0.9-1-any.pkg.tar.zst'
         Sha256 = ''
     }
+    Winpthread = @{
+        File = 'mingw-w64-x86_64-libwinpthread.pkg.tar.zst'
+        Url = 'https://mirror.msys2.org/mingw/mingw64/mingw-w64-x86_64-libwinpthread-14.0.0.r98.g19f5121a2-1-any.pkg.tar.zst'
+        Sha256 = '565a7ac155098633ce66096c02c98f274127111758fd25d3f0e5451c4cd21120'
+    }
     PPSSPP = @{
         File = 'ppsspp-master.zip'
         Url = 'https://github.com/hrydgard/ppsspp/archive/refs/heads/master.zip'
@@ -52,16 +57,40 @@ function Copy-CacheIfAvailable($Name, $Destination) {
 function Get-Dependency($Spec) {
     $dest = Join-Path $DownloadsDir $Spec.File
     Copy-CacheIfAvailable $Spec.File $dest
-    if (!(Test-Path -LiteralPath $dest) -or $Force) {
-        Write-Host "Downloading $($Spec.File)"
-        Invoke-WebRequest -Uri $Spec.Url -OutFile $dest -UseBasicParsing
-    }
-    if ($Spec.Sha256) {
-        $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $dest).Hash.ToLowerInvariant()
-        if ($hash -ne $Spec.Sha256) {
-            throw "SHA256 mismatch for $($Spec.File): $hash"
+
+    # Download into a sibling temporary file first. A failed or interrupted
+    # download must not replace a previously verified dependency archive.
+    if ((Test-Path -LiteralPath $dest) -and !$Force) {
+        if (!$Spec.Sha256) {
+            return $dest
         }
+
+        $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $dest).Hash.ToLowerInvariant()
+        if ($hash -eq $Spec.Sha256) {
+            return $dest
+        }
+
+        Write-Host "SHA256 mismatch for $($Spec.File): $hash. Redownloading."
     }
+
+    $tempDest = "$dest.download"
+    Remove-Item -LiteralPath $tempDest -Force -ErrorAction SilentlyContinue
+    try {
+        Write-Host "Downloading $($Spec.File)"
+        Invoke-WebRequest -Uri $Spec.Url -OutFile $tempDest -UseBasicParsing
+
+        if ($Spec.Sha256) {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $tempDest).Hash.ToLowerInvariant()
+            if ($hash -ne $Spec.Sha256) {
+                throw "SHA256 mismatch for $($Spec.File): $hash"
+            }
+        }
+
+        Move-Item -LiteralPath $tempDest -Destination $dest -Force
+    } finally {
+        Remove-Item -LiteralPath $tempDest -Force -ErrorAction SilentlyContinue
+    }
+
     return $dest
 }
 
@@ -200,9 +229,11 @@ $env:PATH = "$W64Bin;$env:PATH"
 
 $sdlArchive = Get-Dependency $Dependencies.SDL2
 $capstoneArchive = Get-Dependency $Dependencies.Capstone
+$winpthreadArchive = Get-Dependency $Dependencies.Winpthread
 $ppssppArchive = Get-Dependency $Dependencies.PPSSPP
 Expand-Zip $sdlArchive (Join-Path $DepsDir 'SDL2')
 Expand-Tar $capstoneArchive (Join-Path $DepsDir 'capstone')
+Expand-Tar $winpthreadArchive (Join-Path $DepsDir 'winpthread')
 Expand-Zip $ppssppArchive $ThirdPartyDir
 
 $ppssppRoot = Join-Path $ThirdPartyDir 'ppsspp-master'

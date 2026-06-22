@@ -12,6 +12,7 @@ uint32_t MixerPlaying();
 bool MixerDropsAudio();
 void MixerSetVolume(uint32_t vol);
 void MixerSetMuted(bool muted);
+void MixerSetFrontendPaused(bool paused);
 void MixerSetMasterVolumePercent(int percent);
 void MixerSetBufferSamples(int samples);
 

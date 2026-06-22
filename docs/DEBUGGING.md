@@ -11,31 +11,38 @@ The Windows frontend also writes `DingooPie.ini` next to `DingooPie.exe`.
 The INI reader accepts UTF-16LE with BOM, UTF-8 with or without BOM, and a
 system ANSI fallback, so manually edited Chinese app paths remain loadable.
 The executable is named `DingooPie.exe`; its Windows version resource reports
-`Dingoo A320 / Gemei X760+ Game Emulator`, file/product version `1.0`, product
+`Dingoo Game Emulator`, file/product version `1.1`, product
 name `DingooPie`, and `Copyright (c) BL2CK 2026`.
 Starting without command-line arguments does not show a file picker. Empty
 `recent.last_app` opens the frontend only; an existing `recent.last_app` is
 auto-loaded; a command-line `.app` path takes priority.
-Selecting a game from `File -> Open Game .app` saves the chosen UTF-8 path to
-`recent.last_app`.
-Automatic `recent.last_app` startup clears that setting when the path is
-missing, does not end in `.app`, or fails during app open/parse. Command-line
-startup failures are diagnostic-only and do not modify `DingooPie.ini`.
+Selecting a game from `File -> Open Game`, choosing `File -> Recent Games`,
+or dropping an `.app` file onto the window saves the chosen UTF-8 path to
+`recent.last_app` and promotes it into `recent.app1` through `recent.app10`.
+`File -> Recent Games -> Clear Recent Games` clears both `recent.last_app` and
+the ordered `recent.app1`...`recent.app10` list.
+Automatic `recent.last_app` startup clears the matching recent entry when the
+path is missing, does not end in `.app`, or fails during app open/parse.
+Command-line startup failures are diagnostic-only and do not modify
+`DingooPie.ini`.
 The menu is ordered as File, Options, Settings, Debug, and Help. Options
 contains Video, Audio, and Input submenus. Video > Scale contains 1x, 2x, 3x,
-and windowed fullscreen. The menu can also change portrait mode, sampling
-filter, color effect, FPS overlay, emulator master volume, audio buffer size,
-audio disable mode, virtual controls, IME disable mode, UI language, CPU
-backend, CPU clock, runtime speed, SDK delay scale presets, debug console, and
-profile logging.
+and windowed fullscreen. The menu can also change anti-aliasing strength,
+color effect, brightness, contrast, saturation, minimized behavior, portrait
+mode, FPS overlay, emulator master volume, audio buffer size,
+audio disable mode, IME disable mode, virtual controls, UI language, CPU
+backend, CPU clock, runtime speed, delay scale presets, debug console, and
+profile logging. File > Pause Game/Resume Game freezes game execution and audio
+at frame boundaries, but it is runtime-only and is not written to `DingooPie.ini`.
 `DingooPie.ini` is rewritten in the same practical order:
 `recent`, `video`, `audio`, `input`, `runtime`, `ui`, then `debug`.
+The `recent` section writes `last_app` first, followed by the ordered
+`app1`...`app10` recent-game list.
 Runtime-affecting values are saved immediately. Changes to window scale,
-windowed fullscreen, portrait mode, FPS overlay, CPU clock, runtime speed, SDK delay scale,
-audio disable, profile logging, video filter/effect, brightness, contrast,
-saturation, virtual controls, IME disable mode, language, master volume, audio
-buffer size, debug console visibility, and explicit save apply without
-relaunching the guest.
+windowed fullscreen, minimized behavior, portrait mode, FPS overlay, CPU clock, runtime speed, delay scale,
+audio disable, profile logging, anti-aliasing/effect, brightness, contrast,
+saturation, IME disable mode, virtual controls, language, master volume, audio
+buffer size, and debug console visibility apply without relaunching the guest.
 Changing the CPU backend still relaunches the emulator because the execution
 backend is selected at startup. Restored defaults relaunch only when they change
 the active CPU backend.
@@ -45,10 +52,14 @@ after the guest `waveout` volume so game-internal volume changes remain active.
 `2048`, matching the previous fixed value; larger values reduce underruns at
 the cost of more audio latency, while smaller values reduce latency but can
 make weak hosts crackle.
-The default UI language is English. `Settings -> Language` persists
+`video.minimized_behavior` accepts `normal`, `throttle`, or `pause`. The
+default `throttle` lowers frontend presentation and loop cadence while the
+window is minimized. `pause` automatically pauses game execution and audio on
+minimize, then resumes only pauses that were caused by minimization.
+The default UI language is Chinese. `Settings -> Language` persists
 `ui.language=english` or `ui.language=chinese` for menus and native file dialogs.
 `runtime.speed_scale=` means `Auto`; the frontend leaves
-`DINGOO_PIE_RUNTIME_SPEED_SCALE` unset so the runtime uses the global 60%
+`DINGOO_PIE_RUNTIME_SPEED_SCALE` unset so the runtime uses the global 65%
 Auto pace.
 `runtime.cpu_hz=` means `Auto`; explicit CPU clock menu values set
 `DINGOO_PIE_IRJIT_CLOCK_HZ` and apply to the IR JIT immediately.
@@ -61,17 +72,35 @@ changes or resets settings.
 `input.disable_ime=1` is the default and disables the Windows IME for the SDL
 window so input methods cannot intercept gameplay keys. It can be toggled from
 `Input -> Disable IME` and applies immediately.
+SDL GameController-compatible pads are accepted by the frontend. D-pad and left
+stick feed Dingoo D-pad controls, A/B/X/Y feed the matching face buttons,
+Back/Start feed SELECT/START, and shoulder buttons or analog triggers feed the
+left/right shoulder controls by default. Custom keyboard and controller
+bindings are saved in `input.keyboard_mapping` and `input.controller_mapping`
+as comma-separated `Physical=Control` pairs; empty means default. Supported
+controller physical names include `A`, `B`, `X`, `Y`, `Back`, `Start`,
+`LeftShoulder`, `RightShoulder`, `DPadUp`, `DPadDown`, `DPadLeft`, `DPadRight`,
+`LeftX-`, `LeftX+`, `LeftY-`, `LeftY+`, `RightX-`, `RightX+`, `RightY-`,
+`RightY+`, `LeftTrigger`, and `RightTrigger`. Supported controls are `A`, `B`,
+`X`, `Y`, `Start`, `Select`, `L`, `R`, `Up`, `Down`, `Left`, `Right`, `Power`,
+and `None`.
 The executable is built as a Windows GUI app by default, so no console is
 shown unless `Debug -> Show Debug Console` or `debug.show_console=1` is enabled.
 `Debug -> Open Debug Log` checks the executable directory first and
 shows a localized message if the log file has not been created yet. Profile
 logging and `DINGOO_PIE_LOG_FILE=1` create that file next to `DingooPie.exe`.
 Current video effects are frontend-side only: SDL provides nearest/linear
-texture scaling. Color effects are CPU RGB565 post-processes before texture
-upload: normal, grayscale, invert, inverted grayscale, sepia, amber,
-LCD scanline, sharpen, and soft blur. Brightness, contrast, and saturation
-adjustments are applied after the selected effect and are also reflected in
-saved screenshots. The guest framebuffer is not modified.
+texture scaling. Anti-aliasing uses nearest sampling for off, linear scaling
+for low strength, and linear scaling plus a light CPU RGB565 clarity pass for
+clear mode. Unknown or invalid INI values fall back to current defaults instead
+of being specially mapped.
+Color effects are frontend-only presentation effects. Grayscale, invert, soft
+blur, sharpen, vivid, sepia, LCD scanline, and light CRT are CPU RGB565
+post-processes before texture upload. Pixel grid is a display-size
+overlay that darkens source-pixel boundaries after scaling and is also applied
+to saved screenshots. Brightness, contrast, and saturation adjustments are
+applied after the selected pixel effect and are also reflected in saved
+screenshots. The guest framebuffer is not modified.
 `video.portrait=1` rotates the SDL presentation and saved screenshots
 90 degrees counter-clockwise, swaps the non-fullscreen window to 240x320 at the
 selected scale, and rotates the virtual control overlay and hit testing with
@@ -79,8 +108,8 @@ the displayed screen. The guest framebuffer remains the fixed Dingoo 320x240
 surface.
 Saved screenshots use the current SDL display output size, so a 2x window saves
 640x480 in landscape mode and 480x640 in portrait mode.
-Window scale values are limited to 1, 2, or 3 in `DingooPie.ini`; legacy values
-above 3 are normalized to 3 when settings are loaded or saved. Fullscreen is a
+Window scale values are limited to 1, 2, or 3 in `DingooPie.ini`; old or invalid
+values fall back to the current default when settings are loaded. Fullscreen is a
 separate `video.fullscreen=1` option implemented as a maximized SDL window, so
 the native top menu bar remains visible and can still be used to leave
 fullscreen. The SDL window is internally resizable so the frontend can fit the
@@ -133,8 +162,8 @@ some games compare that string directly.
 | `DINGOO_PIE_IRJIT_THROTTLE_MAX_LAG_MS` | `1..5000` | Resets the throttle baseline after long host stalls so delayed input or loading does not cause a catch-up burst. |
 | `DINGOO_PIE_DISPLAY_FPS` | `1..240` | Limits SDL texture uploads and presentations without blocking guest execution. The default is 60. |
 | `DINGOO_PIE_LCD_FRAME_PACING` | `0`, `1` | Enables adaptive pacing at Dingoo LCD frame submission boundaries. The default is enabled; set `0` to diagnose raw guest frame production. |
-| `DINGOO_PIE_RUNTIME_SPEED_SCALE` | `0.0..1.0` | Scales runtime pacing used by HLE and the PPSSPP shim. The menu `Auto` preset leaves it unset and maps to the global 60% runtime pace. Explicit Runtime Speed menu values apply immediately and persist to the INI. |
-| `DINGOO_PIE_OSTIMEDLY_SCALE` | `0.0..1.0` | Scales host sleep time for `OSTimeDly`, `delay_ms`, and `udelay` calls while preserving guest tick accounting. Auto uses the global 1.0 SDK delay scale unless a content-hash compatibility entry overrides it. Use this to override sample-specific delay behavior. |
+| `DINGOO_PIE_RUNTIME_SPEED_SCALE` | `0.0..1.0` | Scales runtime pacing used by HLE and the PPSSPP shim. The menu `Auto` preset leaves it unset and maps to the global 65% runtime pace. Explicit Runtime Speed menu values apply immediately and persist to the INI. |
+| `DINGOO_PIE_OSTIMEDLY_SCALE` | `0.0..1.0` | Scales host sleep time for `OSTimeDly`, `delay_ms`, and `udelay` calls while preserving guest tick accounting. Auto uses the global 1.0 delay scale unless a content-hash compatibility entry overrides it. Use this to override sample-specific delay behavior. |
 | `DINGOO_PIE_IRJIT_SLICE` | `10000..10000000` | Overrides the PPSSPP shim slice length. Useful for timing experiments only. |
 | `DINGOO_PIE_INPUT_TRACE` | `1` | Prints SDL key events and Dingoo key state reads. |
 | `DINGOO_PIE_AUTOPRESS_KEYS` | `KEY:DELAY_MS:COUNT:PERIOD_MS:HOLD_MS` | Injects deterministic synthetic controls from inside the frontend for automated sample tests. Example: `A:6000:8:900:300`. Keys: `A`, `B`, `X`, `Y`, `U`, `D`, `L`, `R`, `SELECT`, `START`. |
@@ -317,7 +346,7 @@ The latest known smoke results are:
 - `Snake.app`: frontend and HLE frame submission are aligned around 19-21 FPS after framebuffer snapshotting. The content-hash profile uses the PPSSPP IR JIT backend.
 - `PoPo Bash.app`: frontend submission is aligned with HLE at roughly 15-16 FPS. Remaining visible cadence is likely Dingoo timer/task/audio semantics rather than SDL presentation.
 - `Ultimate Drift.app`: remains a diagnostic sample for CPU/VFPU coverage and framebuffer behavior. This codebase no longer carries a game-specific Soft3D or 3D resource parser; investigate remaining 3D issues through guest execution traces, SDK/HLE calls, and framebuffer submissions.
-- `7Days.app` (`AF681C338A9932C98A3B450D4391C43D13747F1DFD937232AE38BEDB44359BF0`): the title/menu path throttles heavily through `OSTimeDly`. Auto now uses the global 1.0 SDK delay scale; use `Settings -> SDK Delay Scale` to tune it per user preference. Use `DINGOO_PIE_AUTOPRESS_SEQUENCE=A@9000:300` for smoke tests; repeated confirm presses can enter the save-load screen instead of staying on the title screen. Framebuffer dumps from this path should show title text and the background corridor rather than an all-black frame.
+- `7Days.app` (`AF681C338A9932C98A3B450D4391C43D13747F1DFD937232AE38BEDB44359BF0`): the title/menu path throttles heavily through `OSTimeDly`. Auto now uses the global 1.0 delay scale; use `Settings -> Delay Scale` to tune it per user preference. Use `DINGOO_PIE_AUTOPRESS_SEQUENCE=A@9000:300` for smoke tests; repeated confirm presses can enter the save-load screen instead of staying on the title screen. Framebuffer dumps from this path should show title text and the background corridor rather than an all-black frame.
 
 Game files are not part of the repository or release packages. `.app` files
 belong to Dingoo Technology's package format and must come from legally obtained

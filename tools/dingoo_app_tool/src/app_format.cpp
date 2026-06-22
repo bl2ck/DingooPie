@@ -18,6 +18,17 @@ constexpr std::uint32_t kImptOffset = 32;
 constexpr std::uint32_t kExptOffset = 64;
 constexpr std::uint32_t kRawdOffset = 96;
 constexpr std::uint32_t kOptionalErptOffset = 128;
+constexpr std::uint32_t kPackedRecordSize = 36;
+constexpr std::uint32_t kPackedNameSize = 32;
+constexpr std::uint32_t kPackedMaxTables = 8;
+constexpr std::uint32_t kPackedScanAlignment = 0x1000;
+constexpr std::uint32_t kPackedMinValidRatioNum = 8;
+constexpr std::uint32_t kPackedMinValidRatioDen = 10;
+constexpr std::uint32_t kPackedMinKnownExtensions = 8;
+constexpr std::uint32_t kPacked64RecordSize = 0x44;
+constexpr std::uint32_t kPacked64NameSize = 0x40;
+constexpr std::uint32_t kPacked64MinRecords = 16;
+constexpr std::uint32_t kPacked64MaxRecords = 20000;
 
 // The validated samples use fixed-position chunk descriptors at the start of
 // the image. Variable-length data is reached through offsets stored in them.
@@ -207,23 +218,21 @@ bool probePackedTable(const std::vector<std::uint8_t>& data, std::uint32_t base,
     }
 
     const std::uint32_t count = readU16(data, base);
-    constexpr std::uint32_t recordSize = 36;
-    constexpr std::uint32_t nameSize = 32;
-    const std::uint32_t tableEnd = base + 2 + count * recordSize;
+    const std::uint32_t tableEnd = base + 2 + count * kPackedRecordSize;
     if (count == 0 || count > 1024 || tableEnd > data.size()) {
         return false;
     }
 
-    const std::uint32_t tableSize = 2 + count * recordSize;
+    const std::uint32_t tableSize = 2 + count * kPackedRecordSize;
     std::uint32_t validNames = 0;
     std::uint32_t knownNames = 0;
     std::uint32_t validOffsets = 0;
     std::uint32_t lastOffset = tableSize;
 
     for (std::uint32_t i = 0; i < count; ++i) {
-        const std::uint32_t rec = base + 2 + i * recordSize;
-        const int nameLen = resourceNameLength(data, rec, nameSize);
-        const std::uint32_t relOffset = readU32(data, rec + nameSize);
+        const std::uint32_t rec = base + 2 + i * kPackedRecordSize;
+        const int nameLen = resourceNameLength(data, rec, kPackedNameSize);
+        const std::uint32_t relOffset = readU32(data, rec + kPackedNameSize);
         if (relOffset >= tableSize && base + relOffset < data.size()) {
             ++validOffsets;
             if (relOffset >= lastOffset) {
@@ -241,7 +250,9 @@ bool probePackedTable(const std::vector<std::uint8_t>& data, std::uint32_t base,
         }
     }
 
-    if (validNames < count * 8 / 10 || validOffsets < count * 8 / 10 || knownNames < 8) {
+    if (validNames < count * kPackedMinValidRatioNum / kPackedMinValidRatioDen ||
+        validOffsets < count * kPackedMinValidRatioNum / kPackedMinValidRatioDen ||
+        knownNames < kPackedMinKnownExtensions) {
         return false;
     }
 
@@ -258,12 +269,10 @@ std::uint32_t packedNextOffset(
     std::uint32_t index,
     std::uint32_t currentOffset,
     std::uint32_t packageEnd) {
-    constexpr std::uint32_t recordSize = 36;
-    constexpr std::uint32_t nameSize = 32;
     std::uint32_t best = packageEnd - table.base;
     for (std::uint32_t i = index + 1; i < table.count; ++i) {
-        const std::uint32_t rec = table.base + 2 + i * recordSize;
-        const std::uint32_t relOffset = readU32(data, rec + nameSize);
+        const std::uint32_t rec = table.base + 2 + i * kPackedRecordSize;
+        const std::uint32_t relOffset = readU32(data, rec + kPackedNameSize);
         if (relOffset > currentOffset && relOffset < best) {
             best = relOffset;
         }
@@ -272,14 +281,11 @@ std::uint32_t packedNextOffset(
 }
 
 void addPackedResources(AppImage& image, const std::vector<std::uint8_t>& data) {
-    constexpr std::uint32_t maxTables = 8;
-    constexpr std::uint32_t recordSize = 36;
-    constexpr std::uint32_t nameSize = 32;
     std::vector<PackedTable> tables;
 
     const std::uint32_t rawEnd = image.rawd.offset + image.rawd.size;
-    const std::uint32_t scan = (rawEnd + 0xfffu) & ~0xfffu;
-    for (std::uint32_t base = scan; base + 2 < data.size() && tables.size() < maxTables; base += 0x1000) {
+    const std::uint32_t scan = (rawEnd + (kPackedScanAlignment - 1)) & ~(kPackedScanAlignment - 1);
+    for (std::uint32_t base = scan; base + 2 < data.size() && tables.size() < kPackedMaxTables; base += kPackedScanAlignment) {
         PackedTable table;
         if (probePackedTable(data, base, table)) {
             tables.push_back(table);
@@ -290,9 +296,9 @@ void addPackedResources(AppImage& image, const std::vector<std::uint8_t>& data) 
         const auto& table = tables[t];
         const std::uint32_t packageEnd = (t + 1 < tables.size()) ? tables[t + 1].base : static_cast<std::uint32_t>(data.size());
         for (std::uint32_t i = 0; i < table.count; ++i) {
-            const std::uint32_t rec = table.base + 2 + i * recordSize;
-            const int nameLen = resourceNameLength(data, rec, nameSize);
-            const std::uint32_t relOffset = readU32(data, rec + nameSize);
+            const std::uint32_t rec = table.base + 2 + i * kPackedRecordSize;
+            const int nameLen = resourceNameLength(data, rec, kPackedNameSize);
+            const std::uint32_t relOffset = readU32(data, rec + kPackedNameSize);
             if (nameLen <= 0 || relOffset < (table.tableEnd - table.base) || table.base + relOffset >= packageEnd) {
                 continue;
             }
@@ -355,23 +361,18 @@ bool probePacked64At(const std::vector<std::uint8_t>& data, std::uint32_t base, 
     // packed64 tables are long-path resource records: uint32 stored offset
     // followed by a 64-byte relative path. Some samples include one invalid
     // sentinel record before the first real resource, represented by firstRecord.
-    constexpr std::uint32_t recordSize = 0x44;
-    constexpr std::uint32_t nameSize = 0x40;
-    constexpr std::uint32_t minRecords = 16;
-    constexpr std::uint32_t maxRecords = 20000;
-
     std::uint32_t count = 0;
     std::uint32_t previousOffset = 0;
     int knownExtensions = 0;
     int invalidOffsets = 0;
 
-    for (; count < maxRecords; ++count) {
-        const std::uint32_t rec = base + count * recordSize;
-        if (rec + recordSize > data.size()) {
+    for (; count < kPacked64MaxRecords; ++count) {
+        const std::uint32_t rec = base + count * kPacked64RecordSize;
+        if (rec + kPacked64RecordSize > data.size()) {
             break;
         }
         const std::uint32_t offset = readU32(data, rec);
-        const std::string name = readFixedName(data, rec + 4, nameSize);
+        const std::string name = readFixedName(data, rec + 4, kPacked64NameSize);
         if (!packed64NameOk(name)) {
             break;
         }
@@ -391,12 +392,12 @@ bool probePacked64At(const std::vector<std::uint8_t>& data, std::uint32_t base, 
     }
 
     const std::uint32_t firstRecord = invalidOffsets == 1 ? 1u : 0u;
-    if (count < minRecords || count <= firstRecord) {
+    if (count < kPacked64MinRecords || count <= firstRecord) {
         return false;
     }
 
-    const std::uint32_t tableEnd = base + count * recordSize;
-    const std::uint32_t firstOffset = readU32(data, base + firstRecord * recordSize);
+    const std::uint32_t tableEnd = base + count * kPacked64RecordSize;
+    const std::uint32_t firstOffset = readU32(data, base + firstRecord * kPacked64RecordSize);
     if (firstOffset < tableEnd) {
         return false;
     }
@@ -411,21 +412,18 @@ bool probePacked64At(const std::vector<std::uint8_t>& data, std::uint32_t base, 
 }
 
 void addPacked64Resources(AppImage& image, const std::vector<std::uint8_t>& data) {
-    constexpr std::uint32_t recordSize = 0x44;
-    constexpr std::uint32_t nameSize = 0x40;
-
     const std::uint32_t rawEnd = image.rawd.offset + image.rawd.size;
     std::vector<Packed64Table> tables;
 
     // The long-path package table normally appears after an 0xFF-filled gap.
     // Scan only the appended area and score by continuous valid records.
-    for (std::uint32_t base = rawEnd; base + recordSize < data.size(); base += 2) {
+    for (std::uint32_t base = rawEnd; base + kPacked64RecordSize < data.size(); base += 2) {
         Packed64Table candidate;
         if (probePacked64At(data, base, candidate)) {
             bool overlaps = false;
             for (const auto& existing : tables) {
-                const std::uint32_t existingEnd = existing.base + existing.count * recordSize;
-                const std::uint32_t candidateEnd = candidate.base + candidate.count * recordSize;
+                const std::uint32_t existingEnd = existing.base + existing.count * kPacked64RecordSize;
+                const std::uint32_t candidateEnd = candidate.base + candidate.count * kPacked64RecordSize;
                 if (!(candidateEnd <= existing.base || candidate.base >= existingEnd)) {
                     overlaps = true;
                     break;
@@ -433,7 +431,7 @@ void addPacked64Resources(AppImage& image, const std::vector<std::uint8_t>& data
             }
             if (!overlaps) {
                 tables.push_back(candidate);
-                base = candidate.base + candidate.count * recordSize;
+                base = candidate.base + candidate.count * kPacked64RecordSize;
             }
         }
         if (base > rawEnd + 0x400000 && !tables.empty()) {
@@ -447,10 +445,10 @@ void addPacked64Resources(AppImage& image, const std::vector<std::uint8_t>& data
 
     for (const auto& table : tables) {
         for (std::uint32_t i = table.firstRecord; i < table.count; ++i) {
-            const std::uint32_t rec = table.base + i * recordSize;
+            const std::uint32_t rec = table.base + i * kPacked64RecordSize;
             const std::uint32_t storedOffset = readU32(data, rec);
             const std::uint32_t nextStoredOffset = (i + 1 < table.count)
-                ? readU32(data, rec + recordSize)
+                ? readU32(data, rec + kPacked64RecordSize)
                 : (table.dataEnd + table.dataBias);
             if (nextStoredOffset <= storedOffset) {
                 continue;
@@ -464,7 +462,7 @@ void addPacked64Resources(AppImage& image, const std::vector<std::uint8_t>& data
 
             ResourceEntry entry;
             entry.kind = ResourceKind::Packed64;
-            entry.name = readFixedName(data, rec + 4, nameSize);
+            entry.name = readFixedName(data, rec + 4, kPacked64NameSize);
             entry.offset = offset;
             entry.size = nextOffset - offset;
             entry.xorKey = 0;

@@ -2,5 +2,6 @@
 #define DINGOO_PIE_RESOURCE_IDS_H
 
 #define IDI_DINGOO_PIE 101
+#define IDR_DINGOO_PIE_MANIFEST 1
 
 #endif

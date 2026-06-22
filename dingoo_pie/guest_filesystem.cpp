@@ -29,6 +29,7 @@ typedef struct {
 static vfile_entry_t s_FILE_Map[128];
 static app* s_fsys_app = NULL;
 static const char* s_fsys_app_sha256 = "";
+static std::atomic<bool> s_suspiciousOpenFailure(false);
 
 typedef struct {
     uint64_t fopenCalls;
@@ -168,11 +169,18 @@ static const char* vfileTypeName(vfile_type_e type)
 void fsys_set_app(app* inApp)
 {
     s_fsys_app = inApp;
+    s_suspiciousOpenFailure.store(false);
 }
 
 void fsys_set_app_identity(const char* sha256Hex)
 {
     s_fsys_app_sha256 = sha256Hex ? sha256Hex : "";
+    s_suspiciousOpenFailure.store(false);
+}
+
+bool fsys_saw_suspicious_open_failure(void)
+{
+    return s_suspiciousOpenFailure.load();
 }
 
 static bool isBlockBreakerApp(void)
@@ -276,6 +284,38 @@ static uint32_t alloc_file_slot(void)
 static int mode_writes(const char* mode)
 {
     return mode && (strchr(mode, 'w') || strchr(mode, 'a') || strchr(mode, '+'));
+}
+
+static bool pathLooksSuspiciousFailedRead(const char* path)
+{
+    if (!path)
+    {
+        return false;
+    }
+
+    size_t length = 0;
+    for (const unsigned char* p = (const unsigned char*)path; *p; ++p)
+    {
+        length++;
+        if (*p < 0x20 || *p == 0x7f)
+        {
+            return true;
+        }
+    }
+
+    return length == 1;
+}
+
+static void recordOpenFailure(const char* name, const char* mode)
+{
+    if (!mode_writes(mode) && pathLooksSuspiciousFailedRead(name))
+    {
+        s_suspiciousOpenFailure.store(true);
+        if (traceFsEnabled() || traceFsOpenEnabled())
+        {
+            printf("trace-fs: suspicious open failure name=%s mode=%s\n", name, mode);
+        }
+    }
 }
 
 static bool normalize_host_file_mode(const char* mode, char* out, size_t outSize)
@@ -609,6 +649,7 @@ uint32_t fsys_fopen(const char* name, const char* mode)
     {
         printf("trace-fs: fopen name=%s mode=%s -> 0\n", name, mode);
     }
+    recordOpenFailure(name, mode);
     return 0;
 }
 

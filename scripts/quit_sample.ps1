@@ -282,9 +282,9 @@ try {
     }
 
     $lines = if (Test-Path -LiteralPath $savedLog -PathType Leaf) { Get-Content -LiteralPath $savedLog } else { @() }
-    $taskStops = Parse-TaskStops $lines
-    $guestExits = Parse-GuestExitReasons $lines
-    $dumpedFrames = Parse-DumpedFrames $lines
+    $taskStops = @(Parse-TaskStops $lines)
+    $guestExits = @(Parse-GuestExitReasons $lines)
+    $dumpedFrames = @(Parse-DumpedFrames $lines)
     $firstDumpedFrame = if ($dumpedFrames.Count -gt 0) { $dumpedFrames[0] } else { $null }
     $lastDumpedFrame = if ($dumpedFrames.Count -gt 0) { $dumpedFrames[-1] } else { $null }
     $returnToTitle = $false
@@ -346,7 +346,7 @@ try {
         task_stops = $taskStops
         unpromoted_task_stop_ras = @($taskStops | Where-Object { !$_.promoted } | Select-Object -ExpandProperty ra -Unique)
         promoted_task_stop_ras = @($taskStops | Where-Object { $_.promoted } | Select-Object -ExpandProperty ra -Unique)
-        saw_promoted_task_stop = [bool](($taskStops | Where-Object { $_.promoted }).Count -gt 0)
+        saw_promoted_task_stop = [bool](@($taskStops | Where-Object { $_.promoted }).Count -gt 0)
         clean_guest_exit = [bool]($naturalExit -and ($guestExits.Count -gt 0) -and $sawShutdownComplete)
     }
 

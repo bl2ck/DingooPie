@@ -29,6 +29,127 @@ function Invoke-NativeCommand {
     }
 }
 
+function Copy-ReleaseFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Destination,
+
+        [switch]$Optional
+    )
+
+    if (!(Test-Path -LiteralPath $Source -PathType Leaf)) {
+        if ($Optional) {
+            Write-Host "Skipping optional release file: $Source"
+            return $false
+        }
+        throw "Missing release source file: $Source"
+    }
+
+    if (Test-Path -LiteralPath $Destination -PathType Leaf) {
+        $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Source).Hash
+        $destinationHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Destination).Hash
+        if ($sourceHash -eq $destinationHash) {
+            return $true
+        }
+    }
+
+    try {
+        Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+    }
+    catch {
+        throw "Failed to copy release file from $Source to $Destination`: $($_.Exception.Message)"
+    }
+    return $true
+}
+
+function Resolve-RequiredFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FileName,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$CandidateDirectories
+    )
+
+    foreach ($directory in $CandidateDirectories) {
+        if (!$directory) {
+            continue
+        }
+        $candidate = Join-Path $directory $FileName
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    $searched = ($CandidateDirectories | Where-Object { $_ } | ForEach-Object { Join-Path $_ $FileName }) -join ', '
+    throw "Missing required release file ${FileName}. Searched: $searched. Run scripts\bootstrap_windows.ps1 first."
+}
+
+function Resolve-ReleaseRuntimeDlls {
+    @{
+        SDL2 = Join-Path $ProjectRoot 'deps_extract\SDL2\SDL2-2.26.5\x86_64-w64-mingw32\bin\SDL2.dll'
+        Capstone = Join-Path $ProjectRoot 'deps_extract\capstone\mingw64\bin\libcapstone.dll'
+        Winpthread = Resolve-RequiredFile -FileName 'libwinpthread-1.dll' -CandidateDirectories @(
+            $W64Bin,
+            (Join-Path $ProjectRoot 'deps_extract\winpthread\mingw64\bin')
+        )
+    }
+}
+
+function New-DingooPieRelease {
+    New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null
+
+    $releaseFiles = New-Object System.Collections.Generic.List[string]
+    $runtimeDlls = Resolve-ReleaseRuntimeDlls
+
+    if (Copy-ReleaseFile -Source (Join-Path $BuildDir 'DingooPie.exe') -Destination (Join-Path $ReleaseDir 'DingooPie.exe')) {
+        $releaseFiles.Add('DingooPie.exe')
+    }
+    if (Copy-ReleaseFile -Source $runtimeDlls.SDL2 -Destination (Join-Path $ReleaseDir 'SDL2.dll')) {
+        $releaseFiles.Add('SDL2.dll')
+    }
+    if (Copy-ReleaseFile -Source $runtimeDlls.Capstone -Destination (Join-Path $ReleaseDir 'libcapstone.dll')) {
+        $releaseFiles.Add('libcapstone.dll')
+    }
+    if (Copy-ReleaseFile -Source $runtimeDlls.Winpthread -Destination (Join-Path $ReleaseDir 'libwinpthread-1.dll')) {
+        $releaseFiles.Add('libwinpthread-1.dll')
+    }
+
+    $readmeSource = Join-Path $ProjectRoot 'RELEASE_README.md'
+    if (!(Test-Path -LiteralPath $readmeSource -PathType Leaf)) {
+        $readmeSource = Join-Path $ProjectRoot 'README.md'
+    }
+    if (Copy-ReleaseFile -Source $readmeSource -Destination (Join-Path $ReleaseDir 'README.md')) {
+        $releaseFiles.Add('README.md')
+    }
+
+    $ManifestPath = Join-Path $ReleaseDir 'manifest.sha256'
+    $HashLines = foreach ($fileName in $releaseFiles) {
+        $path = Join-Path $ReleaseDir $fileName
+        if (!(Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Missing release file: $path"
+        }
+        $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
+        "$hash  $fileName"
+    }
+    Set-Content -LiteralPath $ManifestPath -Value $HashLines -Encoding ASCII
+
+    $keepFiles = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($fileName in $releaseFiles) {
+        [void]$keepFiles.Add($fileName)
+    }
+    [void]$keepFiles.Add('manifest.sha256')
+    Get-ChildItem -LiteralPath $ReleaseDir -File -ErrorAction SilentlyContinue |
+        Where-Object { -not $keepFiles.Contains($_.Name) } |
+        Remove-Item -Force
+
+    Write-Host "Release written to $ReleaseDir"
+    Write-Host "Release manifest written to $ManifestPath"
+}
+
 $env:PATH = "$W64Bin;$env:PATH"
 New-Item -ItemType Directory -Path $BuildDir -Force | Out-Null
 
@@ -41,37 +162,4 @@ Invoke-NativeCommand $CMake -S $ProjectRoot -B $BuildDir -G 'MinGW Makefiles' `
 Write-Host "Building DingooPie ($Configuration)"
 Invoke-NativeCommand $CMake --build $BuildDir --config $Configuration -j 4
 
-New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null
-Remove-Item -LiteralPath (Join-Path $ReleaseDir 'DingooPie.exe') -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath (Join-Path $ReleaseDir 'dingoo-pie.exe') -ErrorAction SilentlyContinue
-Get-ChildItem -LiteralPath $ReleaseDir -Filter '*.exe' -File -ErrorAction SilentlyContinue | Remove-Item -Force
-Get-ChildItem -LiteralPath $ReleaseDir -Filter '*-debug.log' -File -ErrorAction SilentlyContinue | Remove-Item -Force
-Get-ChildItem -LiteralPath $ReleaseDir -Filter 'Dingoo*.ini' -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -ne 'DingooPie.ini' } |
-    Remove-Item -Force
-Copy-Item -LiteralPath (Join-Path $BuildDir 'DingooPie.exe') -Destination (Join-Path $ReleaseDir 'DingooPie.exe') -Force
-Copy-Item -LiteralPath (Join-Path $ProjectRoot 'deps_extract\SDL2\SDL2-2.26.5\x86_64-w64-mingw32\bin\SDL2.dll') -Destination (Join-Path $ReleaseDir 'SDL2.dll') -Force
-Copy-Item -LiteralPath (Join-Path $ProjectRoot 'deps_extract\capstone\mingw64\bin\libcapstone.dll') -Destination (Join-Path $ReleaseDir 'libcapstone.dll') -Force
-Copy-Item -LiteralPath (Join-Path $W64Bin 'libwinpthread-1.dll') -Destination (Join-Path $ReleaseDir 'libwinpthread-1.dll') -Force
-Copy-Item -LiteralPath (Join-Path $ProjectRoot 'RELEASE_README.md') -Destination (Join-Path $ReleaseDir 'README.md') -Force
-
-$ReleaseFiles = @(
-    'DingooPie.exe',
-    'SDL2.dll',
-    'libcapstone.dll',
-    'libwinpthread-1.dll',
-    'README.md'
-)
-$ManifestPath = Join-Path $ReleaseDir 'manifest.sha256'
-$HashLines = foreach ($fileName in $ReleaseFiles) {
-    $path = Join-Path $ReleaseDir $fileName
-    if (!(Test-Path -LiteralPath $path -PathType Leaf)) {
-        throw "Missing release file: $path"
-    }
-    $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
-    "$hash  $fileName"
-}
-Set-Content -LiteralPath $ManifestPath -Value $HashLines -Encoding ASCII
-
-Write-Host "Release written to $ReleaseDir"
-Write-Host "Release manifest written to $ManifestPath"
+New-DingooPieRelease

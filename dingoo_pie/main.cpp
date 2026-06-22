@@ -35,7 +35,7 @@ static void clearRecentApp(EmulatorSettings* settings, const char* reason)
     }
 
     printf("main: clearing recent app after %s: %s\n", reason, settings->lastAppPath.c_str());
-    settings->lastAppPath.clear();
+    emulatorRemoveRecentApp(settings, settings->lastAppPath);
     emulatorSaveSettings(*settings);
 }
 
@@ -130,7 +130,7 @@ int main(int argc, char* argv[])
     }
     else
     {
-        printf("main: no startup app; frontend is waiting for File/Open .app\n");
+        printf("main: no startup app; frontend is waiting for File/Open Game\n");
     }
 
     printf("main: initializing frontend\n");
@@ -145,9 +145,11 @@ int main(int argc, char* argv[])
     if (!selectedAppPath.empty())
     {
         printf("main: starting selected app\n");
-        startDingooPie(selectedAppPath.c_str(), options, selectedAppSource == STARTUP_APP_RECENT);
+        bool gameStarted = startDingooPie(selectedAppPath.c_str(), options, selectedAppSource == STARTUP_APP_RECENT);
+        frontendMenuSetGameRunning(gameStarted);
     }
     frontendRunLoop(options);
+    frontendMenuSetGameRunning(false);
     stopDingooPie();
     frontendShutdown();
     std::string relaunchPath;

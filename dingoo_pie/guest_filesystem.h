@@ -29,6 +29,7 @@ typedef struct {
 typedef void FSYS_FILE;
 extern void fsys_set_app(app* inApp);
 extern void fsys_set_app_identity(const char* sha256Hex);
+extern bool fsys_saw_suspicious_open_failure(void);
 extern uint32_t fsys_fopen(const char* name, const char* mode);
 extern uint32_t vm_fread(void* ptr, uint32_t size, uint32_t count, uint32_t stream);
 extern uint32_t fsys_fclose(uint32_t stream);

@@ -4,6 +4,7 @@
 #include "input_controls.h"
 #include "framebuffer.h"
 #include "frontend_menu.h"
+#include "pause_gate.h"
 #include "sdk_hle.h"
 #include "sdl_audio.h"
 #include "resource_ids.h"
@@ -19,6 +20,8 @@
 #endif
 #include <SDL2/SDL_syswm.h>
 #include <windows.h>
+#include <commctrl.h>
+#include <uxtheme.h>
 #include <propidl.h>
 #include <imm.h>
 #include <gdiplus.h>
@@ -39,7 +42,21 @@ static SDL_Texture* g_fpsOverlayTexture = NULL;
 static int g_fpsOverlayValue = -1;
 static int g_fpsOverlayWidth = 0;
 static int g_fpsOverlayHeight = 0;
+static SDL_GameController* g_gameController = NULL;
+static uint32_t g_gameControllerButtonControls = 0;
+static uint32_t g_gameControllerAxisControls = 0;
+static Sint16 g_gameControllerAxes[SDL_CONTROLLER_AXIS_MAX];
+static uint32_t g_gameControllerButtonMap[SDL_CONTROLLER_BUTTON_MAX];
+static uint32_t g_gameControllerAxisMap[SDL_CONTROLLER_AXIS_MAX][2];
+static bool g_controllerMappingPending = false;
+static uint32_t g_controllerMappingTarget = 0;
+static bool g_controllerMappingInitialized = false;
+static std::string g_appliedControllerMapping;
+static bool g_keyboardMappingPending = false;
+static uint32_t g_keyboardMappingTarget = 0;
 static SDL_atomic_t g_quitRequested;
+static SDL_atomic_t g_gamePaused;
+static bool g_minimizedPauseActive = false;
 static EmulatorSettings* g_frontendSettings = NULL;
 static uint16_t g_lastDisplayFrame[SCREEN_WIDTH * SCREEN_HEIGHT];
 static int g_lastDisplayFrameWidth = SCREEN_WIDTH;
@@ -48,12 +65,26 @@ static bool g_lastDisplayFrameValid = false;
 #ifdef _WIN32
 static HWND g_nativeWindow = NULL;
 static HIMC g_defaultImeContext = NULL;
+static HWND g_inputMappingWindow = NULL;
+static HBRUSH g_inputMappingBackgroundBrush = NULL;
+static HFONT g_inputMappingFont = NULL;
+static bool g_inputMappingOwnFont = false;
 #endif
 
+static const uint64_t kMinimizedThrottlePresentIntervalMs = 250;
+static const uint32_t kMinimizedThrottleLoopDelayMs = 50;
+
 static bool inputTraceEnabled(void);
+static void openFirstGameController(void);
+
+static uint32_t controlMask(uint32_t controlBit)
+{
+    return 1u << controlBit;
+}
 
 static bool confirmExitRequested(void)
 {
+    inputClearSyntheticControls();
     inputClearControls();
 #ifdef _WIN32
     UiLanguage language = g_frontendSettings ? g_frontendSettings->uiLanguage : UI_LANGUAGE_ENGLISH;
@@ -68,6 +99,31 @@ static bool confirmExitRequested(void)
 }
 
 #ifdef _WIN32
+static HICON loadDingooPieIcon(int size)
+{
+    return (HICON)LoadImageW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(IDI_DINGOO_PIE),
+        IMAGE_ICON, size, size, LR_DEFAULTCOLOR | LR_SHARED);
+}
+
+static void applyDingooPieIconToWindow(HWND window)
+{
+    if (!window)
+    {
+        return;
+    }
+
+    HICON largeIcon = loadDingooPieIcon(32);
+    HICON smallIcon = loadDingooPieIcon(16);
+    if (largeIcon)
+    {
+        SendMessageW(window, WM_SETICON, ICON_BIG, (LPARAM)largeIcon);
+    }
+    if (smallIcon)
+    {
+        SendMessageW(window, WM_SETICON, ICON_SMALL, (LPARAM)smallIcon);
+    }
+}
+
 static void applyWindowIcon(void)
 {
     if (!g_window)
@@ -75,22 +131,7 @@ static void applyWindowIcon(void)
         return;
     }
 
-    HICON largeIcon = (HICON)LoadImageW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(IDI_DINGOO_PIE),
-        IMAGE_ICON, 32, 32, LR_DEFAULTCOLOR);
-    HICON smallIcon = (HICON)LoadImageW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(IDI_DINGOO_PIE),
-        IMAGE_ICON, 16, 16, LR_DEFAULTCOLOR);
-    HWND window = g_nativeWindow;
-    if (window)
-    {
-        if (largeIcon)
-        {
-            SendMessageW(window, WM_SETICON, ICON_BIG, (LPARAM)largeIcon);
-        }
-        if (smallIcon)
-        {
-            SendMessageW(window, WM_SETICON, ICON_SMALL, (LPARAM)smallIcon);
-        }
-    }
+    applyDingooPieIconToWindow(g_nativeWindow);
 }
 #endif
 
@@ -198,6 +239,26 @@ static bool g_virtualMouseButtonHeld = false;
 static uint64_t g_virtualMouseReleaseTicks = 0;
 static const uint64_t kVirtualMouseClickHoldMs = 180;
 
+// Virtual controls and gamepads both feed synthetic Dingoo controls; merge the
+// sources before updating input state so releasing one source does not cancel another.
+static uint32_t frontendSyntheticControlMask(void)
+{
+    return g_virtualMouseControls | g_gameControllerButtonControls | g_gameControllerAxisControls;
+}
+
+static void applyFrontendSyntheticControlMask(uint32_t oldMask, uint32_t newMask)
+{
+    uint32_t changed = oldMask ^ newMask;
+    for (uint32_t bit = 0; bit < 32; ++bit)
+    {
+        uint32_t mask = 1u << bit;
+        if (changed & mask)
+        {
+            inputSetSyntheticControl(bit, (newMask & mask) != 0);
+        }
+    }
+}
+
 static bool virtualControlsVisible(void)
 {
     return g_frontendSettings && g_frontendSettings->showVirtualControls;
@@ -217,6 +278,18 @@ static int displayHeightForSettings(const EmulatorSettings* settings)
 {
     return (settings && settings->portraitMode) ? SCREEN_WIDTH : SCREEN_HEIGHT;
 }
+
+static bool colorEffectNeedsPixelPostProcess(ColorEffectMode effect)
+{
+    return effect != COLOR_EFFECT_NORMAL && effect != COLOR_EFFECT_PIXEL_GRID;
+}
+
+static bool pixelGridEffectEnabled(void)
+{
+    return g_frontendSettings && g_frontendSettings->colorEffect == COLOR_EFFECT_PIXEL_GRID;
+}
+
+static uint16_t blendRgb565WithBlack(uint16_t pixel, uint32_t blackAlpha);
 
 static bool pointInRect(int x, int y, const SDL_Rect& rect)
 {
@@ -358,6 +431,31 @@ static void renderVirtualDrawLine(int x1, int y1, int x2, int y2)
     }
 }
 
+static void drawPixelGridOverlay(void)
+{
+    int width = 0;
+    int height = 0;
+    if (!getVirtualControlCoordinateSize(&width, &height) ||
+        width <= SCREEN_WIDTH || height <= SCREEN_HEIGHT)
+    {
+        return;
+    }
+
+    SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 42);
+    for (int x = 1; x < SCREEN_WIDTH; ++x)
+    {
+        int lineX = (int)(((int64_t)x * width) / SCREEN_WIDTH);
+        renderVirtualDrawLine(lineX, 0, lineX, height - 1);
+    }
+    for (int y = 1; y < SCREEN_HEIGHT; ++y)
+    {
+        int lineY = (int)(((int64_t)y * height) / SCREEN_HEIGHT);
+        renderVirtualDrawLine(0, lineY, width - 1, lineY);
+    }
+    SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_NONE);
+}
+
 static void drawVirtualGlyph(const uint8_t* glyph, int x, int y, int scale, SDL_Color color)
 {
     SDL_SetRenderDrawColor(g_renderer, color.r, color.g, color.b, color.a);
@@ -485,16 +583,10 @@ static void releaseVirtualMouseControls(void)
         return;
     }
 
-    uint32_t held = g_virtualMouseControls;
+    uint32_t oldSyntheticMask = frontendSyntheticControlMask();
     g_virtualMouseControls = 0;
     g_virtualMouseReleaseTicks = 0;
-    for (uint32_t bit = 0; bit < 32; ++bit)
-    {
-        if (held & (1u << bit))
-        {
-            inputSetSyntheticControl(bit, false);
-        }
-    }
+    applyFrontendSyntheticControlMask(oldSyntheticMask, frontendSyntheticControlMask());
 }
 
 static uint32_t hitTestVirtualControls(int x, int y)
@@ -526,15 +618,9 @@ static void updateVirtualMouseControls(uint32_t newMask)
         return;
     }
 
-    for (uint32_t bit = 0; bit < 32; ++bit)
-    {
-        uint32_t mask = 1u << bit;
-        if (changed & mask)
-        {
-            inputSetSyntheticControl(bit, (newMask & mask) != 0);
-        }
-    }
+    uint32_t oldSyntheticMask = frontendSyntheticControlMask();
     g_virtualMouseControls = newMask;
+    applyFrontendSyntheticControlMask(oldSyntheticMask, frontendSyntheticControlMask());
 }
 
 static void scheduleVirtualMouseRelease(void)
@@ -1031,6 +1117,8 @@ static bool getScreenshotOutputSize(int* outWidth, int* outHeight)
     return true;
 }
 
+static void applyPixelGridToDisplayPixels(uint16_t* pixels, int width, int height, int sourceWidth, int sourceHeight);
+
 static bool buildDisplaySizedScreenshot(std::vector<uint16_t>* outPixels, int* outWidth, int* outHeight)
 {
     if (!outPixels || !outWidth || !outHeight || !g_lastDisplayFrameValid)
@@ -1065,9 +1153,49 @@ static bool buildDisplaySizedScreenshot(std::vector<uint16_t>* outPixels, int* o
         }
     }
 
+    if (pixelGridEffectEnabled())
+    {
+        applyPixelGridToDisplayPixels(outPixels->data(), width, height,
+            g_lastDisplayFrameWidth, g_lastDisplayFrameHeight);
+    }
+
     *outWidth = width;
     *outHeight = height;
     return true;
+}
+
+static void applyPixelGridToDisplayPixels(uint16_t* pixels, int width, int height, int sourceWidth, int sourceHeight)
+{
+    if (!pixels || width <= sourceWidth || height <= sourceHeight || sourceWidth <= 0 || sourceHeight <= 0)
+    {
+        return;
+    }
+
+    for (int y = 0; y < height; ++y)
+    {
+        int sourceY = (int)(((int64_t)y * sourceHeight) / height);
+        int nextSourceY = (int)(((int64_t)(y + 1) * sourceHeight) / height);
+        bool horizontalEdge = nextSourceY > sourceY;
+        if (sourceY >= sourceHeight)
+        {
+            sourceY = sourceHeight - 1;
+        }
+
+        for (int x = 0; x < width; ++x)
+        {
+            int sourceX = (int)(((int64_t)x * sourceWidth) / width);
+            int nextSourceX = (int)(((int64_t)(x + 1) * sourceWidth) / width);
+            bool verticalEdge = nextSourceX > sourceX;
+            if (!horizontalEdge && !verticalEdge)
+            {
+                continue;
+            }
+
+            size_t index = (size_t)y * (size_t)width + (size_t)x;
+            uint32_t alpha = (horizontalEdge && verticalEdge) ? 52u : 34u;
+            pixels[index] = blendRgb565WithBlack(pixels[index], alpha);
+        }
+    }
 }
 
 static uint64_t parsePositiveEnv(const char* name, uint64_t defaultValue, uint64_t minValue, uint64_t maxValue)
@@ -1188,7 +1316,7 @@ static void handleRawKeyboardInput(HRAWINPUT rawInput)
                     acceptsInput ? 1u : 0u);
             }
 
-            if (acceptsInput)
+            if (acceptsInput && !g_keyboardMappingPending)
             {
                 inputHandleHostVirtualKey(virtualKey, pressed);
             }
@@ -1308,6 +1436,1301 @@ static const char* windowEventName(uint8_t eventType)
     case SDL_WINDOWEVENT_TAKE_FOCUS: return "take_focus";
     case SDL_WINDOWEVENT_HIT_TEST: return "hit_test";
     default: return "unknown";
+    }
+}
+
+static SDL_JoystickID activeGameControllerInstanceId(void)
+{
+    if (!g_gameController)
+    {
+        return -1;
+    }
+    SDL_Joystick* joystick = SDL_GameControllerGetJoystick(g_gameController);
+    return joystick ? SDL_JoystickInstanceID(joystick) : -1;
+}
+
+static void applyGameControllerControlMasks(uint32_t buttonMask, uint32_t axisMask)
+{
+    uint32_t oldSyntheticMask = frontendSyntheticControlMask();
+    g_gameControllerButtonControls = buttonMask;
+    g_gameControllerAxisControls = axisMask;
+    applyFrontendSyntheticControlMask(oldSyntheticMask, frontendSyntheticControlMask());
+}
+
+static void releaseGameControllerControls(void)
+{
+    memset(g_gameControllerAxes, 0, sizeof(g_gameControllerAxes));
+    applyGameControllerControlMasks(0, 0);
+}
+
+static void releaseFrontendInputControls(void)
+{
+    releaseVirtualMouseControls();
+    releaseGameControllerControls();
+    inputClearSyntheticControls();
+    inputClearControls();
+}
+
+bool frontendGamePaused(void)
+{
+    return SDL_AtomicGet(&g_gamePaused) != 0;
+}
+
+static bool isWindowMinimized(void)
+{
+    return g_window && (SDL_GetWindowFlags(g_window) & SDL_WINDOW_MINIMIZED) != 0;
+}
+
+static MinimizedBehavior currentMinimizedBehavior(void)
+{
+    return g_frontendSettings ? g_frontendSettings->minimizedBehavior : MINIMIZED_BEHAVIOR_THROTTLE;
+}
+
+static void setFrontendGamePaused(bool paused, bool refreshMenu)
+{
+    if (frontendGamePaused() == paused)
+    {
+        return;
+    }
+
+    SDL_AtomicSet(&g_gamePaused, paused ? 1 : 0);
+    if (paused)
+    {
+        releaseFrontendInputControls();
+    }
+    pauseGateSetPaused(paused);
+    MixerSetFrontendPaused(paused);
+    printf("frontend: game pause %s\n", paused ? "on" : "off");
+    if (refreshMenu)
+    {
+        frontendMenuRefresh();
+    }
+}
+
+static void setMinimizedPauseActive(bool active)
+{
+    // Only own pauses caused by minimization; a pre-existing user pause must
+    // not be cleared automatically when the window is restored.
+    if (active && frontendGamePaused())
+    {
+        return;
+    }
+    if (g_minimizedPauseActive == active)
+    {
+        return;
+    }
+    g_minimizedPauseActive = active;
+    setFrontendGamePaused(active, true);
+}
+
+void frontendSetGamePaused(bool paused)
+{
+    if (!paused)
+    {
+        g_minimizedPauseActive = false;
+    }
+    setFrontendGamePaused(paused, true);
+}
+
+void frontendToggleGamePaused(void)
+{
+    frontendSetGamePaused(!frontendGamePaused());
+}
+
+struct ControllerPhysicalSource
+{
+    bool axis;
+    int index;
+    int direction;
+    const char* name;
+};
+
+static const Sint16 kControllerInputThreshold = 16000;
+
+static const ControllerPhysicalSource kControllerMappingSources[] =
+{
+    { false, SDL_CONTROLLER_BUTTON_A, 0, "A" },
+    { false, SDL_CONTROLLER_BUTTON_B, 0, "B" },
+    { false, SDL_CONTROLLER_BUTTON_X, 0, "X" },
+    { false, SDL_CONTROLLER_BUTTON_Y, 0, "Y" },
+    { false, SDL_CONTROLLER_BUTTON_BACK, 0, "Back" },
+    { false, SDL_CONTROLLER_BUTTON_GUIDE, 0, "Guide" },
+    { false, SDL_CONTROLLER_BUTTON_START, 0, "Start" },
+    { false, SDL_CONTROLLER_BUTTON_LEFTSTICK, 0, "LeftStick" },
+    { false, SDL_CONTROLLER_BUTTON_RIGHTSTICK, 0, "RightStick" },
+    { false, SDL_CONTROLLER_BUTTON_LEFTSHOULDER, 0, "LeftShoulder" },
+    { false, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, 0, "RightShoulder" },
+    { false, SDL_CONTROLLER_BUTTON_DPAD_UP, 0, "DPadUp" },
+    { false, SDL_CONTROLLER_BUTTON_DPAD_DOWN, 0, "DPadDown" },
+    { false, SDL_CONTROLLER_BUTTON_DPAD_LEFT, 0, "DPadLeft" },
+    { false, SDL_CONTROLLER_BUTTON_DPAD_RIGHT, 0, "DPadRight" },
+    { false, SDL_CONTROLLER_BUTTON_MISC1, 0, "Misc1" },
+    { false, SDL_CONTROLLER_BUTTON_PADDLE1, 0, "Paddle1" },
+    { false, SDL_CONTROLLER_BUTTON_PADDLE2, 0, "Paddle2" },
+    { false, SDL_CONTROLLER_BUTTON_PADDLE3, 0, "Paddle3" },
+    { false, SDL_CONTROLLER_BUTTON_PADDLE4, 0, "Paddle4" },
+    { false, SDL_CONTROLLER_BUTTON_TOUCHPAD, 0, "Touchpad" },
+    { true, SDL_CONTROLLER_AXIS_LEFTX, 0, "LeftX-" },
+    { true, SDL_CONTROLLER_AXIS_LEFTX, 1, "LeftX+" },
+    { true, SDL_CONTROLLER_AXIS_LEFTY, 0, "LeftY-" },
+    { true, SDL_CONTROLLER_AXIS_LEFTY, 1, "LeftY+" },
+    { true, SDL_CONTROLLER_AXIS_RIGHTX, 0, "RightX-" },
+    { true, SDL_CONTROLLER_AXIS_RIGHTX, 1, "RightX+" },
+    { true, SDL_CONTROLLER_AXIS_RIGHTY, 0, "RightY-" },
+    { true, SDL_CONTROLLER_AXIS_RIGHTY, 1, "RightY+" },
+    { true, SDL_CONTROLLER_AXIS_TRIGGERLEFT, 1, "LeftTrigger" },
+    { true, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 1, "RightTrigger" },
+};
+
+static std::string trimString(const std::string& text)
+{
+    size_t begin = 0;
+    size_t end = text.size();
+    while (begin < end && (text[begin] == ' ' || text[begin] == '\t' ||
+        text[begin] == '\r' || text[begin] == '\n'))
+    {
+        begin++;
+    }
+    while (end > begin && (text[end - 1] == ' ' || text[end - 1] == '\t' ||
+        text[end - 1] == '\r' || text[end - 1] == '\n'))
+    {
+        end--;
+    }
+    return text.substr(begin, end - begin);
+}
+
+static std::string normalizeMappingName(const std::string& text, bool keepTrailingAxisSign)
+{
+    std::string out;
+    std::string trimmed = trimString(text);
+    for (size_t i = 0; i < trimmed.size(); ++i)
+    {
+        unsigned char ch = (unsigned char)trimmed[i];
+        if ((ch == '+' || ch == '-') && keepTrailingAxisSign && i == trimmed.size() - 1)
+        {
+            out.push_back((char)ch);
+            continue;
+        }
+        if (ch == ' ' || ch == '\t' || ch == '_' || ch == '-' || ch == '+')
+        {
+            continue;
+        }
+        out.push_back((char)tolower(ch));
+    }
+    return out;
+}
+
+static bool controllerSourceMatches(const ControllerPhysicalSource& source, bool axis, int index, int direction)
+{
+    return source.axis == axis && source.index == index && source.direction == direction;
+}
+
+static const ControllerPhysicalSource* findControllerSource(bool axis, int index, int direction)
+{
+    for (size_t i = 0; i < sizeof(kControllerMappingSources) / sizeof(kControllerMappingSources[0]); ++i)
+    {
+        if (controllerSourceMatches(kControllerMappingSources[i], axis, index, direction))
+        {
+            return &kControllerMappingSources[i];
+        }
+    }
+    return NULL;
+}
+
+static const ControllerPhysicalSource* findControllerSourceByName(const std::string& name)
+{
+    std::string normalized = normalizeMappingName(name, true);
+    for (size_t i = 0; i < sizeof(kControllerMappingSources) / sizeof(kControllerMappingSources[0]); ++i)
+    {
+        if (normalized == normalizeMappingName(kControllerMappingSources[i].name, true))
+        {
+            return &kControllerMappingSources[i];
+        }
+    }
+    if (normalized == "triggerleft")
+    {
+        return findControllerSource(true, SDL_CONTROLLER_AXIS_TRIGGERLEFT, 1);
+    }
+    if (normalized == "triggerright")
+    {
+        return findControllerSource(true, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 1);
+    }
+    return NULL;
+}
+
+static const char* controllerTargetName(uint32_t mask)
+{
+    if (!mask) return "None";
+    if (mask == controlMask(CONTROL_BUTTON_A)) return "A";
+    if (mask == controlMask(CONTROL_BUTTON_B)) return "B";
+    if (mask == controlMask(CONTROL_BUTTON_X)) return "X";
+    if (mask == controlMask(CONTROL_BUTTON_Y)) return "Y";
+    if (mask == controlMask(CONTROL_BUTTON_START)) return "Start";
+    if (mask == controlMask(CONTROL_BUTTON_SELECT)) return "Select";
+    if (mask == controlMask(CONTROL_TRIGGER_LEFT)) return "L";
+    if (mask == controlMask(CONTROL_TRIGGER_RIGHT)) return "R";
+    if (mask == controlMask(CONTROL_DPAD_UP)) return "Up";
+    if (mask == controlMask(CONTROL_DPAD_DOWN)) return "Down";
+    if (mask == controlMask(CONTROL_DPAD_LEFT)) return "Left";
+    if (mask == controlMask(CONTROL_DPAD_RIGHT)) return "Right";
+    if (mask == controlMask(CONTROL_POWER)) return "Power";
+    return "None";
+}
+
+static bool parseControllerTargetName(const std::string& name, uint32_t* outMask)
+{
+    if (!outMask)
+    {
+        return false;
+    }
+    std::string normalized = normalizeMappingName(name, false);
+    if (normalized.empty() || normalized == "none" || normalized == "off" ||
+        normalized == "unmapped" || normalized == "disabled" || normalized == "0")
+    {
+        *outMask = 0;
+        return true;
+    }
+    if (normalized == "a" || normalized == "buttona") { *outMask = controlMask(CONTROL_BUTTON_A); return true; }
+    if (normalized == "b" || normalized == "buttonb") { *outMask = controlMask(CONTROL_BUTTON_B); return true; }
+    if (normalized == "x" || normalized == "buttonx") { *outMask = controlMask(CONTROL_BUTTON_X); return true; }
+    if (normalized == "y" || normalized == "buttony") { *outMask = controlMask(CONTROL_BUTTON_Y); return true; }
+    if (normalized == "start") { *outMask = controlMask(CONTROL_BUTTON_START); return true; }
+    if (normalized == "select" || normalized == "back") { *outMask = controlMask(CONTROL_BUTTON_SELECT); return true; }
+    if (normalized == "l" || normalized == "leftshoulder" || normalized == "triggerleft" || normalized == "lefttrigger")
+    {
+        *outMask = controlMask(CONTROL_TRIGGER_LEFT);
+        return true;
+    }
+    if (normalized == "r" || normalized == "rightshoulder" || normalized == "triggerright" || normalized == "righttrigger")
+    {
+        *outMask = controlMask(CONTROL_TRIGGER_RIGHT);
+        return true;
+    }
+    if (normalized == "up" || normalized == "dpadup") { *outMask = controlMask(CONTROL_DPAD_UP); return true; }
+    if (normalized == "down" || normalized == "dpaddown") { *outMask = controlMask(CONTROL_DPAD_DOWN); return true; }
+    if (normalized == "left" || normalized == "dpadleft") { *outMask = controlMask(CONTROL_DPAD_LEFT); return true; }
+    if (normalized == "right" || normalized == "dpadright") { *outMask = controlMask(CONTROL_DPAD_RIGHT); return true; }
+    if (normalized == "power") { *outMask = controlMask(CONTROL_POWER); return true; }
+    return false;
+}
+
+static void setDefaultGameControllerMapping(uint32_t buttonMap[SDL_CONTROLLER_BUTTON_MAX],
+    uint32_t axisMap[SDL_CONTROLLER_AXIS_MAX][2])
+{
+    memset(buttonMap, 0, sizeof(uint32_t) * SDL_CONTROLLER_BUTTON_MAX);
+    memset(axisMap, 0, sizeof(uint32_t) * SDL_CONTROLLER_AXIS_MAX * 2);
+
+    buttonMap[SDL_CONTROLLER_BUTTON_A] = controlMask(CONTROL_BUTTON_A);
+    buttonMap[SDL_CONTROLLER_BUTTON_B] = controlMask(CONTROL_BUTTON_B);
+    buttonMap[SDL_CONTROLLER_BUTTON_X] = controlMask(CONTROL_BUTTON_X);
+    buttonMap[SDL_CONTROLLER_BUTTON_Y] = controlMask(CONTROL_BUTTON_Y);
+    buttonMap[SDL_CONTROLLER_BUTTON_BACK] = controlMask(CONTROL_BUTTON_SELECT);
+    buttonMap[SDL_CONTROLLER_BUTTON_START] = controlMask(CONTROL_BUTTON_START);
+    buttonMap[SDL_CONTROLLER_BUTTON_LEFTSHOULDER] = controlMask(CONTROL_TRIGGER_LEFT);
+    buttonMap[SDL_CONTROLLER_BUTTON_RIGHTSHOULDER] = controlMask(CONTROL_TRIGGER_RIGHT);
+    buttonMap[SDL_CONTROLLER_BUTTON_DPAD_UP] = controlMask(CONTROL_DPAD_UP);
+    buttonMap[SDL_CONTROLLER_BUTTON_DPAD_DOWN] = controlMask(CONTROL_DPAD_DOWN);
+    buttonMap[SDL_CONTROLLER_BUTTON_DPAD_LEFT] = controlMask(CONTROL_DPAD_LEFT);
+    buttonMap[SDL_CONTROLLER_BUTTON_DPAD_RIGHT] = controlMask(CONTROL_DPAD_RIGHT);
+
+    axisMap[SDL_CONTROLLER_AXIS_LEFTX][0] = controlMask(CONTROL_DPAD_LEFT);
+    axisMap[SDL_CONTROLLER_AXIS_LEFTX][1] = controlMask(CONTROL_DPAD_RIGHT);
+    axisMap[SDL_CONTROLLER_AXIS_LEFTY][0] = controlMask(CONTROL_DPAD_UP);
+    axisMap[SDL_CONTROLLER_AXIS_LEFTY][1] = controlMask(CONTROL_DPAD_DOWN);
+    axisMap[SDL_CONTROLLER_AXIS_TRIGGERLEFT][1] = controlMask(CONTROL_TRIGGER_LEFT);
+    axisMap[SDL_CONTROLLER_AXIS_TRIGGERRIGHT][1] = controlMask(CONTROL_TRIGGER_RIGHT);
+}
+
+static uint32_t controllerSourceMaskFromMaps(const ControllerPhysicalSource& source,
+    const uint32_t buttonMap[SDL_CONTROLLER_BUTTON_MAX],
+    const uint32_t axisMap[SDL_CONTROLLER_AXIS_MAX][2])
+{
+    if (source.axis)
+    {
+        return axisMap[source.index][source.direction];
+    }
+    return buttonMap[source.index];
+}
+
+static uint32_t currentControllerSourceMask(const ControllerPhysicalSource& source)
+{
+    return controllerSourceMaskFromMaps(source, g_gameControllerButtonMap, g_gameControllerAxisMap);
+}
+
+static void setCurrentControllerSourceMask(const ControllerPhysicalSource& source, uint32_t mask)
+{
+    if (source.axis)
+    {
+        g_gameControllerAxisMap[source.index][source.direction] = mask;
+    }
+    else
+    {
+        g_gameControllerButtonMap[source.index] = mask;
+    }
+}
+
+static void applyControllerMappingToken(const std::string& token)
+{
+    std::string trimmed = trimString(token);
+    if (trimmed.empty())
+    {
+        return;
+    }
+
+    size_t separator = trimmed.find('=');
+    if (separator == std::string::npos)
+    {
+        separator = trimmed.find(':');
+    }
+    if (separator == std::string::npos)
+    {
+        printf("frontend: invalid controller mapping token='%s'\n", trimmed.c_str());
+        return;
+    }
+
+    std::string sourceName = trimString(trimmed.substr(0, separator));
+    std::string targetName = trimString(trimmed.substr(separator + 1));
+    const ControllerPhysicalSource* source = findControllerSourceByName(sourceName);
+    if (!source)
+    {
+        printf("frontend: unknown controller mapping source='%s'\n", sourceName.c_str());
+        return;
+    }
+
+    uint32_t targetMask = 0;
+    if (!parseControllerTargetName(targetName, &targetMask))
+    {
+        printf("frontend: unknown controller mapping target='%s'\n", targetName.c_str());
+        return;
+    }
+    setCurrentControllerSourceMask(*source, targetMask);
+}
+
+static void applyGameControllerMappingSettings(const std::string& mapping)
+{
+    if (g_controllerMappingInitialized && mapping == g_appliedControllerMapping)
+    {
+        return;
+    }
+
+    releaseGameControllerControls();
+    setDefaultGameControllerMapping(g_gameControllerButtonMap, g_gameControllerAxisMap);
+
+    size_t begin = 0;
+    while (begin <= mapping.size())
+    {
+        size_t comma = mapping.find_first_of(",;\n", begin);
+        std::string token = comma == std::string::npos ?
+            mapping.substr(begin) : mapping.substr(begin, comma - begin);
+        applyControllerMappingToken(token);
+        if (comma == std::string::npos)
+        {
+            break;
+        }
+        begin = comma + 1;
+    }
+
+    g_appliedControllerMapping = mapping;
+    g_controllerMappingInitialized = true;
+    printf("frontend: controller mapping applied spec='%s'\n",
+        mapping.empty() ? "(default)" : mapping.c_str());
+}
+
+static std::string buildCurrentControllerMappingSpec(void)
+{
+    uint32_t defaultButtonMap[SDL_CONTROLLER_BUTTON_MAX];
+    uint32_t defaultAxisMap[SDL_CONTROLLER_AXIS_MAX][2];
+    setDefaultGameControllerMapping(defaultButtonMap, defaultAxisMap);
+
+    std::string spec;
+    for (size_t i = 0; i < sizeof(kControllerMappingSources) / sizeof(kControllerMappingSources[0]); ++i)
+    {
+        const ControllerPhysicalSource& source = kControllerMappingSources[i];
+        uint32_t current = currentControllerSourceMask(source);
+        uint32_t fallback = controllerSourceMaskFromMaps(source, defaultButtonMap, defaultAxisMap);
+        if (current == fallback)
+        {
+            continue;
+        }
+        if (!spec.empty())
+        {
+            spec += ",";
+        }
+        spec += source.name;
+        spec += "=";
+        spec += controllerTargetName(current);
+    }
+    return spec;
+}
+
+std::string frontendControllerSourceForControl(uint32_t controlBit)
+{
+    if (!g_controllerMappingInitialized)
+    {
+        applyGameControllerMappingSettings(g_frontendSettings ? g_frontendSettings->controllerMapping : "");
+    }
+    uint32_t targetMask = controlMask(controlBit);
+    std::string out;
+    for (size_t i = 0; i < sizeof(kControllerMappingSources) / sizeof(kControllerMappingSources[0]); ++i)
+    {
+        if (currentControllerSourceMask(kControllerMappingSources[i]) != targetMask)
+        {
+            continue;
+        }
+        if (!out.empty())
+        {
+            out += " / ";
+        }
+        out += kControllerMappingSources[i].name;
+    }
+    return out.empty() ? "None" : out;
+}
+
+static void removeControllerTargetFromCurrentMapping(uint32_t targetMask)
+{
+    if (!targetMask)
+    {
+        return;
+    }
+    for (size_t i = 0; i < sizeof(kControllerMappingSources) / sizeof(kControllerMappingSources[0]); ++i)
+    {
+        if (currentControllerSourceMask(kControllerMappingSources[i]) == targetMask)
+        {
+            setCurrentControllerSourceMask(kControllerMappingSources[i], 0);
+        }
+    }
+}
+
+#ifdef _WIN32
+static UiLanguage frontendUiLanguage(void)
+{
+    return g_frontendSettings ? g_frontendSettings->uiLanguage : UI_LANGUAGE_ENGLISH;
+}
+
+static std::wstring asciiToWide(const char* text)
+{
+    std::wstring wide;
+    if (!text)
+    {
+        return wide;
+    }
+    while (*text)
+    {
+        wide.push_back((wchar_t)(unsigned char)*text);
+        text++;
+    }
+    return wide;
+}
+
+static std::wstring controllerTargetDisplayName(uint32_t targetMask)
+{
+    bool zh = frontendUiLanguage() == UI_LANGUAGE_CHINESE;
+    if (targetMask == controlMask(CONTROL_TRIGGER_LEFT))
+    {
+        return zh ? L"\u5de6\u80a9\u952e" : L"Left shoulder";
+    }
+    if (targetMask == controlMask(CONTROL_TRIGGER_RIGHT))
+    {
+        return zh ? L"\u53f3\u80a9\u952e" : L"Right shoulder";
+    }
+    if (targetMask == controlMask(CONTROL_DPAD_UP))
+    {
+        return zh ? L"\u65b9\u5411\u952e\u4e0a" : L"D-pad up";
+    }
+    if (targetMask == controlMask(CONTROL_DPAD_DOWN))
+    {
+        return zh ? L"\u65b9\u5411\u952e\u4e0b" : L"D-pad down";
+    }
+    if (targetMask == controlMask(CONTROL_DPAD_LEFT))
+    {
+        return zh ? L"\u65b9\u5411\u952e\u5de6" : L"D-pad left";
+    }
+    if (targetMask == controlMask(CONTROL_DPAD_RIGHT))
+    {
+        return zh ? L"\u65b9\u5411\u952e\u53f3" : L"D-pad right";
+    }
+    return asciiToWide(controllerTargetName(targetMask));
+}
+
+static const wchar_t* controllerMappingTitle(void)
+{
+    return frontendUiLanguage() == UI_LANGUAGE_CHINESE ?
+        L"\u6309\u952e\u6620\u5c04" : L"Input Mapping";
+}
+
+static void showControllerMappingPrompt(uint32_t targetMask)
+{
+    std::wstring target = controllerTargetDisplayName(targetMask);
+    std::wstring body;
+    if (frontendUiLanguage() == UI_LANGUAGE_CHINESE)
+    {
+        body = L"\u70b9\u51fb\u786e\u5b9a\u540e\uff0c\u6309\u4e0b\u8981\u6620\u5c04\u4e3a\u300c";
+        body += target;
+        body += L"\u300d\u7684\u624b\u67c4\u6309\u952e\u3001\u6447\u6746\u65b9\u5411\u6216\u6273\u673a\u3002\n\u6309 Esc \u53ef\u53d6\u6d88\u7b49\u5f85\u3002";
+    }
+    else
+    {
+        body = L"Click OK, then press the controller button, stick direction, or trigger to map to ";
+        body += target;
+        body += L".\nPress Esc to cancel waiting.";
+    }
+    MessageBoxW(g_nativeWindow, body.c_str(), controllerMappingTitle(), MB_OK | MB_ICONINFORMATION);
+}
+
+static void showControllerMappingSaved(uint32_t targetMask, const char* sourceName)
+{
+    std::wstring target = controllerTargetDisplayName(targetMask);
+    std::wstring source = asciiToWide(sourceName);
+    std::wstring body;
+    if (frontendUiLanguage() == UI_LANGUAGE_CHINESE)
+    {
+        body = L"\u5df2\u5c06\u300c";
+        body += target;
+        body += L"\u300d\u6620\u5c04\u5230\u624b\u67c4\u8f93\u5165\u300c";
+        body += source;
+        body += L"\u300d\u3002\n\u8bbe\u7f6e\u5df2\u4fdd\u5b58\u3002";
+    }
+    else
+    {
+        body = L"Mapped ";
+        body += target;
+        body += L" to controller input ";
+        body += source;
+        body += L".\nSettings saved.";
+    }
+    MessageBoxW(g_nativeWindow, body.c_str(), controllerMappingTitle(), MB_OK | MB_ICONINFORMATION);
+}
+
+static void showControllerMappingUnavailable(void)
+{
+    const wchar_t* body = frontendUiLanguage() == UI_LANGUAGE_CHINESE ?
+        L"\u672a\u68c0\u6d4b\u5230 SDL GameController \u517c\u5bb9\u624b\u67c4\u3002\n\u8bf7\u8fde\u63a5\u624b\u67c4\u540e\u91cd\u8bd5\u3002" :
+        L"No SDL GameController-compatible pad was detected.\nConnect a controller and try again.";
+    MessageBoxW(g_nativeWindow, body, controllerMappingTitle(), MB_OK | MB_ICONINFORMATION);
+}
+
+struct InputMappingControlRow
+{
+    uint32_t controlBit;
+    const wchar_t* labelEn;
+    const wchar_t* labelZh;
+};
+
+static const InputMappingControlRow kInputMappingRows[] =
+{
+    { CONTROL_BUTTON_A, L"A", L"A" },
+    { CONTROL_BUTTON_B, L"B", L"B" },
+    { CONTROL_BUTTON_X, L"X", L"X" },
+    { CONTROL_BUTTON_Y, L"Y", L"Y" },
+    { CONTROL_BUTTON_START, L"START", L"START" },
+    { CONTROL_BUTTON_SELECT, L"SELECT", L"SELECT" },
+    { CONTROL_TRIGGER_LEFT, L"Left Shoulder", L"\u5de6\u80a9\u952e" },
+    { CONTROL_TRIGGER_RIGHT, L"Right Shoulder", L"\u53f3\u80a9\u952e" },
+    { CONTROL_DPAD_UP, L"D-pad Up", L"\u65b9\u5411\u952e\u4e0a" },
+    { CONTROL_DPAD_DOWN, L"D-pad Down", L"\u65b9\u5411\u952e\u4e0b" },
+    { CONTROL_DPAD_LEFT, L"D-pad Left", L"\u65b9\u5411\u952e\u5de6" },
+    { CONTROL_DPAD_RIGHT, L"D-pad Right", L"\u65b9\u5411\u952e\u53f3" },
+};
+
+static const int kInputMappingIdKeyboardBase = 41000;
+static const int kInputMappingIdControllerBase = 41100;
+static const int kInputMappingIdKeyboardTextBase = 41200;
+static const int kInputMappingIdControllerTextBase = 41300;
+static const int kInputMappingIdResetKeyboard = 41400;
+static const int kInputMappingIdResetController = 41401;
+static const int kInputMappingIdClose = 41402;
+static const int kInputMappingIdStatus = 41403;
+
+static std::wstring utf8ToWideSimple(const std::string& text)
+{
+    int size = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, NULL, 0);
+    if (size <= 0)
+    {
+        return asciiToWide(text.c_str());
+    }
+    std::wstring out((size_t)size - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, &out[0], size);
+    return out;
+}
+
+static const wchar_t* inputMappingRowLabel(const InputMappingControlRow& row)
+{
+    return frontendUiLanguage() == UI_LANGUAGE_CHINESE ? row.labelZh : row.labelEn;
+}
+
+static int inputMappingRowIndexForButton(int id, int base)
+{
+    int index = id - base;
+    if (index < 0 || index >= (int)(sizeof(kInputMappingRows) / sizeof(kInputMappingRows[0])))
+    {
+        return -1;
+    }
+    return index;
+}
+
+static HWND inputMappingItem(int id)
+{
+    return g_inputMappingWindow ? GetDlgItem(g_inputMappingWindow, id) : NULL;
+}
+
+static HFONT inputMappingFont(void)
+{
+    if (g_inputMappingFont)
+    {
+        return g_inputMappingFont;
+    }
+
+    NONCLIENTMETRICSW metrics;
+    memset(&metrics, 0, sizeof(metrics));
+    metrics.cbSize = sizeof(metrics);
+    if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, metrics.cbSize, &metrics, 0))
+    {
+        g_inputMappingFont = CreateFontIndirectW(&metrics.lfMessageFont);
+        g_inputMappingOwnFont = g_inputMappingFont != NULL;
+    }
+    if (!g_inputMappingFont)
+    {
+        g_inputMappingFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        g_inputMappingOwnFont = false;
+    }
+    return g_inputMappingFont;
+}
+
+static void setInputMappingStatus(const wchar_t* text)
+{
+    HWND status = inputMappingItem(kInputMappingIdStatus);
+    if (status)
+    {
+        SetWindowTextW(status, text ? text : L"");
+    }
+}
+
+static void refreshInputMappingWindow(void)
+{
+    if (!g_inputMappingWindow)
+    {
+        return;
+    }
+    for (int i = 0; i < (int)(sizeof(kInputMappingRows) / sizeof(kInputMappingRows[0])); ++i)
+    {
+        uint32_t controlBit = kInputMappingRows[i].controlBit;
+        SetWindowTextW(inputMappingItem(kInputMappingIdKeyboardTextBase + i),
+            utf8ToWideSimple(inputKeyboardSourceForControl(controlBit)).c_str());
+        SetWindowTextW(inputMappingItem(kInputMappingIdControllerTextBase + i),
+            utf8ToWideSimple(frontendControllerSourceForControl(controlBit)).c_str());
+    }
+}
+
+static void saveKeyboardMappingFromRuntime(void)
+{
+    if (!g_frontendSettings)
+    {
+        return;
+    }
+    g_frontendSettings->keyboardMapping = inputCurrentKeyboardMapping();
+    emulatorSaveSettings(*g_frontendSettings);
+    frontendMenuRefresh();
+}
+
+static void beginKeyboardMappingCapture(uint32_t controlBit)
+{
+    g_keyboardMappingPending = true;
+    g_keyboardMappingTarget = controlBit;
+    std::wstring status;
+    if (frontendUiLanguage() == UI_LANGUAGE_CHINESE)
+    {
+        status = L"\u8bf7\u6309\u4e0b\u8981\u6620\u5c04\u5230 ";
+        status += controllerTargetDisplayName(controlMask(controlBit));
+        status += L" \u7684\u952e\u76d8\u6309\u952e\uff0cEsc \u53d6\u6d88\u3002";
+    }
+    else
+    {
+        status = L"Press a keyboard key for ";
+        status += controllerTargetDisplayName(controlMask(controlBit));
+        status += L"; Esc cancels.";
+    }
+    setInputMappingStatus(status.c_str());
+    SetFocus(g_inputMappingWindow);
+}
+
+static SDL_Scancode win32VirtualKeyToScancode(WPARAM virtualKey, LPARAM keyData)
+{
+    if (virtualKey >= 'A' && virtualKey <= 'Z')
+    {
+        return (SDL_Scancode)(SDL_SCANCODE_A + (virtualKey - 'A'));
+    }
+    if (virtualKey >= '1' && virtualKey <= '9')
+    {
+        return (SDL_Scancode)(SDL_SCANCODE_1 + (virtualKey - '1'));
+    }
+    if (virtualKey == '0') return SDL_SCANCODE_0;
+
+    switch (virtualKey)
+    {
+    case VK_ESCAPE: return SDL_SCANCODE_ESCAPE;
+    case VK_BACK: return SDL_SCANCODE_BACKSPACE;
+    case VK_TAB: return SDL_SCANCODE_TAB;
+    case VK_RETURN: return (keyData & (1 << 24)) ? SDL_SCANCODE_KP_ENTER : SDL_SCANCODE_RETURN;
+    case VK_SPACE: return SDL_SCANCODE_SPACE;
+    case VK_PRIOR: return SDL_SCANCODE_PAGEUP;
+    case VK_NEXT: return SDL_SCANCODE_PAGEDOWN;
+    case VK_END: return SDL_SCANCODE_END;
+    case VK_HOME: return SDL_SCANCODE_HOME;
+    case VK_LEFT: return SDL_SCANCODE_LEFT;
+    case VK_UP: return SDL_SCANCODE_UP;
+    case VK_RIGHT: return SDL_SCANCODE_RIGHT;
+    case VK_DOWN: return SDL_SCANCODE_DOWN;
+    case VK_INSERT: return SDL_SCANCODE_INSERT;
+    case VK_DELETE: return SDL_SCANCODE_DELETE;
+    case VK_LSHIFT: return SDL_SCANCODE_LSHIFT;
+    case VK_RSHIFT: return SDL_SCANCODE_RSHIFT;
+    case VK_SHIFT: return SDL_SCANCODE_LSHIFT;
+    case VK_LCONTROL: return SDL_SCANCODE_LCTRL;
+    case VK_RCONTROL: return SDL_SCANCODE_RCTRL;
+    case VK_CONTROL: return SDL_SCANCODE_LCTRL;
+    case VK_LMENU: return SDL_SCANCODE_LALT;
+    case VK_RMENU: return SDL_SCANCODE_RALT;
+    case VK_MENU: return SDL_SCANCODE_LALT;
+    case VK_F1: return SDL_SCANCODE_F1;
+    case VK_F2: return SDL_SCANCODE_F2;
+    case VK_F3: return SDL_SCANCODE_F3;
+    case VK_F4: return SDL_SCANCODE_F4;
+    case VK_F5: return SDL_SCANCODE_F5;
+    case VK_F6: return SDL_SCANCODE_F6;
+    case VK_F7: return SDL_SCANCODE_F7;
+    case VK_F8: return SDL_SCANCODE_F8;
+    case VK_F9: return SDL_SCANCODE_F9;
+    case VK_F10: return SDL_SCANCODE_F10;
+    case VK_F11: return SDL_SCANCODE_F11;
+    case VK_F12: return SDL_SCANCODE_F12;
+    default:
+        break;
+    }
+
+    return SDL_GetScancodeFromKey((SDL_Keycode)MapVirtualKeyW((UINT)virtualKey, MAPVK_VK_TO_CHAR));
+}
+
+static void finishKeyboardMappingCapture(SDL_Scancode scancode)
+{
+    if (!g_keyboardMappingPending)
+    {
+        return;
+    }
+    uint32_t target = g_keyboardMappingTarget;
+    g_keyboardMappingPending = false;
+    g_keyboardMappingTarget = 0;
+    if (scancode != SDL_SCANCODE_ESCAPE && inputSetKeyboardMappingForControl(target, scancode))
+    {
+        saveKeyboardMappingFromRuntime();
+        refreshInputMappingWindow();
+        setInputMappingStatus(frontendUiLanguage() == UI_LANGUAGE_CHINESE ?
+            L"\u952e\u76d8\u6620\u5c04\u5df2\u4fdd\u5b58\u3002" : L"Keyboard mapping saved.");
+        printf("frontend: keyboard mapping saved target=%s source=%s spec='%s'\n",
+            controllerTargetName(controlMask(target)),
+            SDL_GetScancodeName(scancode),
+            g_frontendSettings ? g_frontendSettings->keyboardMapping.c_str() : inputCurrentKeyboardMapping().c_str());
+    }
+    else
+    {
+        setInputMappingStatus(frontendUiLanguage() == UI_LANGUAGE_CHINESE ?
+            L"\u952e\u76d8\u6620\u5c04\u5df2\u53d6\u6d88\u3002" : L"Keyboard mapping cancelled.");
+    }
+}
+
+static LRESULT CALLBACK inputMappingWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg)
+    {
+    case WM_COMMAND:
+    {
+        int id = LOWORD(wParam);
+        int keyboardIndex = inputMappingRowIndexForButton(id, kInputMappingIdKeyboardBase);
+        if (keyboardIndex >= 0)
+        {
+            beginKeyboardMappingCapture(kInputMappingRows[keyboardIndex].controlBit);
+            return 0;
+        }
+        int controllerIndex = inputMappingRowIndexForButton(id, kInputMappingIdControllerBase);
+        if (controllerIndex >= 0)
+        {
+            frontendBeginControllerMapping(kInputMappingRows[controllerIndex].controlBit);
+            refreshInputMappingWindow();
+            return 0;
+        }
+        if (id == kInputMappingIdResetKeyboard)
+        {
+            inputResetKeyboardMapping();
+            saveKeyboardMappingFromRuntime();
+            refreshInputMappingWindow();
+            setInputMappingStatus(frontendUiLanguage() == UI_LANGUAGE_CHINESE ?
+                L"\u952e\u76d8\u6620\u5c04\u5df2\u6062\u590d\u9ed8\u8ba4\u3002" : L"Keyboard mapping restored to defaults.");
+            return 0;
+        }
+        if (id == kInputMappingIdResetController)
+        {
+            frontendResetControllerMapping();
+            refreshInputMappingWindow();
+            setInputMappingStatus(frontendUiLanguage() == UI_LANGUAGE_CHINESE ?
+                L"\u624b\u67c4\u6620\u5c04\u5df2\u6062\u590d\u9ed8\u8ba4\u3002" : L"Controller mapping restored to defaults.");
+            return 0;
+        }
+        if (id == kInputMappingIdClose)
+        {
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        break;
+    }
+    case WM_KEYDOWN:
+        if (g_keyboardMappingPending)
+        {
+            finishKeyboardMappingCapture(win32VirtualKeyToScancode(wParam, lParam));
+            return 0;
+        }
+        break;
+    case WM_CTLCOLORSTATIC:
+    {
+        int id = GetDlgCtrlID((HWND)lParam);
+        int rowCount = (int)(sizeof(kInputMappingRows) / sizeof(kInputMappingRows[0]));
+        bool valueField =
+            (id >= kInputMappingIdKeyboardTextBase && id < kInputMappingIdKeyboardTextBase + rowCount) ||
+            (id >= kInputMappingIdControllerTextBase && id < kInputMappingIdControllerTextBase + rowCount);
+        if (valueField)
+        {
+            SetBkMode((HDC)wParam, OPAQUE);
+            SetBkColor((HDC)wParam, GetSysColor(COLOR_WINDOW));
+            SetTextColor((HDC)wParam, GetSysColor(COLOR_WINDOWTEXT));
+            return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+        }
+        SetBkMode((HDC)wParam, TRANSPARENT);
+        return (LRESULT)(g_inputMappingBackgroundBrush ?
+            g_inputMappingBackgroundBrush : GetSysColorBrush(COLOR_BTNFACE));
+    }
+    case WM_CTLCOLOREDIT:
+        SetBkColor((HDC)wParam, GetSysColor(COLOR_WINDOW));
+        SetTextColor((HDC)wParam, GetSysColor(COLOR_WINDOWTEXT));
+        return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        return 0;
+    case WM_DESTROY:
+        if (g_inputMappingWindow == hwnd)
+        {
+            g_inputMappingWindow = NULL;
+            g_keyboardMappingPending = false;
+            g_keyboardMappingTarget = 0;
+        }
+        if (g_inputMappingFont && g_inputMappingOwnFont)
+        {
+            DeleteObject(g_inputMappingFont);
+        }
+        g_inputMappingFont = NULL;
+        g_inputMappingOwnFont = false;
+        return 0;
+    default:
+        break;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static void ensureInputMappingWindowClass(void)
+{
+    static bool registered = false;
+    if (registered)
+    {
+        return;
+    }
+    WNDCLASSW wc;
+    memset(&wc, 0, sizeof(wc));
+    wc.lpfnWndProc = inputMappingWindowProc;
+    wc.hInstance = GetModuleHandleW(NULL);
+    wc.lpszClassName = L"DingooPieInputMappingWindow";
+    wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
+    wc.hIcon = loadDingooPieIcon(32);
+    wc.hbrBackground = g_inputMappingBackgroundBrush;
+    RegisterClassW(&wc);
+    registered = true;
+}
+
+static HWND createInputMappingChild(HWND parent, const wchar_t* className, const wchar_t* text,
+    DWORD exStyle, DWORD style, int x, int y, int w, int h, int id)
+{
+    HWND child = CreateWindowExW(exStyle, className, text, WS_CHILD | WS_VISIBLE | style,
+        x, y, w, h, parent, (HMENU)(INT_PTR)id, GetModuleHandleW(NULL), NULL);
+    if (child)
+    {
+        SendMessageW(child, WM_SETFONT, (WPARAM)inputMappingFont(), TRUE);
+        SetWindowTheme(child, L"Explorer", NULL);
+    }
+    return child;
+}
+
+void frontendOpenInputMappingWindow(void)
+{
+    if (g_inputMappingWindow)
+    {
+        ShowWindow(g_inputMappingWindow, SW_SHOWNORMAL);
+        SetForegroundWindow(g_inputMappingWindow);
+        return;
+    }
+
+    bool zh = frontendUiLanguage() == UI_LANGUAGE_CHINESE;
+    g_inputMappingBackgroundBrush = GetSysColorBrush(COLOR_BTNFACE);
+    ensureInputMappingWindowClass();
+    int rowCount = (int)(sizeof(kInputMappingRows) / sizeof(kInputMappingRows[0]));
+    int width = 760;
+    int height = 100 + rowCount * 34 + 54;
+    g_inputMappingWindow = CreateWindowExW(WS_EX_CONTROLPARENT,
+        L"DingooPieInputMappingWindow",
+        zh ? L"\u6309\u952e\u6620\u5c04" : L"Input Mapping",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        CW_USEDEFAULT, CW_USEDEFAULT, width, height,
+        g_nativeWindow, NULL, GetModuleHandleW(NULL), NULL);
+    if (!g_inputMappingWindow)
+    {
+        return;
+    }
+    applyDingooPieIconToWindow(g_inputMappingWindow);
+
+    createInputMappingChild(g_inputMappingWindow, L"STATIC", zh ? L"\u63a7\u5236" : L"Control",
+        0, 0, 18, 16, 120, 20, -1);
+    createInputMappingChild(g_inputMappingWindow, L"STATIC", zh ? L"\u952e\u76d8" : L"Keyboard",
+        0, 0, 150, 16, 160, 20, -1);
+    createInputMappingChild(g_inputMappingWindow, L"STATIC", zh ? L"\u624b\u67c4 / \u6447\u6746" : L"Controller / Stick",
+        0, 0, 390, 16, 180, 20, -1);
+
+    for (int i = 0; i < rowCount; ++i)
+    {
+        int y = 44 + i * 34;
+        createInputMappingChild(g_inputMappingWindow, L"STATIC", inputMappingRowLabel(kInputMappingRows[i]),
+            0, 0, 18, y + 4, 120, 22, -1);
+        createInputMappingChild(g_inputMappingWindow, L"EDIT", L"",
+            WS_EX_CLIENTEDGE, ES_READONLY | ES_AUTOHSCROLL,
+            150, y, 150, 24, kInputMappingIdKeyboardTextBase + i);
+        createInputMappingChild(g_inputMappingWindow, L"BUTTON", zh ? L"\u8bbe\u7f6e\u952e\u76d8" : L"Set Key",
+            0, 0, 306, y - 1, 74, 26, kInputMappingIdKeyboardBase + i);
+        createInputMappingChild(g_inputMappingWindow, L"EDIT", L"",
+            WS_EX_CLIENTEDGE, ES_READONLY | ES_AUTOHSCROLL,
+            390, y, 170, 24, kInputMappingIdControllerTextBase + i);
+        createInputMappingChild(g_inputMappingWindow, L"BUTTON", zh ? L"\u8bbe\u7f6e\u624b\u67c4" : L"Set Pad",
+            0, 0, 566, y - 1, 82, 26, kInputMappingIdControllerBase + i);
+    }
+
+    int bottomY = 48 + rowCount * 34;
+    createInputMappingChild(g_inputMappingWindow, L"STATIC", L"",
+        0, 0, 18, bottomY, 520, 24, kInputMappingIdStatus);
+    createInputMappingChild(g_inputMappingWindow, L"BUTTON", zh ? L"\u6062\u590d\u952e\u76d8\u9ed8\u8ba4" : L"Reset Keyboard",
+        0, 0, 18, bottomY + 30, 136, 28, kInputMappingIdResetKeyboard);
+    createInputMappingChild(g_inputMappingWindow, L"BUTTON", zh ? L"\u6062\u590d\u624b\u67c4\u9ed8\u8ba4" : L"Reset Controller",
+        0, 0, 162, bottomY + 30, 140, 28, kInputMappingIdResetController);
+    createInputMappingChild(g_inputMappingWindow, L"BUTTON", zh ? L"\u5173\u95ed" : L"Close",
+        0, 0, 650, bottomY + 30, 74, 28, kInputMappingIdClose);
+
+    refreshInputMappingWindow();
+    setInputMappingStatus(zh ?
+        L"\u70b9\u51fb\u8bbe\u7f6e\u952e\u76d8\u6216\u8bbe\u7f6e\u624b\u67c4\u540e\u6309\u4e0b\u76ee\u6807\u6309\u952e\u3002" :
+        L"Choose Set Key or Set Pad, then press the target input.");
+    ShowWindow(g_inputMappingWindow, SW_SHOWNORMAL);
+    UpdateWindow(g_inputMappingWindow);
+}
+
+static void initCommonControlsForNativeWindows(void)
+{
+    INITCOMMONCONTROLSEX controls;
+    controls.dwSize = sizeof(controls);
+    controls.dwICC = ICC_STANDARD_CLASSES;
+    InitCommonControlsEx(&controls);
+}
+#endif
+
+static bool finishControllerMapping(const ControllerPhysicalSource& source)
+{
+    if (!g_controllerMappingPending)
+    {
+        return false;
+    }
+
+    if (!g_controllerMappingInitialized)
+    {
+        applyGameControllerMappingSettings(g_frontendSettings ? g_frontendSettings->controllerMapping : "");
+    }
+
+    uint32_t targetMask = g_controllerMappingTarget;
+    releaseGameControllerControls();
+    removeControllerTargetFromCurrentMapping(targetMask);
+    setCurrentControllerSourceMask(source, targetMask);
+
+    std::string nextMapping = buildCurrentControllerMappingSpec();
+    g_appliedControllerMapping = nextMapping;
+    g_controllerMappingInitialized = true;
+    g_controllerMappingPending = false;
+    g_controllerMappingTarget = 0;
+
+    if (g_frontendSettings)
+    {
+        g_frontendSettings->controllerMapping = nextMapping;
+        emulatorSaveSettings(*g_frontendSettings);
+    }
+    frontendMenuRefresh();
+
+    printf("frontend: controller mapping saved target=%s source=%s spec='%s'\n",
+        controllerTargetName(targetMask),
+        source.name,
+        nextMapping.empty() ? "(default)" : nextMapping.c_str());
+#ifdef _WIN32
+    showControllerMappingSaved(targetMask, source.name);
+    refreshInputMappingWindow();
+#endif
+    return true;
+}
+
+static void cancelControllerMapping(void)
+{
+    if (!g_controllerMappingPending)
+    {
+        return;
+    }
+    printf("frontend: controller mapping cancelled target=%s\n",
+        controllerTargetName(g_controllerMappingTarget));
+    g_controllerMappingPending = false;
+    g_controllerMappingTarget = 0;
+}
+
+void frontendBeginControllerMapping(uint32_t controlBit)
+{
+    uint32_t targetMask = controlMask(controlBit);
+    if (!parseControllerTargetName(controllerTargetName(targetMask), &targetMask) || !targetMask)
+    {
+        printf("frontend: rejected controller mapping target bit=%u\n", (unsigned int)controlBit);
+        return;
+    }
+
+    openFirstGameController();
+    if (!g_gameController)
+    {
+        printf("frontend: controller mapping unavailable because no SDL GameController is connected\n");
+#ifdef _WIN32
+        setInputMappingStatus(frontendUiLanguage() == UI_LANGUAGE_CHINESE ?
+            L"\u672a\u68c0\u6d4b\u5230 SDL GameController \u517c\u5bb9\u624b\u67c4\u3002" :
+            L"No SDL GameController-compatible pad detected.");
+        showControllerMappingUnavailable();
+#endif
+        return;
+    }
+
+    if (!g_controllerMappingInitialized)
+    {
+        applyGameControllerMappingSettings(g_frontendSettings ? g_frontendSettings->controllerMapping : "");
+    }
+
+    releaseGameControllerControls();
+    g_controllerMappingPending = true;
+    g_controllerMappingTarget = targetMask;
+    printf("frontend: waiting for controller mapping target=%s\n", controllerTargetName(targetMask));
+#ifdef _WIN32
+    showControllerMappingPrompt(targetMask);
+#endif
+}
+
+void frontendResetControllerMapping(void)
+{
+    releaseGameControllerControls();
+    setDefaultGameControllerMapping(g_gameControllerButtonMap, g_gameControllerAxisMap);
+    g_appliedControllerMapping.clear();
+    g_controllerMappingInitialized = true;
+    g_controllerMappingPending = false;
+    g_controllerMappingTarget = 0;
+    if (g_frontendSettings)
+    {
+        g_frontendSettings->controllerMapping.clear();
+        emulatorSaveSettings(*g_frontendSettings);
+    }
+    frontendMenuRefresh();
+    printf("frontend: controller mapping reset to defaults\n");
+#ifdef _WIN32
+    refreshInputMappingWindow();
+#endif
+}
+
+static uint32_t gameControllerButtonControlMask(SDL_GameControllerButton button)
+{
+    if (button < 0 || button >= SDL_CONTROLLER_BUTTON_MAX)
+    {
+        return 0;
+    }
+    if (!g_controllerMappingInitialized)
+    {
+        applyGameControllerMappingSettings(g_frontendSettings ? g_frontendSettings->controllerMapping : "");
+    }
+    return g_gameControllerButtonMap[button];
+}
+
+static uint32_t gameControllerAxisControlMask(void)
+{
+    uint32_t mask = 0;
+
+    if (!g_controllerMappingInitialized)
+    {
+        applyGameControllerMappingSettings(g_frontendSettings ? g_frontendSettings->controllerMapping : "");
+    }
+
+    for (int axis = 0; axis < SDL_CONTROLLER_AXIS_MAX; ++axis)
+    {
+        if (g_gameControllerAxes[axis] <= -kControllerInputThreshold)
+        {
+            mask |= g_gameControllerAxisMap[axis][0];
+        }
+        else if (g_gameControllerAxes[axis] >= kControllerInputThreshold)
+        {
+            mask |= g_gameControllerAxisMap[axis][1];
+        }
+    }
+
+    return mask;
+}
+
+static void openFirstGameController(void)
+{
+    if (g_gameController)
+    {
+        return;
+    }
+
+    int joystickCount = SDL_NumJoysticks();
+    for (int i = 0; i < joystickCount; ++i)
+    {
+        if (!SDL_IsGameController(i))
+        {
+            continue;
+        }
+
+        g_gameController = SDL_GameControllerOpen(i);
+        if (g_gameController)
+        {
+            memset(g_gameControllerAxes, 0, sizeof(g_gameControllerAxes));
+            const char* name = SDL_GameControllerName(g_gameController);
+            printf("frontend: game controller opened index=%d name=%s\n",
+                i, name ? name : "(unknown)");
+            return;
+        }
+        printf("frontend: SDL_GameControllerOpen failed index=%d error=%s\n", i, SDL_GetError());
+    }
+}
+
+static void closeGameController(void)
+{
+    releaseGameControllerControls();
+    if (g_gameController)
+    {
+        const char* name = SDL_GameControllerName(g_gameController);
+        printf("frontend: game controller closed name=%s\n",
+            name ? name : "(unknown)");
+        SDL_GameControllerClose(g_gameController);
+        g_gameController = NULL;
+    }
+}
+
+static void handleGameControllerDeviceAdded(int deviceIndex)
+{
+    (void)deviceIndex;
+    openFirstGameController();
+}
+
+static void handleGameControllerDeviceRemoved(SDL_JoystickID instanceId)
+{
+    if (activeGameControllerInstanceId() != instanceId)
+    {
+        return;
+    }
+    if (g_controllerMappingPending)
+    {
+        cancelControllerMapping();
+#ifdef _WIN32
+        setInputMappingStatus(frontendUiLanguage() == UI_LANGUAGE_CHINESE ?
+            L"\u624b\u67c4\u5df2\u65ad\u5f00\uff0c\u6620\u5c04\u7b49\u5f85\u5df2\u53d6\u6d88\u3002" :
+            L"Controller disconnected; mapping wait cancelled.");
+#endif
+    }
+    closeGameController();
+    openFirstGameController();
+}
+
+static void handleGameControllerButtonEvent(const SDL_ControllerButtonEvent& button)
+{
+    if (button.which != activeGameControllerInstanceId())
+    {
+        return;
+    }
+
+    if (g_controllerMappingPending)
+    {
+        if (button.state == SDL_PRESSED)
+        {
+            const ControllerPhysicalSource* source = findControllerSource(false, button.button, 0);
+            if (source)
+            {
+                finishControllerMapping(*source);
+            }
+        }
+        return;
+    }
+
+    uint32_t mask = gameControllerButtonControlMask((SDL_GameControllerButton)button.button);
+    if (!mask)
+    {
+        return;
+    }
+
+    uint32_t buttonMask = g_gameControllerButtonControls;
+    if (button.state == SDL_PRESSED)
+    {
+        buttonMask |= mask;
+    }
+    else
+    {
+        buttonMask &= ~mask;
+    }
+    applyGameControllerControlMasks(buttonMask, g_gameControllerAxisControls);
+
+    if (inputTraceEnabled())
+    {
+        printf("frontend: controller button=%u state=%u mask=0x%08X\n",
+            (unsigned int)button.button,
+            (unsigned int)button.state,
+            (unsigned int)(g_gameControllerButtonControls | g_gameControllerAxisControls));
+    }
+}
+
+static void handleGameControllerAxisEvent(const SDL_ControllerAxisEvent& axis)
+{
+    if (axis.which != activeGameControllerInstanceId() || axis.axis >= SDL_CONTROLLER_AXIS_MAX)
+    {
+        return;
+    }
+
+    if (g_controllerMappingPending)
+    {
+        if (axis.value <= -kControllerInputThreshold || axis.value >= kControllerInputThreshold)
+        {
+            int direction = axis.value < 0 ? 0 : 1;
+            const ControllerPhysicalSource* source = findControllerSource(true, axis.axis, direction);
+            if (source)
+            {
+                finishControllerMapping(*source);
+            }
+        }
+        return;
+    }
+
+    g_gameControllerAxes[axis.axis] = axis.value;
+    applyGameControllerControlMasks(g_gameControllerButtonControls, gameControllerAxisControlMask());
+
+    if (inputTraceEnabled())
+    {
+        printf("frontend: controller axis=%u value=%d mask=0x%08X\n",
+            (unsigned int)axis.axis,
+            (int)axis.value,
+            (unsigned int)(g_gameControllerButtonControls | g_gameControllerAxisControls));
     }
 }
 
@@ -1470,6 +2893,11 @@ static void applyMaximizedWindow(bool maximized)
     }
 }
 
+static bool textureLinearSamplingEnabled(const EmulatorSettings& settings)
+{
+    return settings.antiAliasing != ANTI_ALIASING_OFF;
+}
+
 void frontendApplyVideoSettings(const EmulatorSettings& settings)
 {
     int displayWidth = displayWidthForSettings(&settings);
@@ -1500,17 +2928,18 @@ void frontendApplyVideoSettings(const EmulatorSettings& settings)
     if (g_frameTexture)
     {
         SDL_SetTextureScaleMode(g_frameTexture,
-            settings.videoFilter == VIDEO_FILTER_LINEAR ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
+            textureLinearSamplingEnabled(settings) ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
     }
 
-    printf("frontend: video settings scale=%d fullscreen=%u filter=%s effect=%s brightness=%d contrast=%d saturation=%d portrait=%u show_fps=%u virtual_controls=%u\n",
+    printf("frontend: video settings scale=%d fullscreen=%u anti_aliasing=%s effect=%s brightness=%d contrast=%d saturation=%d minimized_behavior=%s portrait=%u show_fps=%u virtual_controls=%u\n",
         clampedWindowScale(&settings),
         settings.fullscreen ? 1u : 0u,
-        emulatorVideoFilterName(settings.videoFilter),
+        emulatorAntiAliasingName(settings.antiAliasing),
         emulatorColorEffectName(settings.colorEffect),
         settings.brightnessPercent,
         settings.contrastPercent,
         settings.saturationPercent,
+        emulatorMinimizedBehaviorName(settings.minimizedBehavior),
         settings.portraitMode ? 1u : 0u,
         settings.showFps ? 1u : 0u,
         settings.showVirtualControls ? 1u : 0u);
@@ -1528,6 +2957,8 @@ void frontendApplyAudioSettings(const EmulatorSettings& settings)
 
 void frontendApplyInputSettings(const EmulatorSettings& settings)
 {
+    inputApplyKeyboardMapping(settings.keyboardMapping);
+    applyGameControllerMappingSettings(settings.controllerMapping);
     if (settings.disableIme)
     {
         disableWindowIme();
@@ -1536,9 +2967,11 @@ void frontendApplyInputSettings(const EmulatorSettings& settings)
     {
         enableWindowIme();
     }
-    printf("frontend: input settings virtual_controls=%u disable_ime=%u\n",
+    printf("frontend: input settings disable_ime=%u virtual_controls=%u keyboard_mapping=%s controller_mapping=%s\n",
+        settings.disableIme ? 1u : 0u,
         settings.showVirtualControls ? 1u : 0u,
-        settings.disableIme ? 1u : 0u);
+        settings.keyboardMapping.empty() ? "(default)" : settings.keyboardMapping.c_str(),
+        settings.controllerMapping.empty() ? "(default)" : settings.controllerMapping.c_str());
 }
 
 static uint32_t hashFramePixels(const uint16_t* pixels)
@@ -2026,12 +3459,6 @@ static uint16_t rgb565Invert(uint16_t pixel)
     return (uint16_t)((~pixel) & 0xffff);
 }
 
-static uint16_t rgb565ToInvertedGrayscale(uint16_t pixel)
-{
-    uint16_t gray = rgb565ToGrayscale(pixel);
-    return rgb565Invert(gray);
-}
-
 static uint16_t rgb888ToRgb565(uint32_t r8, uint32_t g8, uint32_t b8)
 {
     if (r8 > 255)
@@ -2087,20 +3514,6 @@ static uint16_t rgb565ToSepia(uint16_t pixel)
     return rgb888ToRgb565(clampColor8(r), clampColor8(g), clampColor8(b));
 }
 
-static uint16_t rgb565ToAmber(uint16_t pixel)
-{
-    uint32_t r8 = 0;
-    uint32_t g8 = 0;
-    uint32_t b8 = 0;
-    rgb565ToRgb888(pixel, &r8, &g8, &b8);
-    uint32_t y8 = (77 * r8 + 150 * g8 + 29 * b8) >> 8;
-
-    int r = 22 + ((int)y8 * 234) / 255;
-    int g = 10 + ((int)y8 * 142) / 255;
-    int b = ((int)y8 * 24) / 255;
-    return rgb888ToRgb565(clampColor8(r), clampColor8(g), clampColor8(b));
-}
-
 static void applyLcdScanlineEffect(uint16_t* dst, const uint16_t* src)
 {
     for (int y = 0; y < SCREEN_HEIGHT; ++y)
@@ -2118,6 +3531,65 @@ static void applyLcdScanlineEffect(uint16_t* dst, const uint16_t* src)
                 pixel = blendRgb565WithBlack(pixel, 12);
             }
             dst[(size_t)y * SCREEN_WIDTH + (size_t)x] = pixel;
+        }
+    }
+}
+
+static void applyLightCrtEffect(uint16_t* dst, const uint16_t* src)
+{
+    for (int y = 0; y < SCREEN_HEIGHT; ++y)
+    {
+        int scanline = (y & 1) ? 90 : 100;
+        for (int x = 0; x < SCREEN_WIDTH; ++x)
+        {
+            uint32_t r8 = 0;
+            uint32_t g8 = 0;
+            uint32_t b8 = 0;
+            rgb565ToRgb888(src[(size_t)y * SCREEN_WIDTH + (size_t)x], &r8, &g8, &b8);
+
+            int r = (int)r8;
+            int g = (int)g8;
+            int b = (int)b8;
+            r = ((r - 128) * 106) / 100 + 128;
+            g = ((g - 128) * 104) / 100 + 128;
+            b = ((b - 128) * 102) / 100 + 128;
+            r = (r * 104 * scanline) / 10000;
+            g = (g * 100 * scanline) / 10000;
+            b = (b * 94 * scanline) / 10000;
+            if ((x & 1) != 0)
+            {
+                r = (r * 97) / 100;
+                g = (g * 97) / 100;
+                b = (b * 97) / 100;
+            }
+
+            dst[(size_t)y * SCREEN_WIDTH + (size_t)x] =
+                rgb888ToRgb565(clampColor8(r), clampColor8(g), clampColor8(b));
+        }
+    }
+}
+
+static void applyVividEffect(uint16_t* dst, const uint16_t* src)
+{
+    for (int y = 0; y < SCREEN_HEIGHT; ++y)
+    {
+        for (int x = 0; x < SCREEN_WIDTH; ++x)
+        {
+            uint32_t r8 = 0;
+            uint32_t g8 = 0;
+            uint32_t b8 = 0;
+            rgb565ToRgb888(src[(size_t)y * SCREEN_WIDTH + (size_t)x], &r8, &g8, &b8);
+
+            int r = ((int)r8 - 128) * 108 / 100 + 128;
+            int g = ((int)g8 - 128) * 108 / 100 + 128;
+            int b = ((int)b8 - 128) * 108 / 100 + 128;
+            int y8 = (77 * r + 150 * g + 29 * b) >> 8;
+            r = y8 + ((r - y8) * 116) / 100;
+            g = y8 + ((g - y8) * 116) / 100;
+            b = y8 + ((b - y8) * 116) / 100;
+
+            dst[(size_t)y * SCREEN_WIDTH + (size_t)x] =
+                rgb888ToRgb565(clampColor8(r), clampColor8(g), clampColor8(b));
         }
     }
 }
@@ -2185,6 +3657,48 @@ static void applySharpenEffect(uint16_t* dst, const uint16_t* src)
             int r = ((int)cr * 5) - (int)lr - (int)rr - (int)ur - (int)dr;
             int g = ((int)cg * 5) - (int)lg - (int)rg - (int)ug - (int)dg;
             int b = ((int)cb * 5) - (int)lb - (int)rb - (int)ub - (int)db;
+            dst[index] = rgb888ToRgb565(clampColor8(r), clampColor8(g), clampColor8(b));
+        }
+    }
+}
+
+static void applyClearAntiAliasingEffect(uint16_t* dst, const uint16_t* src)
+{
+    memcpy(dst, src, SCREEN_WIDTH * SCREEN_HEIGHT * sizeof(uint16_t));
+    for (int y = 1; y < SCREEN_HEIGHT - 1; ++y)
+    {
+        for (int x = 1; x < SCREEN_WIDTH - 1; ++x)
+        {
+            uint32_t cr = 0;
+            uint32_t cg = 0;
+            uint32_t cb = 0;
+            uint32_t lr = 0;
+            uint32_t lg = 0;
+            uint32_t lb = 0;
+            uint32_t rr = 0;
+            uint32_t rg = 0;
+            uint32_t rb = 0;
+            uint32_t ur = 0;
+            uint32_t ug = 0;
+            uint32_t ub = 0;
+            uint32_t dr = 0;
+            uint32_t dg = 0;
+            uint32_t db = 0;
+            size_t index = (size_t)y * SCREEN_WIDTH + (size_t)x;
+
+            rgb565ToRgb888(src[index], &cr, &cg, &cb);
+            rgb565ToRgb888(src[index - 1], &lr, &lg, &lb);
+            rgb565ToRgb888(src[index + 1], &rr, &rg, &rb);
+            rgb565ToRgb888(src[index - SCREEN_WIDTH], &ur, &ug, &ub);
+            rgb565ToRgb888(src[index + SCREEN_WIDTH], &dr, &dg, &db);
+
+            int avgR = ((int)lr + (int)rr + (int)ur + (int)dr) / 4;
+            int avgG = ((int)lg + (int)rg + (int)ug + (int)dg) / 4;
+            int avgB = ((int)lb + (int)rb + (int)ub + (int)db) / 4;
+            int r = (int)cr + (((int)cr - avgR) / 3);
+            int g = (int)cg + (((int)cg - avgG) / 3);
+            int b = (int)cb + (((int)cb - avgB) / 3);
+
             dst[index] = rgb888ToRgb565(clampColor8(r), clampColor8(g), clampColor8(b));
         }
     }
@@ -2301,12 +3815,19 @@ static void applyColorEffect(uint16_t* dst, const uint16_t* src, size_t pixelCou
         }
         return;
     }
-    if (effect == COLOR_EFFECT_INVERT_GRAYSCALE)
+    if (effect == COLOR_EFFECT_SOFT_BLUR)
     {
-        for (size_t i = 0; i < pixelCount; ++i)
-        {
-            dst[i] = rgb565ToInvertedGrayscale(src[i]);
-        }
+        applySoftBlurEffect(dst, src);
+        return;
+    }
+    if (effect == COLOR_EFFECT_SHARPEN)
+    {
+        applySharpenEffect(dst, src);
+        return;
+    }
+    if (effect == COLOR_EFFECT_VIVID)
+    {
+        applyVividEffect(dst, src);
         return;
     }
     if (effect == COLOR_EFFECT_SEPIA)
@@ -2317,27 +3838,15 @@ static void applyColorEffect(uint16_t* dst, const uint16_t* src, size_t pixelCou
         }
         return;
     }
-    if (effect == COLOR_EFFECT_AMBER)
-    {
-        for (size_t i = 0; i < pixelCount; ++i)
-        {
-            dst[i] = rgb565ToAmber(src[i]);
-        }
-        return;
-    }
-    if (effect == COLOR_EFFECT_SHARPEN)
-    {
-        applySharpenEffect(dst, src);
-        return;
-    }
-    if (effect == COLOR_EFFECT_SOFT_BLUR)
-    {
-        applySoftBlurEffect(dst, src);
-        return;
-    }
+    // Pixel Grid is applied after SDL scaling so the grid follows the output size.
     if (effect == COLOR_EFFECT_LCD_SCANLINE)
     {
         applyLcdScanlineEffect(dst, src);
+        return;
+    }
+    if (effect == COLOR_EFFECT_LIGHT_CRT)
+    {
+        applyLightCrtEffect(dst, src);
         return;
     }
 
@@ -2345,6 +3854,16 @@ static void applyColorEffect(uint16_t* dst, const uint16_t* src, size_t pixelCou
     {
         memcpy(dst, src, pixelCount * sizeof(uint16_t));
     }
+}
+
+static AntiAliasingMode currentAntiAliasingMode(void)
+{
+    return g_frontendSettings ? g_frontendSettings->antiAliasing : ANTI_ALIASING_OFF;
+}
+
+static bool antiAliasingNeedsPostProcess(AntiAliasingMode mode)
+{
+    return mode == ANTI_ALIASING_CLEAR;
 }
 
 static bool drawFrame(uint16_t* pixels, int displayedFps)
@@ -2355,22 +3874,32 @@ static bool drawFrame(uint16_t* pixels, int displayedFps)
     }
 
     uint16_t effectPixels[SCREEN_WIDTH * SCREEN_HEIGHT];
+    uint16_t antiAliasPixels[SCREEN_WIDTH * SCREEN_HEIGHT];
     uint16_t* uploadPixels = pixels;
-    bool hasColorEffect = g_frontendSettings && g_frontendSettings->colorEffect != COLOR_EFFECT_NORMAL;
+    ColorEffectMode colorEffect = g_frontendSettings ? g_frontendSettings->colorEffect : COLOR_EFFECT_NORMAL;
+    bool hasColorEffect = colorEffectNeedsPixelPostProcess(colorEffect);
     bool hasVideoAdjustments = g_frontendSettings &&
         (g_frontendSettings->brightnessPercent != 100 ||
             g_frontendSettings->contrastPercent != 100 ||
             g_frontendSettings->saturationPercent != 100);
+    AntiAliasingMode antiAliasing = currentAntiAliasingMode();
+    bool hasAntiAliasPostProcess = antiAliasingNeedsPostProcess(antiAliasing);
 
     if (hasColorEffect)
     {
         applyColorEffect(effectPixels, pixels, SCREEN_WIDTH * SCREEN_HEIGHT);
         uploadPixels = effectPixels;
     }
-    else if (hasVideoAdjustments)
+    else if (hasVideoAdjustments || hasAntiAliasPostProcess)
     {
         memcpy(effectPixels, pixels, sizeof(effectPixels));
         uploadPixels = effectPixels;
+    }
+
+    if (hasAntiAliasPostProcess)
+    {
+        applyClearAntiAliasingEffect(antiAliasPixels, uploadPixels);
+        uploadPixels = antiAliasPixels;
     }
 
     if (hasVideoAdjustments)
@@ -2424,6 +3953,10 @@ static bool drawFrame(uint16_t* pixels, int displayedFps)
     {
         printf("frontend: SDL_RenderCopy failed: %s\n", SDL_GetError());
         return false;
+    }
+    if (pixelGridEffectEnabled())
+    {
+        drawPixelGridOverlay();
     }
     drawVirtualControlsOverlay();
     drawFpsOverlay(displayedFps);
@@ -2479,9 +4012,12 @@ bool frontendInit(EmulatorSettings* settings, const char* currentAppPath)
     g_lastDisplayFrameWidth = displayWidthForSettings(settings);
     g_lastDisplayFrameHeight = displayHeightForSettings(settings);
     SDL_AtomicSet(&g_quitRequested, 0);
+    SDL_AtomicSet(&g_gamePaused, 0);
+    g_minimizedPauseActive = false;
+    pauseGateSetPaused(false);
     SDL_SetHint(SDL_HINT_IME_SHOW_UI, (!settings || settings->disableIme) ? "0" : "1");
 
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_AUDIO) < 0)
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) < 0)
     {
         printf("frontend: SDL_Init failed: %s\n", SDL_GetError());
         return false;
@@ -2512,10 +4048,14 @@ bool frontendInit(EmulatorSettings* settings, const char* currentAppPath)
         disableWindowIme();
     }
 #ifdef _WIN32
+    initCommonControlsForNativeWindows();
     applyWindowIcon();
     SDL_EventState(SDL_SYSWMEVENT, SDL_ENABLE);
     registerRawKeyboardInput();
 #endif
+    SDL_EventState(SDL_DROPFILE, SDL_ENABLE);
+    SDL_GameControllerEventState(SDL_ENABLE);
+    openFirstGameController();
 
     g_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_ACCELERATED);
     if (!g_renderer)
@@ -2557,11 +4097,21 @@ bool frontendInit(EmulatorSettings* settings, const char* currentAppPath)
 void frontendRequestQuit(void)
 {
     printf("frontend: quit requested\n");
+    setFrontendGamePaused(false, false);
+    g_minimizedPauseActive = false;
     SDL_AtomicSet(&g_quitRequested, 1);
+}
+
+bool frontendQuitRequested(void)
+{
+    return SDL_AtomicGet(&g_quitRequested) != 0;
 }
 
 void frontendShutdown(void)
 {
+    setFrontendGamePaused(false, false);
+    g_minimizedPauseActive = false;
+    closeGameController();
     resetFpsOverlayTexture();
     if (g_frameTexture)
     {
@@ -2619,7 +4169,7 @@ void frontendRunLoop(const EmulatorOptions& options)
         bool drewFrame = false;
         while (SDL_PollEvent(&ev))
         {
-            if (handleVirtualControlMouseEvent(ev))
+            if (!frontendGamePaused() && handleVirtualControlMouseEvent(ev))
             {
                 continue;
             }
@@ -2643,6 +4193,22 @@ void frontendRunLoop(const EmulatorOptions& options)
             switch (ev.type)
             {
             case SDL_KEYDOWN:
+#ifdef _WIN32
+                if (g_keyboardMappingPending)
+                {
+                    if (!ev.key.repeat)
+                    {
+                        finishKeyboardMappingCapture(ev.key.keysym.scancode);
+                    }
+                    break;
+                }
+#endif
+                if (g_controllerMappingPending && !ev.key.repeat &&
+                    ev.key.keysym.scancode == SDL_SCANCODE_ESCAPE)
+                {
+                    cancelControllerMapping();
+                    break;
+                }
                 if (!ev.key.repeat && ev.key.keysym.scancode == SDL_SCANCODE_ESCAPE)
                 {
                     if (confirmExitRequested())
@@ -2654,6 +4220,10 @@ void frontendRunLoop(const EmulatorOptions& options)
                 if (!ev.key.repeat && ev.key.keysym.scancode == SDL_SCANCODE_F12)
                 {
                     frontendSaveAutoScreenshot();
+                    break;
+                }
+                if (frontendGamePaused())
+                {
                     break;
                 }
                 if (!ev.key.repeat)
@@ -2670,6 +4240,16 @@ void frontendRunLoop(const EmulatorOptions& options)
                 }
                 break;
             case SDL_KEYUP:
+#ifdef _WIN32
+                if (g_keyboardMappingPending)
+                {
+                    break;
+                }
+#endif
+                if (frontendGamePaused())
+                {
+                    break;
+                }
                 inputHandleHostScancode(ev.key.keysym.scancode, false);
                 if (inputTraceEnabled())
                 {
@@ -2677,6 +4257,34 @@ void frontendRunLoop(const EmulatorOptions& options)
                         SDL_GetKeyName(ev.key.keysym.sym),
                         SDL_GetScancodeName(ev.key.keysym.scancode),
                         (unsigned int)(SDL_GetWindowFlags(g_window) & SDL_WINDOW_INPUT_FOCUS));
+                }
+                break;
+            case SDL_DROPFILE:
+                if (ev.drop.file)
+                {
+                    std::string appPath(ev.drop.file);
+                    printf("frontend: dropped file path=%s\n", appPath.c_str());
+                    frontendMenuRequestOpenApp(appPath);
+                    SDL_free(ev.drop.file);
+                }
+                break;
+            case SDL_CONTROLLERDEVICEADDED:
+                handleGameControllerDeviceAdded(ev.cdevice.which);
+                break;
+            case SDL_CONTROLLERDEVICEREMOVED:
+                handleGameControllerDeviceRemoved(ev.cdevice.which);
+                break;
+            case SDL_CONTROLLERBUTTONDOWN:
+            case SDL_CONTROLLERBUTTONUP:
+                if (!frontendGamePaused() || g_controllerMappingPending)
+                {
+                    handleGameControllerButtonEvent(ev.cbutton);
+                }
+                break;
+            case SDL_CONTROLLERAXISMOTION:
+                if (!frontendGamePaused() || g_controllerMappingPending)
+                {
+                    handleGameControllerAxisEvent(ev.caxis);
                 }
                 break;
             case SDL_WINDOWEVENT:
@@ -2696,8 +4304,19 @@ void frontendRunLoop(const EmulatorOptions& options)
                         printf("frontend: window event=%u clearing input\n",
                             (unsigned int)ev.window.event);
                     }
-                    releaseVirtualMouseControls();
-                    inputClearControls();
+                    releaseFrontendInputControls();
+                    if (ev.window.event == SDL_WINDOWEVENT_MINIMIZED &&
+                        currentMinimizedBehavior() == MINIMIZED_BEHAVIOR_PAUSE)
+                    {
+                        setMinimizedPauseActive(true);
+                    }
+                }
+                else if (ev.window.event == SDL_WINDOWEVENT_RESTORED)
+                {
+                    if (g_minimizedPauseActive)
+                    {
+                        setMinimizedPauseActive(false);
+                    }
                 }
                 else if (ev.window.event == SDL_WINDOWEVENT_FOCUS_GAINED)
                 {
@@ -2717,6 +4336,17 @@ void frontendRunLoop(const EmulatorOptions& options)
             }
         }
 
+        if (frontendGamePaused())
+        {
+            SDL_Delay(1);
+            continue;
+        }
+
+        // Throttle mode keeps the guest running, but lowers frontend polling and
+        // presentation cadence while the SDL window is minimized.
+        bool minimizedThrottle = isWindowMinimized() &&
+            currentMinimizedBehavior() == MINIMIZED_BEHAVIOR_THROTTLE;
+
         updateVirtualMouseReleaseTimer();
         inputPollKeyboardState();
 
@@ -2728,7 +4358,9 @@ void frontendRunLoop(const EmulatorOptions& options)
         updateAutoPressA(now, startTicks);
         updateAutoPressPlan(now, startTicks);
         updateAutoPressSequence(now, startTicks);
-        bool presentDue = !hasPresentedFrame || !lastPresentTicks || now - lastPresentTicks >= minPresentIntervalMs;
+        uint64_t activePresentIntervalMs = minimizedThrottle ?
+            kMinimizedThrottlePresentIntervalMs : minPresentIntervalMs;
+        bool presentDue = !hasPresentedFrame || !lastPresentTicks || now - lastPresentTicks >= activePresentIntervalMs;
         if ((pendingFrameRequest && presentDue) || !hasPresentedFrame)
         {
             copyPresentedFramebuff(frameCopy, sizeof(frameCopy));
@@ -2777,7 +4409,11 @@ void frontendRunLoop(const EmulatorOptions& options)
             }
         }
 
-        if (!drewFrame)
+        if (minimizedThrottle)
+        {
+            SDL_Delay(kMinimizedThrottleLoopDelayMs);
+        }
+        else if (!drewFrame)
         {
             SDL_Delay(1);
         }

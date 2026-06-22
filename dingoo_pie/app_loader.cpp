@@ -8,6 +8,14 @@
 #include <strings.h>
 #include "runtime_debug.h"
 
+static const uint32_t APP_PACKED_RECORD_SIZE = 36;
+static const uint32_t APP_PACKED_NAME_SIZE = 32;
+static const uint32_t APP_PACKED_MAX_TABLES = 8;
+static const uint32_t APP_PACKED_SCAN_ALIGNMENT = 0x1000;
+static const uint32_t APP_PACKED_MIN_VALID_RATIO_NUM = 8;
+static const uint32_t APP_PACKED_MIN_VALID_RATIO_DEN = 10;
+static const uint32_t APP_PACKED_MIN_KNOWN_EXTENSIONS = 8;
+
 // Dingoo Technology .app containers are fixed-size little-endian chunks
 // followed by raw MIPS code and optional resource tables. Several header words
 // are still known only by observation, so they stay reserved instead of being
@@ -287,32 +295,32 @@ typedef struct {
 
 static bool app_packed_table_probe(app* inApp, uint32_t base, uint32_t inSize, packed_resource_table* out)
 {
+	// Short-name packed tables have no magic value. Require several independent
+	// signals so arbitrary bytes appended after RAWD are not exposed as files.
 	if (!inApp || !inApp->file_data || base + 2 > inSize)
 	{
 		return false;
 	}
 
 	uint32_t count = app_read_u16(inApp->file_data, base);
-	const uint32_t recordSize = 36;
-	const uint32_t nameSize = 32;
-	uint32_t tableEnd = base + 2 + count * recordSize;
+	uint32_t tableEnd = base + 2 + count * APP_PACKED_RECORD_SIZE;
 	if (count == 0 || count > 1024 || tableEnd > inSize)
 	{
 		return false;
 	}
 
-	uint32_t tableSize = 2 + count * recordSize;
+	uint32_t tableSize = 2 + count * APP_PACKED_RECORD_SIZE;
 	uint32_t validNames = 0;
 	uint32_t knownNames = 0;
 	uint32_t validOffsets = 0;
 	uint32_t lastOffset = tableSize;
-	char nameBuf[33];
+	char nameBuf[APP_PACKED_NAME_SIZE + 1];
 
 	for (uint32_t i = 0; i < count; ++i)
 	{
-		uint32_t rec = base + 2 + i * recordSize;
-		int nameLen = app_resource_name_len(inApp->file_data + rec, nameSize);
-		uint32_t relOffset = app_read_u32(inApp->file_data, rec + nameSize);
+		uint32_t rec = base + 2 + i * APP_PACKED_RECORD_SIZE;
+		int nameLen = app_resource_name_len(inApp->file_data + rec, APP_PACKED_NAME_SIZE);
+		uint32_t relOffset = app_read_u32(inApp->file_data, rec + APP_PACKED_NAME_SIZE);
 		if (relOffset >= tableSize && base + relOffset < inSize)
 		{
 			validOffsets++;
@@ -336,7 +344,9 @@ static bool app_packed_table_probe(app* inApp, uint32_t base, uint32_t inSize, p
 		}
 	}
 
-	if (validNames < count * 8 / 10 || validOffsets < count * 8 / 10 || knownNames < 8)
+	if (validNames < count * APP_PACKED_MIN_VALID_RATIO_NUM / APP_PACKED_MIN_VALID_RATIO_DEN ||
+		validOffsets < count * APP_PACKED_MIN_VALID_RATIO_NUM / APP_PACKED_MIN_VALID_RATIO_DEN ||
+		knownNames < APP_PACKED_MIN_KNOWN_EXTENSIONS)
 	{
 		return false;
 	}
@@ -350,13 +360,11 @@ static bool app_packed_table_probe(app* inApp, uint32_t base, uint32_t inSize, p
 
 static uint32_t app_packed_next_offset(app* inApp, const packed_resource_table* table, uint32_t index, uint32_t currentOffset, uint32_t packageEnd)
 {
-	const uint32_t recordSize = 36;
-	const uint32_t nameSize = 32;
 	uint32_t best = packageEnd - table->base;
 	for (uint32_t i = index + 1; i < table->count; ++i)
 	{
-		uint32_t rec = table->base + 2 + i * recordSize;
-		uint32_t relOffset = app_read_u32(inApp->file_data, rec + nameSize);
+		uint32_t rec = table->base + 2 + i * APP_PACKED_RECORD_SIZE;
+		uint32_t relOffset = app_read_u32(inApp->file_data, rec + APP_PACKED_NAME_SIZE);
 		if (relOffset > currentOffset && relOffset < best)
 		{
 			best = relOffset;
@@ -367,15 +375,13 @@ static uint32_t app_packed_next_offset(app* inApp, const packed_resource_table* 
 
 static void app_parse_packed_table(app* inApp, const packed_resource_table* table, uint32_t packageEnd)
 {
-	const uint32_t recordSize = 36;
-	const uint32_t nameSize = 32;
-	char nameBuf[33];
+	char nameBuf[APP_PACKED_NAME_SIZE + 1];
 
 	for (uint32_t i = 0; i < table->count; ++i)
 	{
-		uint32_t rec = table->base + 2 + i * recordSize;
-		int nameLen = app_resource_name_len(inApp->file_data + rec, nameSize);
-		uint32_t relOffset = app_read_u32(inApp->file_data, rec + nameSize);
+		uint32_t rec = table->base + 2 + i * APP_PACKED_RECORD_SIZE;
+		int nameLen = app_resource_name_len(inApp->file_data + rec, APP_PACKED_NAME_SIZE);
+		uint32_t relOffset = app_read_u32(inApp->file_data, rec + APP_PACKED_NAME_SIZE);
 		if (nameLen <= 0 || relOffset < (table->table_end - table->base) || table->base + relOffset >= packageEnd)
 		{
 			continue;
@@ -395,12 +401,11 @@ static void app_parse_packed_table(app* inApp, const packed_resource_table* tabl
 
 static void app_parse_packed_resources(app* inApp, uint32_t rawEnd, uint32_t inSize)
 {
-	const uint32_t maxTables = 8;
-	packed_resource_table tables[maxTables];
+	packed_resource_table tables[APP_PACKED_MAX_TABLES];
 	uint32_t tableCount = 0;
-	uint32_t scan = ALIGN(rawEnd, 0x1000);
+	uint32_t scan = ALIGN(rawEnd, APP_PACKED_SCAN_ALIGNMENT);
 
-	for (uint32_t base = scan; base + 2 < inSize && tableCount < maxTables; base += 0x1000)
+	for (uint32_t base = scan; base + 2 < inSize && tableCount < APP_PACKED_MAX_TABLES; base += APP_PACKED_SCAN_ALIGNMENT)
 	{
 		packed_resource_table table;
 		if (app_packed_table_probe(inApp, base, inSize, &table))

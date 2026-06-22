@@ -12,6 +12,7 @@ static uint32_t g_volume = 100;
 static int g_masterVolumePercent = 100;
 static int g_bufferSamples = 2048;
 static bool g_guestMuteRequested = false;
+static bool g_frontendPauseRequested = false;
 static bool g_dropAudio = false;
 
 static SDL_mutex* audioMutex(void)
@@ -124,7 +125,7 @@ static int effectiveVolumePercentLocked(void)
 
 static bool outputMutedLocked(void)
 {
-    return g_guestMuteRequested || g_volume == 0 || g_masterVolumePercent == 0;
+    return g_frontendPauseRequested || g_guestMuteRequested || g_volume == 0 || g_masterVolumePercent == 0;
 }
 
 static bool dropAudioEnvEnabled(void)
@@ -349,6 +350,24 @@ void MixerSetMuted(bool muted)
         }
     }
     SDL_Log("Audio mute %s", g_guestMuteRequested ? "on" : "off");
+    unlockAudio();
+}
+
+void MixerSetFrontendPaused(bool paused)
+{
+    lockAudio();
+    g_frontendPauseRequested = paused;
+    if (g_audioDevice)
+    {
+        bool outputMuted = outputMutedLocked();
+        SDL_PauseAudioDevice(g_audioDevice, outputMuted ? 1 : 0);
+        if (paused)
+        {
+            // Avoid replaying stale guest audio when gameplay resumes.
+            SDL_ClearQueuedAudio(g_audioDevice);
+        }
+    }
+    SDL_Log("Audio frontend pause %s", g_frontendPauseRequested ? "on" : "off");
     unlockAudio();
 }
 

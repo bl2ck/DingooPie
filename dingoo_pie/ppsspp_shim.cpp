@@ -15,6 +15,7 @@
 
 #include "emulated_memory.h"
 #include "framebuffer.h"
+#include "pause_gate.h"
 #include "sdk_hle.h"
 #include "input_state.h"
 #include "guest_filesystem.h"
@@ -152,7 +153,7 @@ static const int kDefaultIrJitCpuHz = 336000000;
 static const int kMinIrJitCpuHz = 1000000;
 static const int kMaxIrJitCpuHz = 1000000000;
 static const int kDefaultIrJitSlicesPerSecond = 240;
-static const double kAutoRuntimeSpeedScale = 0.60;
+static const double kAutoRuntimeSpeedScale = 0.65;
 int CPU_HZ = kDefaultIrJitCpuHz;
 int CoreTiming::slicelength = kDefaultIrJitCpuHz / kDefaultIrJitSlicesPerSecond;
 BreakpointManager g_breakpoints;
@@ -2010,6 +2011,7 @@ uint32_t ppssppShimRunCodeHook(uint32_t address)
     // keeps normal JIT execution hot while preserving the native hook contract.
     g_ppssppHookCalls++;
     ppssppShimProfileTick();
+    pauseGateWaitForResume();
 
     uint32_t fastReturnValue = 0;
     if (bridge_try_fast_return_hook(address, &fastReturnValue))

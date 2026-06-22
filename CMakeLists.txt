@@ -16,6 +16,10 @@ if(WIN32)
     list(APPEND targetName_src
         "${CMAKE_CURRENT_SOURCE_DIR}/dingoo_pie/app_icon.rc"
     )
+    set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/dingoo_pie/app_icon.rc" PROPERTIES
+        OBJECT_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/dingoo_pie/app_metadata.h;${CMAKE_CURRENT_SOURCE_DIR}/dingoo_pie/resource_ids.h;${CMAKE_CURRENT_SOURCE_DIR}/dingoo_pie/app.manifest;${CMAKE_CURRENT_SOURCE_DIR}/resources/app_icon.ico"
+    )
 endif()
 
 list(APPEND targetName_src
@@ -132,16 +136,22 @@ target_link_libraries(${targetName} PRIVATE
     "${DINGOO_PIE_DEPS_ROOT}/SDL2/SDL2-2.26.5/x86_64-w64-mingw32/lib/libSDL2.dll.a"
     imm32
     gdiplus
+    comctl32
+    uxtheme
     shell32
     winmm
     pthread
 )
 
 get_filename_component(DINGOO_PIE_COMPILER_BIN_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
+set(DINGOO_PIE_WINPTHREAD_DLL "${DINGOO_PIE_COMPILER_BIN_DIR}/libwinpthread-1.dll")
+if(NOT EXISTS "${DINGOO_PIE_WINPTHREAD_DLL}")
+    set(DINGOO_PIE_WINPTHREAD_DLL "${DINGOO_PIE_DEPS_ROOT}/winpthread/mingw64/bin/libwinpthread-1.dll")
+endif()
 set(DINGOO_PIE_RUNTIME_DLLS
     "${DINGOO_PIE_DEPS_ROOT}/SDL2/SDL2-2.26.5/x86_64-w64-mingw32/bin/SDL2.dll"
     "${DINGOO_PIE_DEPS_ROOT}/capstone/mingw64/bin/libcapstone.dll"
-    "${DINGOO_PIE_COMPILER_BIN_DIR}/libwinpthread-1.dll"
+    "${DINGOO_PIE_WINPTHREAD_DLL}"
 )
 
 foreach(runtimeDll IN LISTS DINGOO_PIE_RUNTIME_DLLS)

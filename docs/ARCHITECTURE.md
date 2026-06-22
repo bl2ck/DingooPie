@@ -25,7 +25,7 @@ Technology; game files are external test inputs, not project assets.
 1. `main.cpp` loads optional settings, applies them to environment variables,
    initializes SDL, and starts the guest runtime thread only when an app path
    was provided on the command line. Without a startup app, the frontend stays
-   open and waits for `File/Open .app`.
+   open and waits for `File/Open Game`.
 2. `emulator_core.cpp` parses the `.app`, computes its SHA256 identity, maps
    guest memory, initializes the HLE bridge and virtual file system, installs
    compatibility hooks, and jumps to the guest entry point.
@@ -45,11 +45,16 @@ Technology; game files are external test inputs, not project assets.
 The Windows frontend is a normal menu-driven SDL window. It does not show a
 file picker on process startup. Empty `recent.last_app` opens the frontend only;
 an existing `recent.last_app` is auto-loaded; command-line paths take priority.
-`File/Open Game .app` saves the selected path to `recent.last_app` and launches
-the selected app in a fresh emulator process.
+`File/Open Game`, `File/Recent Games`, and SDL file drops validate the
+selected path, save it to `recent.last_app`, promote it in the recent-game list,
+and launch the selected app in a fresh emulator process.
+`File/Recent Games/Clear Recent Games` clears the startup recent path and the
+ordered recent-game menu list. `File/Pause Game` and `File/Resume Game` are
+runtime-only commands that block guest frame submission at a complete frame
+boundary while keeping the frontend menu responsive.
 Automatic `recent.last_app` startup is self-healing: invalid extensions,
-missing files, and app open/parse failures clear the stored path. Command-line
-startup failures are not persisted back to settings.
+missing files, and app open/parse failures clear the matching stored path.
+Command-line startup failures are not persisted back to settings.
 
 Runtime UI text is localized through `ui_strings.*`. Keep English and Chinese
 strings in sync when changing menu labels, dialog titles, confirmation prompts,
@@ -57,11 +62,11 @@ or About text.
 
 Current user-facing controls are grouped as File, Options, Settings, Debug, and
 Help. Options contains the Video, Audio, and Input submenus. The menus include
-app opening, screenshot export, video scale/filter/effect adjustment, windowed
+app opening, game pause/resume, screenshot export, video scale/anti-aliasing/effect adjustment, windowed
 fullscreen, brightness, contrast, saturation, FPS overlay, virtual controls,
-IME disable mode, language, backend/runtime timing options, master volume,
-audio disable, debug console/profile controls, log opening, settings save/reset,
-and About.
+SDL GameController input, IME disable mode, language, backend/runtime timing
+options, master volume, audio disable, debug console/profile controls, log
+opening, settings save/reset, and About.
 
 ## Source Boundaries
 
@@ -130,24 +135,45 @@ The INI reader accepts UTF-16LE with BOM, UTF-8 with or without BOM, and a
 system ANSI fallback so manually edited Chinese paths remain loadable.
 Saves rewrite `DingooPie.ini` in frontend order so existing files are normalized
 to `recent`, `video`, `audio`, `input`, `runtime`, `ui`, then `debug`.
+The `recent` section keeps `last_app` for startup compatibility and writes
+`app1` through `app10` as the ordered recent-game menu source.
 `video.scale` is limited to 1, 2, or 3. `video.fullscreen=1` uses a maximized
 window instead of SDL exclusive fullscreen so the native Windows menu remains
 accessible.
+`video.anti_aliasing` is a frontend presentation option. `off` uses nearest
+sampling, `low` uses SDL linear sampling, and `clear` adds a light CPU RGB565
+clarity pass before texture upload while leaving guest memory unchanged.
+Unknown or invalid INI values fall back to current defaults instead of being
+specially mapped.
+`video.effect` is also presentation-only. Most effects are applied as RGB565
+post-processes before texture upload; `pixel_grid` is a scaled-output overlay so
+the grid follows the current window or screenshot size without blurring the
+guest framebuffer.
+`video.minimized_behavior` controls the SDL minimized-window policy. `normal`
+keeps the normal loop, `throttle` lowers frontend presentation and loop cadence,
+and `pause` uses the shared pause gate until the window is restored. Unknown or
+invalid values fall back to the current default.
 `video.portrait=1` is a frontend presentation transform: the guest framebuffer
 stays 320x240, while SDL rendering, screenshot output, and virtual-control
 coordinates rotate 90 degrees counter-clockwise.
 `input.disable_ime=1` is the default. It keeps Windows input methods detached
 from the SDL window unless the user disables the option from the Input menu.
+`input.keyboard_mapping` and `input.controller_mapping` follow the same Input
+menu group. Empty means the built-in keyboard or SDL GameController defaults;
+non-empty values store only custom differences as comma-separated
+`Physical=Control` pairs. The frontend/input layer rebuilds the runtime maps
+from defaults plus these overrides and releases active synthetic controls
+before applying a new map.
 
 `runtime.speed_scale=` means `Auto` in the INI and menu. Auto does not set
 `DINGOO_PIE_RUNTIME_SPEED_SCALE`; the runtime maps that unset state to the
-global 60% pace. Explicit menu values write their numeric scale into the INI
+global 65% pace. Explicit menu values write their numeric scale into the INI
 and the runtime environment.
 `runtime.cpu_hz=` means `Auto`; explicit CPU clock menu values write the
 selected IR JIT clock to the INI and `DINGOO_PIE_IRJIT_CLOCK_HZ`.
 `runtime.backend=` means `Auto` and resolves through the backend parser to
 PPSSPP IR JIT. `runtime.ostimedly_scale=` means `Auto` and uses the global
-SDK delay scale of 1.0 unless a compatibility profile supplies a narrower app
+delay scale of 1.0 unless a compatibility profile supplies a narrower app
 override.
 `audio.buffer_samples` controls only the SDL output device buffer request; the
 guest SDK still supplies waveout sample rate, sample format, and channel count.
@@ -160,7 +186,12 @@ inputs and must not be committed or shipped in development packages.
 `.app` files.
 
 The loader exposes CCDL/IMPT/EXPT/RAWD metadata and raw ERPT/packed resources.
-It does not parse game-specific 3D resource formats.
+ERPT payloads are treated as XOR-encoded resource records. Packed resources are
+found by conservative table probes because the short-name packed table has no
+magic value; candidates must have printable names, plausible offsets, and a
+minimum number of known file extensions. The companion app tool mirrors this
+logic so unpack/repack behavior stays aligned with runtime loading. The loader
+does not parse game-specific 3D resource formats.
 
 The package may include:
 
@@ -172,6 +203,9 @@ Dependency archives and extracted dependency trees such as `downloads/`,
 under `release/` are local build workspaces. They can be regenerated by
 `scripts/bootstrap_windows.ps1` and `scripts/build_release.ps1` and are not
 treated as project source.
+Windows release builds must include `SDL2.dll`, `libcapstone.dll`, and
+`libwinpthread-1.dll` alongside `DingooPie.exe`; missing required DLLs fail
+release generation rather than being silently skipped.
 
 ## Debugging Policy
 

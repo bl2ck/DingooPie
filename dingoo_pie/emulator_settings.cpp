@@ -1,5 +1,6 @@
 #include "emulator_settings.h"
 
+#include "app_paths.h"
 #include "framebuffer.h"
 #include "guest_filesystem.h"
 #include "platform_win32.h"
@@ -39,17 +40,11 @@ static bool parseBoolText(const char* text, bool fallback)
     {
         return fallback;
     }
-    if (strcmp(text, "1") == 0 ||
-        _stricmp(text, "true") == 0 ||
-        _stricmp(text, "on") == 0 ||
-        _stricmp(text, "yes") == 0)
+    if (strcmp(text, "1") == 0)
     {
         return true;
     }
-    if (strcmp(text, "0") == 0 ||
-        _stricmp(text, "false") == 0 ||
-        _stricmp(text, "off") == 0 ||
-        _stricmp(text, "no") == 0)
+    if (strcmp(text, "0") == 0)
     {
         return false;
     }
@@ -109,11 +104,11 @@ static std::string normalizeBackendName(const std::string& value, const std::str
     {
         return "";
     }
-    if (stringEqualsIgnoreCase(value, "ppsspp_irjit") || stringEqualsIgnoreCase(value, "irjit"))
+    if (stringEqualsIgnoreCase(value, "ppsspp_irjit"))
     {
         return "ppsspp_irjit";
     }
-    if (stringEqualsIgnoreCase(value, "interpreter") || stringEqualsIgnoreCase(value, "native"))
+    if (stringEqualsIgnoreCase(value, "interpreter"))
     {
         return "interpreter";
     }
@@ -136,10 +131,10 @@ static std::string normalizeCpuClockHz(const std::string& value, const std::stri
     switch (parsed)
     {
     case 200000000:
-    case 240000000:
-    case 288000000:
     case 336000000:
-    case 408000000:
+    case 370000000:
+    case 400000000:
+    case 430000000:
         return std::to_string(parsed);
     default:
         return fallback;
@@ -181,6 +176,110 @@ static std::string normalizeScaleValue(const std::string& value, const std::stri
     return normalized;
 }
 
+static AntiAliasingMode parseAntiAliasingMode(const std::string& value, AntiAliasingMode fallback)
+{
+    if (value.empty())
+    {
+        return fallback;
+    }
+    if (_stricmp(value.c_str(), "off") == 0)
+    {
+        return ANTI_ALIASING_OFF;
+    }
+    if (_stricmp(value.c_str(), "low") == 0)
+    {
+        return ANTI_ALIASING_LOW;
+    }
+    if (_stricmp(value.c_str(), "clear") == 0)
+    {
+        return ANTI_ALIASING_CLEAR;
+    }
+    return fallback;
+}
+
+static ColorEffectMode parseColorEffectMode(const std::string& value, ColorEffectMode fallback)
+{
+    if (value.empty())
+    {
+        return fallback;
+    }
+    if (_stricmp(value.c_str(), "normal") == 0)
+    {
+        return COLOR_EFFECT_NORMAL;
+    }
+    if (_stricmp(value.c_str(), "grayscale") == 0)
+    {
+        return COLOR_EFFECT_GRAYSCALE;
+    }
+    if (_stricmp(value.c_str(), "invert") == 0)
+    {
+        return COLOR_EFFECT_INVERT;
+    }
+    if (_stricmp(value.c_str(), "soft_blur") == 0)
+    {
+        return COLOR_EFFECT_SOFT_BLUR;
+    }
+    if (_stricmp(value.c_str(), "sharpen") == 0)
+    {
+        return COLOR_EFFECT_SHARPEN;
+    }
+    if (_stricmp(value.c_str(), "vivid") == 0)
+    {
+        return COLOR_EFFECT_VIVID;
+    }
+    if (_stricmp(value.c_str(), "sepia") == 0)
+    {
+        return COLOR_EFFECT_SEPIA;
+    }
+    if (_stricmp(value.c_str(), "pixel_grid") == 0)
+    {
+        return COLOR_EFFECT_PIXEL_GRID;
+    }
+    if (_stricmp(value.c_str(), "lcd_scanline") == 0)
+    {
+        return COLOR_EFFECT_LCD_SCANLINE;
+    }
+    if (_stricmp(value.c_str(), "light_crt") == 0)
+    {
+        return COLOR_EFFECT_LIGHT_CRT;
+    }
+    return fallback;
+}
+
+static MinimizedBehavior parseMinimizedBehavior(const std::string& value, MinimizedBehavior fallback)
+{
+    if (value.empty())
+    {
+        return fallback;
+    }
+    if (_stricmp(value.c_str(), "normal") == 0)
+    {
+        return MINIMIZED_BEHAVIOR_NORMAL;
+    }
+    if (_stricmp(value.c_str(), "throttle") == 0)
+    {
+        return MINIMIZED_BEHAVIOR_THROTTLE;
+    }
+    if (_stricmp(value.c_str(), "pause") == 0)
+    {
+        return MINIMIZED_BEHAVIOR_PAUSE;
+    }
+    return fallback;
+}
+
+static int normalizeWindowScale(int value, int fallback)
+{
+    switch (value)
+    {
+    case 1:
+    case 2:
+    case 3:
+        return value;
+    default:
+        return fallback;
+    }
+}
+
 static int normalizeAudioBufferSamples(int value, int fallback)
 {
     switch (value)
@@ -194,6 +293,86 @@ static int normalizeAudioBufferSamples(int value, int fallback)
     default:
         return fallback;
     }
+}
+
+static bool recentAppPathsMatch(const std::string& a, const std::string& b)
+{
+#ifdef _WIN32
+    return _stricmp(appNormalizePath(a.c_str()).c_str(), appNormalizePath(b.c_str()).c_str()) == 0;
+#else
+    return appNormalizePath(a.c_str()) == appNormalizePath(b.c_str());
+#endif
+}
+
+static UiLanguage parseUiLanguage(const std::string& value, UiLanguage fallback)
+{
+    if (value.empty())
+    {
+        return fallback;
+    }
+    if (_stricmp(value.c_str(), "english") == 0)
+    {
+        return UI_LANGUAGE_ENGLISH;
+    }
+    if (_stricmp(value.c_str(), "chinese") == 0)
+    {
+        return UI_LANGUAGE_CHINESE;
+    }
+    return fallback;
+}
+
+static bool recentListContains(const std::vector<std::string>& paths, const std::string& appPath)
+{
+    for (size_t i = 0; i < paths.size(); ++i)
+    {
+        if (recentAppPathsMatch(paths[i], appPath))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void appendRecentIfUnique(std::vector<std::string>* paths, const std::string& appPath)
+{
+    if (!paths || appPath.empty() || paths->size() >= EMULATOR_RECENT_APP_LIMIT ||
+        recentListContains(*paths, appPath))
+    {
+        return;
+    }
+    paths->push_back(appPath);
+}
+
+static std::vector<std::string> buildNormalizedRecentAppList(
+    const std::string& lastAppPath,
+    const std::vector<std::string>& appPaths)
+{
+    std::vector<std::string> normalized;
+    normalized.reserve(EMULATOR_RECENT_APP_LIMIT);
+    appendRecentIfUnique(&normalized, lastAppPath);
+    for (size_t i = 0; i < appPaths.size(); ++i)
+    {
+        appendRecentIfUnique(&normalized, appPaths[i]);
+    }
+    return normalized;
+}
+
+static bool recentListsEqual(
+    const std::vector<std::string>& a,
+    const std::vector<std::string>& b)
+{
+    if (a.size() != b.size())
+    {
+        return false;
+    }
+    for (size_t i = 0; i < a.size(); ++i)
+    {
+        if (a[i] != b[i])
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 #ifdef _WIN32
@@ -273,17 +452,28 @@ static bool writeOrderedSettingsFile(const EmulatorSettings& settings, const std
 {
     std::wstring text;
 
+    // Keep the generated INI grouped in the same order as persistent menu
+    // controls: File recent, Options > Video/Audio/Input, Settings, then Debug.
     appendIniSection(&text, L"recent");
     appendIniValue(&text, L"last_app", settings.lastAppPath);
+    std::vector<std::string> recentApps = buildNormalizedRecentAppList(
+        settings.lastAppPath, settings.recentAppPaths);
+    for (size_t i = 0; i < recentApps.size(); ++i)
+    {
+        wchar_t key[16] = {};
+        swprintf(key, sizeof(key) / sizeof(key[0]), L"app%u", (unsigned int)(i + 1));
+        appendIniValue(&text, key, recentApps[i]);
+    }
 
     appendIniSection(&text, L"video");
     appendIniValue(&text, L"scale", clampInt(settings.windowScale, 1, 3));
     appendIniValue(&text, L"fullscreen", settings.fullscreen);
-    appendIniValue(&text, L"filter", emulatorVideoFilterName(settings.videoFilter));
+    appendIniValue(&text, L"anti_aliasing", emulatorAntiAliasingName(settings.antiAliasing));
     appendIniValue(&text, L"effect", emulatorColorEffectName(settings.colorEffect));
     appendIniValue(&text, L"brightness", clampInt(settings.brightnessPercent, 50, 150));
     appendIniValue(&text, L"contrast", clampInt(settings.contrastPercent, 50, 150));
     appendIniValue(&text, L"saturation", clampInt(settings.saturationPercent, 0, 200));
+    appendIniValue(&text, L"minimized_behavior", emulatorMinimizedBehaviorName(settings.minimizedBehavior));
     appendIniValue(&text, L"portrait", settings.portraitMode);
     appendIniValue(&text, L"show_fps", settings.showFps);
 
@@ -293,8 +483,10 @@ static bool writeOrderedSettingsFile(const EmulatorSettings& settings, const std
     appendIniValue(&text, L"drop_audio", settings.dropAudio);
 
     appendIniSection(&text, L"input");
-    appendIniValue(&text, L"show_virtual_controls", settings.showVirtualControls);
     appendIniValue(&text, L"disable_ime", settings.disableIme);
+    appendIniValue(&text, L"show_virtual_controls", settings.showVirtualControls);
+    appendIniValue(&text, L"keyboard_mapping", settings.keyboardMapping);
+    appendIniValue(&text, L"controller_mapping", settings.controllerMapping);
 
     appendIniSection(&text, L"runtime");
     appendIniValue(&text, L"backend", settings.backendName);
@@ -572,14 +764,16 @@ EmulatorSettings emulatorDefaultSettings(void)
 {
     EmulatorSettings settings;
     settings.lastAppPath = "";
+    settings.recentAppPaths.clear();
 
     settings.windowScale = 2;
     settings.fullscreen = false;
-    settings.videoFilter = VIDEO_FILTER_NEAREST;
+    settings.antiAliasing = ANTI_ALIASING_OFF;
     settings.colorEffect = COLOR_EFFECT_NORMAL;
     settings.brightnessPercent = 100;
     settings.contrastPercent = 100;
     settings.saturationPercent = 100;
+    settings.minimizedBehavior = MINIMIZED_BEHAVIOR_THROTTLE;
     settings.portraitMode = false;
     settings.showFps = false;
 
@@ -587,8 +781,10 @@ EmulatorSettings emulatorDefaultSettings(void)
     settings.audioBufferSamples = 2048;
     settings.dropAudio = false;
 
-    settings.showVirtualControls = false;
     settings.disableIme = true;
+    settings.showVirtualControls = false;
+    settings.keyboardMapping = "";
+    settings.controllerMapping = "";
 
     settings.backendName = "";
     settings.cpuClockHz = "";
@@ -626,51 +822,30 @@ EmulatorSettings emulatorLoadSettings(void)
     std::string path = emulatorSettingsPath();
     EmulatorSettings settings = defaults;
     settings.lastAppPath = readIniString("recent", "last_app", defaults.lastAppPath.c_str(), path);
+    std::vector<std::string> recentApps;
+    recentApps.reserve(EMULATOR_RECENT_APP_LIMIT);
+    appendRecentIfUnique(&recentApps, settings.lastAppPath);
+    for (int i = 1; i <= EMULATOR_RECENT_APP_LIMIT; ++i)
+    {
+        char key[16] = {};
+        snprintf(key, sizeof(key), "app%d", i);
+        appendRecentIfUnique(&recentApps, readIniString("recent", key, "", path));
+    }
+    settings.recentAppPaths = recentApps;
 
-    settings.windowScale = clampInt(readIniInt("video", "scale", defaults.windowScale, path), 1, 3);
+    settings.windowScale = normalizeWindowScale(
+        readIniInt("video", "scale", defaults.windowScale, path),
+        defaults.windowScale);
     settings.fullscreen = parseBoolText(readIniString("video", "fullscreen", defaults.fullscreen ? "1" : "0", path).c_str(), defaults.fullscreen);
-    std::string filter = readIniString("video", "filter", emulatorVideoFilterName(defaults.videoFilter), path);
-    settings.videoFilter = (_stricmp(filter.c_str(), "linear") == 0) ? VIDEO_FILTER_LINEAR : VIDEO_FILTER_NEAREST;
+    std::string antiAliasing = readIniString("video", "anti_aliasing", emulatorAntiAliasingName(defaults.antiAliasing), path);
+    settings.antiAliasing = parseAntiAliasingMode(antiAliasing, defaults.antiAliasing);
     std::string effect = readIniString("video", "effect", emulatorColorEffectName(defaults.colorEffect), path);
-    if (_stricmp(effect.c_str(), "grayscale") == 0)
-    {
-        settings.colorEffect = COLOR_EFFECT_GRAYSCALE;
-    }
-    else if (_stricmp(effect.c_str(), "invert") == 0)
-    {
-        settings.colorEffect = COLOR_EFFECT_INVERT;
-    }
-    else if (_stricmp(effect.c_str(), "invert_grayscale") == 0)
-    {
-        settings.colorEffect = COLOR_EFFECT_INVERT_GRAYSCALE;
-    }
-    else if (_stricmp(effect.c_str(), "sepia") == 0)
-    {
-        settings.colorEffect = COLOR_EFFECT_SEPIA;
-    }
-    else if (_stricmp(effect.c_str(), "amber") == 0)
-    {
-        settings.colorEffect = COLOR_EFFECT_AMBER;
-    }
-    else if (_stricmp(effect.c_str(), "sharpen") == 0)
-    {
-        settings.colorEffect = COLOR_EFFECT_SHARPEN;
-    }
-    else if (_stricmp(effect.c_str(), "soft_blur") == 0)
-    {
-        settings.colorEffect = COLOR_EFFECT_SOFT_BLUR;
-    }
-    else if (_stricmp(effect.c_str(), "lcd_scanline") == 0)
-    {
-        settings.colorEffect = COLOR_EFFECT_LCD_SCANLINE;
-    }
-    else
-    {
-        settings.colorEffect = COLOR_EFFECT_NORMAL;
-    }
+    settings.colorEffect = parseColorEffectMode(effect, defaults.colorEffect);
     settings.brightnessPercent = clampInt(readIniInt("video", "brightness", defaults.brightnessPercent, path), 50, 150);
     settings.contrastPercent = clampInt(readIniInt("video", "contrast", defaults.contrastPercent, path), 50, 150);
     settings.saturationPercent = clampInt(readIniInt("video", "saturation", defaults.saturationPercent, path), 0, 200);
+    std::string minimizedBehavior = readIniString("video", "minimized_behavior", emulatorMinimizedBehaviorName(defaults.minimizedBehavior), path);
+    settings.minimizedBehavior = parseMinimizedBehavior(minimizedBehavior, defaults.minimizedBehavior);
     settings.portraitMode = parseBoolText(readIniString("video", "portrait", defaults.portraitMode ? "1" : "0", path).c_str(), defaults.portraitMode);
     settings.showFps = parseBoolText(readIniString("video", "show_fps", defaults.showFps ? "1" : "0", path).c_str(), defaults.showFps);
 
@@ -680,8 +855,10 @@ EmulatorSettings emulatorLoadSettings(void)
         defaults.audioBufferSamples);
     settings.dropAudio = parseBoolText(readIniString("audio", "drop_audio", defaults.dropAudio ? "1" : "0", path).c_str(), defaults.dropAudio);
 
-    settings.showVirtualControls = parseBoolText(readIniString("input", "show_virtual_controls", defaults.showVirtualControls ? "1" : "0", path).c_str(), defaults.showVirtualControls);
     settings.disableIme = parseBoolText(readIniString("input", "disable_ime", defaults.disableIme ? "1" : "0", path).c_str(), defaults.disableIme);
+    settings.showVirtualControls = parseBoolText(readIniString("input", "show_virtual_controls", defaults.showVirtualControls ? "1" : "0", path).c_str(), defaults.showVirtualControls);
+    settings.keyboardMapping = readIniString("input", "keyboard_mapping", defaults.keyboardMapping.c_str(), path);
+    settings.controllerMapping = readIniString("input", "controller_mapping", defaults.controllerMapping.c_str(), path);
 
     settings.backendName = normalizeBackendName(
         readIniString("runtime", "backend", defaults.backendName.c_str(), path),
@@ -697,9 +874,7 @@ EmulatorSettings emulatorLoadSettings(void)
         defaults.ostimeDlyScale);
 
     std::string language = readIniString("ui", "language", emulatorUiLanguageName(defaults.uiLanguage), path);
-    settings.uiLanguage = (_stricmp(language.c_str(), "chinese") == 0 ||
-        _stricmp(language.c_str(), "zh_cn") == 0 ||
-        _stricmp(language.c_str(), "zh") == 0) ? UI_LANGUAGE_CHINESE : UI_LANGUAGE_ENGLISH;
+    settings.uiLanguage = parseUiLanguage(language, defaults.uiLanguage);
 
     settings.showDebugConsole = parseBoolText(readIniString("debug", "show_console", defaults.showDebugConsole ? "1" : "0", path).c_str(), defaults.showDebugConsole);
     settings.debugProfile = parseBoolText(readIniString("debug", "profile", defaults.debugProfile ? "1" : "0", path).c_str(), defaults.debugProfile);
@@ -713,21 +888,34 @@ bool emulatorSaveSettings(const EmulatorSettings& settings)
     bool ok = writeOrderedSettingsFile(settings, path);
 #else
     bool ok = true;
+    // Match the Windows full-file writer order so manually inspected INI files
+    // stay aligned with the frontend menu layout.
     ok = writeIniString("recent", "last_app", settings.lastAppPath, path) && ok;
+    std::vector<std::string> recentApps = buildNormalizedRecentAppList(
+        settings.lastAppPath, settings.recentAppPaths);
+    for (size_t i = 0; i < recentApps.size(); ++i)
+    {
+        char key[16] = {};
+        snprintf(key, sizeof(key), "app%u", (unsigned int)(i + 1));
+        ok = writeIniString("recent", key, recentApps[i], path) && ok;
+    }
     ok = writeIniString("video", "scale", std::to_string(clampInt(settings.windowScale, 1, 3)), path) && ok;
     ok = writeIniString("video", "fullscreen", settings.fullscreen ? "1" : "0", path) && ok;
-    ok = writeIniString("video", "filter", emulatorVideoFilterName(settings.videoFilter), path) && ok;
+    ok = writeIniString("video", "anti_aliasing", emulatorAntiAliasingName(settings.antiAliasing), path) && ok;
     ok = writeIniString("video", "effect", emulatorColorEffectName(settings.colorEffect), path) && ok;
     ok = writeIniString("video", "brightness", std::to_string(clampInt(settings.brightnessPercent, 50, 150)), path) && ok;
     ok = writeIniString("video", "contrast", std::to_string(clampInt(settings.contrastPercent, 50, 150)), path) && ok;
     ok = writeIniString("video", "saturation", std::to_string(clampInt(settings.saturationPercent, 0, 200)), path) && ok;
+    ok = writeIniString("video", "minimized_behavior", emulatorMinimizedBehaviorName(settings.minimizedBehavior), path) && ok;
     ok = writeIniString("video", "portrait", settings.portraitMode ? "1" : "0", path) && ok;
     ok = writeIniString("video", "show_fps", settings.showFps ? "1" : "0", path) && ok;
     ok = writeIniString("audio", "volume_percent", std::to_string(clampInt(settings.audioVolumePercent, 0, 150)), path) && ok;
     ok = writeIniString("audio", "buffer_samples", std::to_string(normalizeAudioBufferSamples(settings.audioBufferSamples, 2048)), path) && ok;
     ok = writeIniString("audio", "drop_audio", settings.dropAudio ? "1" : "0", path) && ok;
-    ok = writeIniString("input", "show_virtual_controls", settings.showVirtualControls ? "1" : "0", path) && ok;
     ok = writeIniString("input", "disable_ime", settings.disableIme ? "1" : "0", path) && ok;
+    ok = writeIniString("input", "show_virtual_controls", settings.showVirtualControls ? "1" : "0", path) && ok;
+    ok = writeIniString("input", "keyboard_mapping", settings.keyboardMapping, path) && ok;
+    ok = writeIniString("input", "controller_mapping", settings.controllerMapping, path) && ok;
     ok = writeIniString("runtime", "backend", settings.backendName, path) && ok;
     ok = writeIniString("runtime", "cpu_hz", settings.cpuClockHz, path) && ok;
     ok = writeIniString("runtime", "speed_scale", settings.runtimeSpeedScale, path) && ok;
@@ -743,21 +931,102 @@ bool emulatorSaveSettings(const EmulatorSettings& settings)
     return ok;
 }
 
+bool emulatorRememberRecentApp(EmulatorSettings* settings, const std::string& appPath)
+{
+    if (!settings || appPath.empty())
+    {
+        return false;
+    }
+
+    std::vector<std::string> next;
+    next.reserve(EMULATOR_RECENT_APP_LIMIT);
+    appendRecentIfUnique(&next, appPath);
+    for (size_t i = 0; i < settings->recentAppPaths.size(); ++i)
+    {
+        appendRecentIfUnique(&next, settings->recentAppPaths[i]);
+    }
+    appendRecentIfUnique(&next, settings->lastAppPath);
+
+    bool changed = !recentAppPathsMatch(settings->lastAppPath, appPath) ||
+        !recentListsEqual(settings->recentAppPaths, next);
+    settings->lastAppPath = appPath;
+    settings->recentAppPaths = next;
+    return changed;
+}
+
+bool emulatorRemoveRecentApp(EmulatorSettings* settings, const std::string& appPath)
+{
+    if (!settings || appPath.empty())
+    {
+        return false;
+    }
+
+    const std::string targetPath = appPath;
+    std::vector<std::string> next;
+    next.reserve(EMULATOR_RECENT_APP_LIMIT);
+    bool removed = false;
+    for (size_t i = 0; i < settings->recentAppPaths.size(); ++i)
+    {
+        if (recentAppPathsMatch(settings->recentAppPaths[i], targetPath))
+        {
+            removed = true;
+            continue;
+        }
+        appendRecentIfUnique(&next, settings->recentAppPaths[i]);
+    }
+
+    if (!settings->lastAppPath.empty() && recentAppPathsMatch(settings->lastAppPath, targetPath))
+    {
+        removed = true;
+        settings->lastAppPath = next.empty() ? "" : next[0];
+    }
+
+    if (removed || !recentListsEqual(settings->recentAppPaths, next))
+    {
+        settings->recentAppPaths = next;
+        return true;
+    }
+    return false;
+}
+
+bool emulatorClearRecentApps(EmulatorSettings* settings)
+{
+    if (!settings)
+    {
+        return false;
+    }
+
+    bool changed = !settings->lastAppPath.empty() || !settings->recentAppPaths.empty();
+    settings->lastAppPath.clear();
+    settings->recentAppPaths.clear();
+    return changed;
+}
+
 void emulatorTraceSettings(const char* reason, const EmulatorSettings& settings)
 {
     const char* label = (reason && reason[0]) ? reason : "snapshot";
     printf("settings-trace: %s recent.last_app=\"%s\"\n",
         label,
         settings.lastAppPath.empty() ? "(empty)" : settings.lastAppPath.c_str());
-    printf("settings-trace: %s video.scale=%d video.fullscreen=%u video.filter=%s video.effect=%s video.brightness=%d video.contrast=%d video.saturation=%d video.portrait=%u video.show_fps=%u\n",
+    std::vector<std::string> recentApps = buildNormalizedRecentAppList(
+        settings.lastAppPath, settings.recentAppPaths);
+    for (size_t i = 0; i < recentApps.size(); ++i)
+    {
+        printf("settings-trace: %s recent.app%u=\"%s\"\n",
+            label,
+            (unsigned int)(i + 1),
+            recentApps[i].c_str());
+    }
+    printf("settings-trace: %s video.scale=%d video.fullscreen=%u video.anti_aliasing=%s video.effect=%s video.brightness=%d video.contrast=%d video.saturation=%d video.minimized_behavior=%s video.portrait=%u video.show_fps=%u\n",
         label,
         clampInt(settings.windowScale, 1, 3),
         settings.fullscreen ? 1u : 0u,
-        emulatorVideoFilterName(settings.videoFilter),
+        emulatorAntiAliasingName(settings.antiAliasing),
         emulatorColorEffectName(settings.colorEffect),
         clampInt(settings.brightnessPercent, 50, 150),
         clampInt(settings.contrastPercent, 50, 150),
         clampInt(settings.saturationPercent, 0, 200),
+        emulatorMinimizedBehaviorName(settings.minimizedBehavior),
         settings.portraitMode ? 1u : 0u,
         settings.showFps ? 1u : 0u);
     printf("settings-trace: %s audio.volume_percent=%d audio.buffer_samples=%d audio.drop_audio=%u\n",
@@ -765,10 +1034,12 @@ void emulatorTraceSettings(const char* reason, const EmulatorSettings& settings)
         clampInt(settings.audioVolumePercent, 0, 150),
         normalizeAudioBufferSamples(settings.audioBufferSamples, 2048),
         settings.dropAudio ? 1u : 0u);
-    printf("settings-trace: %s input.show_virtual_controls=%u input.disable_ime=%u\n",
+    printf("settings-trace: %s input.disable_ime=%u input.show_virtual_controls=%u input.keyboard_mapping=\"%s\" input.controller_mapping=\"%s\"\n",
         label,
+        settings.disableIme ? 1u : 0u,
         settings.showVirtualControls ? 1u : 0u,
-        settings.disableIme ? 1u : 0u);
+        settings.keyboardMapping.empty() ? "(default)" : settings.keyboardMapping.c_str(),
+        settings.controllerMapping.empty() ? "(default)" : settings.controllerMapping.c_str());
     printf("settings-trace: %s runtime.backend=%s runtime.cpu_hz=%s runtime.speed_scale=%s runtime.ostimedly_scale=%s\n",
         label,
         settings.backendName.empty() ? "auto" : settings.backendName.c_str(),
@@ -814,9 +1085,17 @@ void emulatorApplyRuntimeSettings(const EmulatorSettings& settings)
 #endif
 }
 
-const char* emulatorVideoFilterName(VideoFilterMode mode)
+const char* emulatorAntiAliasingName(AntiAliasingMode mode)
 {
-    return mode == VIDEO_FILTER_LINEAR ? "linear" : "nearest";
+    switch (mode)
+    {
+    case ANTI_ALIASING_LOW:
+        return "low";
+    case ANTI_ALIASING_CLEAR:
+        return "clear";
+    default:
+        return "off";
+    }
 }
 
 const char* emulatorColorEffectName(ColorEffectMode mode)
@@ -827,18 +1106,20 @@ const char* emulatorColorEffectName(ColorEffectMode mode)
         return "grayscale";
     case COLOR_EFFECT_INVERT:
         return "invert";
-    case COLOR_EFFECT_INVERT_GRAYSCALE:
-        return "invert_grayscale";
-    case COLOR_EFFECT_SEPIA:
-        return "sepia";
-    case COLOR_EFFECT_AMBER:
-        return "amber";
-    case COLOR_EFFECT_SHARPEN:
-        return "sharpen";
     case COLOR_EFFECT_SOFT_BLUR:
         return "soft_blur";
+    case COLOR_EFFECT_SHARPEN:
+        return "sharpen";
+    case COLOR_EFFECT_VIVID:
+        return "vivid";
+    case COLOR_EFFECT_SEPIA:
+        return "sepia";
+    case COLOR_EFFECT_PIXEL_GRID:
+        return "pixel_grid";
     case COLOR_EFFECT_LCD_SCANLINE:
         return "lcd_scanline";
+    case COLOR_EFFECT_LIGHT_CRT:
+        return "light_crt";
     default:
         return "normal";
     }
@@ -847,4 +1128,18 @@ const char* emulatorColorEffectName(ColorEffectMode mode)
 const char* emulatorUiLanguageName(UiLanguage language)
 {
     return language == UI_LANGUAGE_CHINESE ? "chinese" : "english";
+}
+
+const char* emulatorMinimizedBehaviorName(MinimizedBehavior behavior)
+{
+    switch (behavior)
+    {
+    case MINIMIZED_BEHAVIOR_NORMAL:
+        return "normal";
+    case MINIMIZED_BEHAVIOR_PAUSE:
+        return "pause";
+    case MINIMIZED_BEHAVIOR_THROTTLE:
+    default:
+        return "throttle";
+    }
 }
