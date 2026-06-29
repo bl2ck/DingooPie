@@ -14,10 +14,62 @@ static int g_bufferSamples = 2048;
 static bool g_guestMuteRequested = false;
 static bool g_frontendPauseRequested = false;
 static bool g_dropAudio = false;
-static uint64_t g_lastQueueDropLogTicks = 0;
+static uint64_t g_lastQueueBackpressureLogTicks = 0;
 
-static const uint32_t kMaxQueueBackpressureWaitMs = 50;
-static const uint32_t kQueueDropLogIntervalMs = 1000;
+static const uint32_t kQueueBackpressureLogIntervalMs = 1000;
+static const uint32_t kAudioQueueDropDisabledMs = 0;
+static const uint32_t kAudioQueueDropMaxMs = 60000;
+
+enum AudioQueueWaitResult
+{
+    AUDIO_QUEUE_READY,
+    AUDIO_QUEUE_OUTPUT_STOPPED,
+    AUDIO_QUEUE_DROP_BUFFER
+};
+
+static uint32_t parseBoundedUintEnv(const char* name, uint32_t defaultValue, uint32_t maxValue)
+{
+    const char* value = getenv(name);
+    if (!value || !value[0])
+    {
+        return defaultValue;
+    }
+
+    char* end = NULL;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value)
+    {
+        return defaultValue;
+    }
+    if (parsed > (unsigned long)maxValue)
+    {
+        parsed = (unsigned long)maxValue;
+    }
+    return (uint32_t)parsed;
+}
+
+static uint32_t audioQueueDropAfterMs(void)
+{
+    static int initialized = 0;
+    static uint32_t dropAfterMs = kAudioQueueDropDisabledMs;
+    if (!initialized)
+    {
+        // Dropping saturated PCM buffers shortens the guest audio timeline.
+        // Keep lossless backpressure by default; set the env var to a timeout
+        // only when a sample needs bounded audio latency more than exact pacing.
+        dropAfterMs = parseBoundedUintEnv(
+            "DINGOO_PIE_AUDIO_QUEUE_DROP_MS",
+            kAudioQueueDropDisabledMs,
+            kAudioQueueDropMaxMs);
+        initialized = 1;
+    }
+    return dropAfterMs;
+}
+
+static void resetAudioBackpressureLog(void)
+{
+    g_lastQueueBackpressureLogTicks = 0;
+}
 
 static SDL_mutex* audioMutex(void)
 {
@@ -89,6 +141,56 @@ static uint32_t maxQueuedAudioBytesLocked(void)
     return quarterSecond > deviceBuffer ? quarterSecond : deviceBuffer;
 }
 
+static bool outputMutedLocked(void)
+{
+    return g_frontendPauseRequested || g_guestMuteRequested || g_volume == 0 || g_masterVolumePercent == 0;
+}
+
+static void logAudioBackpressure(uint64_t nowTicks, uint64_t waitBeginTicks, bool dropping)
+{
+    if (g_lastQueueBackpressureLogTicks &&
+        nowTicks - g_lastQueueBackpressureLogTicks < kQueueBackpressureLogIntervalMs)
+    {
+        return;
+    }
+
+    SDL_Log(dropping ?
+        "Audio queue saturated for %u ms; dropping guest buffer" :
+        "Audio queue saturated for %u ms; waiting for playback",
+        (unsigned int)(nowTicks - waitBeginTicks));
+    g_lastQueueBackpressureLogTicks = nowTicks;
+}
+
+static AudioQueueWaitResult waitForAudioQueueSpaceLocked(uint32_t maxQueued)
+{
+    uint32_t dropAfterMs = audioQueueDropAfterMs();
+    uint64_t waitBeginTicks = SDL_GetTicks64();
+    while (g_audioDevice && SDL_GetQueuedAudioSize(g_audioDevice) >= maxQueued)
+    {
+        unlockAudio();
+        SDL_Delay(1);
+        lockAudio();
+
+        if (!g_audioDevice || outputMutedLocked())
+        {
+            return AUDIO_QUEUE_OUTPUT_STOPPED;
+        }
+
+        uint64_t nowTicks = SDL_GetTicks64();
+        if (dropAfterMs > 0 && nowTicks - waitBeginTicks >= dropAfterMs)
+        {
+            logAudioBackpressure(nowTicks, waitBeginTicks, true);
+            return AUDIO_QUEUE_DROP_BUFFER;
+        }
+        if (dropAfterMs == 0)
+        {
+            logAudioBackpressure(nowTicks, waitBeginTicks, false);
+        }
+    }
+
+    return AUDIO_QUEUE_READY;
+}
+
 static int clampIntLocal(int value, int minValue, int maxValue)
 {
     if (value < minValue)
@@ -125,11 +227,6 @@ static int effectiveVolumePercentLocked(void)
     int guestPercent = guestVolume <= 100 ? (int)guestVolume : (int)((guestVolume * 100u + 127u) / 255u);
     int masterVolume = clampIntLocal(g_masterVolumePercent, 0, 150);
     return (guestPercent * masterVolume + 50) / 100;
-}
-
-static bool outputMutedLocked(void)
-{
-    return g_frontendPauseRequested || g_guestMuteRequested || g_volume == 0 || g_masterVolumePercent == 0;
 }
 
 static bool dropAudioEnvEnabled(void)
@@ -205,7 +302,7 @@ uint32_t MixerOpen(waveout_args* args)
 
     g_volume = args->volume;
     g_dropAudio = false;
-    g_lastQueueDropLogTicks = 0;
+    resetAudioBackpressureLog();
     int bufferSamples = normalizeBufferSamples(g_bufferSamples);
     SDL_Log("Audio waveout open requested sample_rate=%u format=%u channels=%u buffer_samples=%d guest_volume=%u master_volume=%d%% effective_volume=%d%%",
         (unsigned int)args->sample_rate,
@@ -253,7 +350,7 @@ uint32_t MixerClose()
         SDL_Log("Closed audio");
     }
     g_dropAudio = false;
-    g_lastQueueDropLogTicks = 0;
+    resetAudioBackpressureLog();
     unlockAudio();
     return 1;
 }
@@ -280,34 +377,12 @@ uint32_t MixerWriteBuff(char* buffer, int count)
         return 1;
     }
 
-    uint32_t maxQueued = maxQueuedAudioBytesLocked();
-    uint64_t waitBeginTicks = SDL_GetTicks64();
-    while (g_audioDevice && SDL_GetQueuedAudioSize(g_audioDevice) >= maxQueued)
+    AudioQueueWaitResult waitResult = waitForAudioQueueSpaceLocked(maxQueuedAudioBytesLocked());
+    if (waitResult != AUDIO_QUEUE_READY)
     {
         unlockAudio();
-        SDL_Delay(1);
-        lockAudio();
-        if (!g_audioDevice || outputMutedLocked())
-        {
-            unlockAudio();
-            free(buffer);
-            return 1;
-        }
-
-        uint64_t nowTicks = SDL_GetTicks64();
-        if (nowTicks - waitBeginTicks >= kMaxQueueBackpressureWaitMs)
-        {
-            if (!g_lastQueueDropLogTicks ||
-                nowTicks - g_lastQueueDropLogTicks >= kQueueDropLogIntervalMs)
-            {
-                SDL_Log("Audio queue saturated for %u ms; dropping guest buffer",
-                    (unsigned int)(nowTicks - waitBeginTicks));
-                g_lastQueueDropLogTicks = nowTicks;
-            }
-            unlockAudio();
-            free(buffer);
-            return 1;
-        }
+        free(buffer);
+        return 1;
     }
 
     applyVolumeInPlaceLocked(buffer, count);
@@ -330,6 +405,10 @@ uint32_t MixerPlaying()
         canWrite = SDL_GetQueuedAudioSize(g_audioDevice) < maxQueuedAudioBytesLocked() ? 1 : 0;
     }
     unlockAudio();
+    if (!canWrite)
+    {
+        SDL_Delay(1);
+    }
     return canWrite;
 }
 

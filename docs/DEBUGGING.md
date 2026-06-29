@@ -187,6 +187,7 @@ some games compare that string directly.
 | `DINGOO_PIE_IRJIT_THROTTLE_MAX_LAG_MS` | `1..5000` | Resets the throttle baseline after long host stalls so delayed input or loading does not cause a catch-up burst. |
 | `DINGOO_PIE_DISPLAY_FPS` | `1..240` | Limits SDL texture uploads and presentations without blocking guest execution. The default is 60. |
 | `DINGOO_PIE_LCD_FRAME_PACING` | `0`, `1` | Enables adaptive pacing at Dingoo LCD frame submission boundaries. The default is enabled; set `0` to diagnose raw guest frame production. |
+| `DINGOO_PIE_AUDIO_QUEUE_DROP_MS` | `0..60000` | Drops guest PCM buffers after the audio queue stays full for this many milliseconds. The default `0` waits for playback so saturated queues preserve audio timing. |
 | `DINGOO_PIE_RUNTIME_SPEED_SCALE` | `0.0..1.0` | Scales runtime pacing used by HLE and the PPSSPP shim. The menu `Auto` preset leaves it unset and maps to the global 65% runtime pace. Explicit Runtime Speed menu values apply immediately and persist to the INI. |
 | `DINGOO_PIE_OSTIMEDLY_SCALE` | `0.0..1.0` | Scales host sleep time for `OSTimeDly`, `delay_ms`, and `udelay` calls while preserving guest tick accounting. Auto uses the global 1.0 delay scale unless a content-hash compatibility entry overrides it. Use this to override sample-specific delay behavior. |
 | `DINGOO_PIE_CHEATS` | `1` | Enables loaded cheat files without changing `DingooPie.ini`. Cheat files use `status|name|width|address|value` or `status|name|width|address|value|compare` pipe records; see "Cheat File Format" below. |
