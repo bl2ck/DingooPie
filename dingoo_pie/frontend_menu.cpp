@@ -683,7 +683,7 @@ static void showCheatShaMismatchPrompt(const CheatRuntimeStatus& status)
     body += platformUtf8ToWide(status.appSha256.empty() ? "(none)" : status.appSha256);
     body += L"\nCurrent SHA256: ";
     body += platformUtf8ToWide(status.currentAppSha256.empty() ? "(none)" : status.currentAppSha256);
-    MessageBoxW(g_menuWindow, body.c_str(), uiText(TXT_SETTINGS_CHEAT_LIST),
+    MessageBoxW(g_menuWindow, body.c_str(), uiText(TXT_DIALOG_CHEATS_TITLE),
         MB_OK | MB_ICONWARNING);
 }
 
@@ -1519,7 +1519,7 @@ static void ensureSaveStateProgressDialog(SaveStateProgressDialog* dialog)
     InitCommonControlsEx(&controls);
 
     dialog->window = CreateWindowExW(WS_EX_TOOLWINDOW,
-        L"#32770", uiText(TXT_FILE_SAVE_STATE),
+        L"#32770", uiText(TXT_DIALOG_STATE_SAVE_TITLE),
         WS_CAPTION,
         CW_USEDEFAULT, CW_USEDEFAULT, 360, 96,
         g_menuWindow, NULL, GetModuleHandleW(NULL), NULL);
@@ -1781,7 +1781,7 @@ static bool handleSaveStateCommand(unsigned int commandId)
     UiTextId confirmText = info.exists ?
         TXT_DIALOG_STATE_CONFIRM_OVERWRITE :
         TXT_DIALOG_STATE_CONFIRM_SAVE;
-    if (!confirmSaveStateAction(confirmText, dialogSlot, uiText(TXT_FILE_SAVE_STATE)))
+    if (!confirmSaveStateAction(confirmText, dialogSlot, uiText(TXT_DIALOG_STATE_SAVE_TITLE)))
     {
         return true;
     }
@@ -1794,7 +1794,7 @@ static bool handleSaveStateCommand(unsigned int commandId)
     {
         std::wstring message = saveStateMessage(TXT_DIALOG_STATE_SAVE_FAILED,
             makeSaveStateDialogSlot(slot, true, 0), error);
-        MessageBoxW(g_menuWindow, message.c_str(), uiText(TXT_FILE_SAVE_STATE),
+        MessageBoxW(g_menuWindow, message.c_str(), uiText(TXT_DIALOG_STATE_SAVE_TITLE),
             MB_OK | MB_ICONERROR);
     }
 #endif
@@ -1831,14 +1831,14 @@ static bool handleLoadStateCommand(unsigned int commandId)
 #ifdef _WIN32
         std::wstring message = saveStateMessage(TXT_DIALOG_STATE_EMPTY,
             makeSaveStateDialogSlot(slot, false, 0), "");
-        MessageBoxW(g_menuWindow, message.c_str(), uiText(TXT_FILE_LOAD_STATE),
+        MessageBoxW(g_menuWindow, message.c_str(), uiText(TXT_DIALOG_STATE_LOAD_TITLE),
             MB_OK | MB_ICONINFORMATION);
 #endif
         return true;
     }
 
     SaveStateDialogSlot dialogSlot = makeSaveStateDialogSlot(slot, info);
-    if (!confirmSaveStateAction(TXT_DIALOG_STATE_CONFIRM_LOAD, dialogSlot, uiText(TXT_FILE_LOAD_STATE)))
+    if (!confirmSaveStateAction(TXT_DIALOG_STATE_CONFIRM_LOAD, dialogSlot, uiText(TXT_DIALOG_STATE_LOAD_TITLE)))
     {
         return true;
     }
@@ -1851,7 +1851,7 @@ static bool handleLoadStateCommand(unsigned int commandId)
     {
         std::wstring message = saveStateMessage(TXT_DIALOG_STATE_LOAD_FAILED,
             makeSaveStateDialogSlot(slot, true, 0), error);
-        MessageBoxW(g_menuWindow, message.c_str(), uiText(TXT_FILE_LOAD_STATE),
+        MessageBoxW(g_menuWindow, message.c_str(), uiText(TXT_DIALOG_STATE_LOAD_TITLE),
             MB_OK | MB_ICONERROR);
     }
 #endif

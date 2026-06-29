@@ -44,7 +44,7 @@ DingooPie.exe "D:\Games\Dingoo\Your Game.app"
 - `帮助`：版本信息。
 
 设置会自动保存到 `DingooPie.ini`。大多数设置会立即生效；修改 CPU 后端时，
-模拟器会自动重启当前游戏。即时存档有 5 个档位，存档文件名格式为
+模拟器会自动重启当前游戏。即时存档有 10 个档位，存档文件名格式为
 `游戏名.slot1.dps`，保存到游戏所在目录旁的 `savestates` 文件夹。菜单会显示
 已有档位的保存时间；保存和读取前都会询问确认。
 
@@ -115,7 +115,7 @@ SDL GameController-compatible pads are supported. Use
 
 Settings are saved automatically to `DingooPie.ini`. Most settings apply
 immediately. Changing the CPU backend automatically restarts the current game.
-Save states have 5 slots per game, use file names like `GameName.slot1.dps`, and
+Save states have 10 slots per game, use file names like `GameName.slot1.dps`, and
 are stored in a `savestates` folder next to the game file. The menu shows saved
 slot times; saving and loading ask for confirmation first.
 

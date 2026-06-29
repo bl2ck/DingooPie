@@ -46,6 +46,8 @@ const wchar_t* uiText(UiLanguage language, UiTextId id)
             L"Failed to save screenshot. Make sure a game frame is visible and the path is writable.";
     case TXT_FILE_SAVE_STATE:
         return zh ? L"\u5373\u65f6\u5b58\u6863(&T)" : L"Save State(&T)";
+    case TXT_DIALOG_STATE_SAVE_TITLE:
+        return zh ? L"\u5373\u65f6\u5b58\u6863" : L"Save State";
     case TXT_DIALOG_STATE_CONFIRM_SAVE:
         return zh ? L"\u662f\u5426\u4fdd\u5b58\u5230\u8be5\u5373\u65f6\u5b58\u6863\u6863\u4f4d\uff1f" : L"Save to this state slot?";
     case TXT_DIALOG_STATE_CONFIRM_OVERWRITE:
@@ -58,6 +60,8 @@ const wchar_t* uiText(UiLanguage language, UiTextId id)
         return zh ? L"\u4fdd\u5b58\u5373\u65f6\u5b58\u6863\u5931\u8d25\u3002" : L"Failed to save state.";
     case TXT_FILE_LOAD_STATE:
         return zh ? L"\u8bfb\u53d6\u5b58\u6863(&L)" : L"Load State(&L)";
+    case TXT_DIALOG_STATE_LOAD_TITLE:
+        return zh ? L"\u8bfb\u53d6\u5b58\u6863" : L"Load State";
     case TXT_DIALOG_STATE_EMPTY:
         return zh ? L"\u8be5\u6863\u4f4d\u8fd8\u6ca1\u6709\u5b58\u6863\u3002" : L"This state slot is empty.";
     case TXT_DIALOG_STATE_CONFIRM_LOAD:
@@ -177,6 +181,8 @@ const wchar_t* uiText(UiLanguage language, UiTextId id)
         return zh ? L"\u542f\u7528\u91d1\u624b\u6307(&T)" : L"Enable Cheats(&T)";
     case TXT_SETTINGS_CHEAT_LIST:
         return zh ? L"\u91d1\u624b\u6307(&C)" : L"Cheats(&C)";
+    case TXT_DIALOG_CHEATS_TITLE:
+        return zh ? L"\u91d1\u624b\u6307" : L"Cheats";
     case TXT_CHEATS_NO_FILE:
         return zh ? L"\u65e0\u6e38\u620f\u540c\u540d .cht \u6587\u4ef6" : L"No same-name .cht file";
     case TXT_CHEATS_SHA_MISMATCH:
@@ -200,8 +206,8 @@ const wchar_t* uiText(UiLanguage language, UiTextId id)
     case TXT_DEBUG_LOG_MISSING_TITLE:
         return zh ? L"\u65e5\u5fd7\u4e0d\u5b58\u5728" : L"Log Not Found";
     case TXT_DEBUG_LOG_MISSING_BODY:
-        return zh ? L"\u5c1a\u672a\u751f\u6210 DingooPie-debug.log\u3002\u542f\u7528\u6027\u80fd\u65e5\u5fd7\u6216\u8bbe\u7f6e DINGOO_PIE_LOG_FILE=1 \u540e\u518d\u6253\u5f00\u3002" :
-            L"DingooPie-debug.log has not been created yet. Enable Performance Log or set DINGOO_PIE_LOG_FILE=1, then try again.";
+        return zh ? L"\u5c1a\u672a\u751f\u6210 DingooPie-debug.log\u3002\u8fd0\u884c\u6e38\u620f\u6216\u542f\u7528\u8c03\u8bd5\u8f93\u51fa\u540e\u518d\u6253\u5f00\u3002" :
+            L"DingooPie-debug.log has not been created yet. Run a game or enable debug output, then try again.";
     case TXT_ROOT_HELP:
         return zh ? L"\u5e2e\u52a9(&H)" : L"Help(&H)";
     case TXT_HELP_ABOUT:
