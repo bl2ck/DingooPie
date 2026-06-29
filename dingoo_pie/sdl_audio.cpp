@@ -66,6 +66,17 @@ static uint32_t audioQueueDropAfterMs(void)
     return dropAfterMs;
 }
 
+static bool audioQueueTraceEnabled(void)
+{
+    static int enabled = -1;
+    if (enabled < 0)
+    {
+        const char* value = getenv("DINGOO_PIE_AUDIO_QUEUE_TRACE");
+        enabled = value && value[0] && value[0] != '0' ? 1 : 0;
+    }
+    return enabled != 0;
+}
+
 static void resetAudioBackpressureLog(void)
 {
     g_lastQueueBackpressureLogTicks = 0;
@@ -164,6 +175,7 @@ static void logAudioBackpressure(uint64_t nowTicks, uint64_t waitBeginTicks, boo
 static AudioQueueWaitResult waitForAudioQueueSpaceLocked(uint32_t maxQueued)
 {
     uint32_t dropAfterMs = audioQueueDropAfterMs();
+    bool traceWaits = dropAfterMs == 0 && audioQueueTraceEnabled();
     uint64_t waitBeginTicks = SDL_GetTicks64();
     while (g_audioDevice && SDL_GetQueuedAudioSize(g_audioDevice) >= maxQueued)
     {
@@ -182,7 +194,9 @@ static AudioQueueWaitResult waitForAudioQueueSpaceLocked(uint32_t maxQueued)
             logAudioBackpressure(nowTicks, waitBeginTicks, true);
             return AUDIO_QUEUE_DROP_BUFFER;
         }
-        if (dropAfterMs == 0)
+        // Some games normally stream at the queue cap. Keep that path quiet
+        // unless audio queue tracing is explicitly requested.
+        if (traceWaits)
         {
             logAudioBackpressure(nowTicks, waitBeginTicks, false);
         }
