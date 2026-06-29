@@ -14,6 +14,10 @@ static int g_bufferSamples = 2048;
 static bool g_guestMuteRequested = false;
 static bool g_frontendPauseRequested = false;
 static bool g_dropAudio = false;
+static uint64_t g_lastQueueDropLogTicks = 0;
+
+static const uint32_t kMaxQueueBackpressureWaitMs = 50;
+static const uint32_t kQueueDropLogIntervalMs = 1000;
 
 static SDL_mutex* audioMutex(void)
 {
@@ -201,6 +205,7 @@ uint32_t MixerOpen(waveout_args* args)
 
     g_volume = args->volume;
     g_dropAudio = false;
+    g_lastQueueDropLogTicks = 0;
     int bufferSamples = normalizeBufferSamples(g_bufferSamples);
     SDL_Log("Audio waveout open requested sample_rate=%u format=%u channels=%u buffer_samples=%d guest_volume=%u master_volume=%d%% effective_volume=%d%%",
         (unsigned int)args->sample_rate,
@@ -248,6 +253,7 @@ uint32_t MixerClose()
         SDL_Log("Closed audio");
     }
     g_dropAudio = false;
+    g_lastQueueDropLogTicks = 0;
     unlockAudio();
     return 1;
 }
@@ -275,11 +281,33 @@ uint32_t MixerWriteBuff(char* buffer, int count)
     }
 
     uint32_t maxQueued = maxQueuedAudioBytesLocked();
+    uint64_t waitBeginTicks = SDL_GetTicks64();
     while (g_audioDevice && SDL_GetQueuedAudioSize(g_audioDevice) >= maxQueued)
     {
         unlockAudio();
         SDL_Delay(1);
         lockAudio();
+        if (!g_audioDevice || outputMutedLocked())
+        {
+            unlockAudio();
+            free(buffer);
+            return 1;
+        }
+
+        uint64_t nowTicks = SDL_GetTicks64();
+        if (nowTicks - waitBeginTicks >= kMaxQueueBackpressureWaitMs)
+        {
+            if (!g_lastQueueDropLogTicks ||
+                nowTicks - g_lastQueueDropLogTicks >= kQueueDropLogIntervalMs)
+            {
+                SDL_Log("Audio queue saturated for %u ms; dropping guest buffer",
+                    (unsigned int)(nowTicks - waitBeginTicks));
+                g_lastQueueDropLogTicks = nowTicks;
+            }
+            unlockAudio();
+            free(buffer);
+            return 1;
+        }
     }
 
     applyVolumeInPlaceLocked(buffer, count);

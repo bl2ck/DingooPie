@@ -16,5 +16,4 @@ void MixerSetFrontendPaused(bool paused);
 void MixerSetMasterVolumePercent(int percent);
 void MixerSetBufferSamples(int samples);
 
-
 #endif

@@ -39,14 +39,20 @@ enum UiLanguage
 enum MinimizedBehavior
 {
     MINIMIZED_BEHAVIOR_NORMAL = 0,
-    MINIMIZED_BEHAVIOR_THROTTLE = 1,
-    MINIMIZED_BEHAVIOR_PAUSE = 2
+    MINIMIZED_BEHAVIOR_PAUSE = 1,
+    MINIMIZED_BEHAVIOR_THROTTLE = 2
+};
+
+struct EmulatorCheatSelection
+{
+    std::string cheatFileName;
+    std::vector<std::string> enabledFeatureKeys;
 };
 
 struct EmulatorSettings
 {
-    // lastAppPath preserves the original single-entry startup behavior; the
-    // vector backs the visible Recent Games menu in newest-first order.
+    // lastAppPath is the startup target; recentAppPaths backs the visible
+    // Recent Games menu in newest-first order.
     std::string lastAppPath;
     std::vector<std::string> recentAppPaths;
 
@@ -56,6 +62,7 @@ struct EmulatorSettings
     ColorEffectMode colorEffect;
     int brightnessPercent;
     int contrastPercent;
+    int gammaPercent;
     int saturationPercent;
     MinimizedBehavior minimizedBehavior;
     bool portraitMode;
@@ -74,6 +81,8 @@ struct EmulatorSettings
     std::string cpuClockHz;
     std::string runtimeSpeedScale;
     std::string ostimeDlyScale;
+    bool cheatsEnabled;
+    std::vector<EmulatorCheatSelection> cheatSelections;
 
     UiLanguage uiLanguage;
 
@@ -88,6 +97,13 @@ bool emulatorSaveSettings(const EmulatorSettings& settings);
 bool emulatorRememberRecentApp(EmulatorSettings* settings, const std::string& appPath);
 bool emulatorRemoveRecentApp(EmulatorSettings* settings, const std::string& appPath);
 bool emulatorClearRecentApps(EmulatorSettings* settings);
+std::vector<std::string> emulatorCheatFeatureKeysForApp(
+    const EmulatorSettings& settings,
+    const std::string& appPath);
+bool emulatorSetCheatFeatureKeysForApp(
+    EmulatorSettings* settings,
+    const std::string& appPath,
+    const std::vector<std::string>& featureKeys);
 void emulatorTraceSettings(const char* reason, const EmulatorSettings& settings);
 bool emulatorResetSettings(void);
 void emulatorApplySettingsToEnvironment(const EmulatorSettings& settings);

@@ -1,5 +1,6 @@
 #include "emulator_core.h"
 #include "app_paths.h"
+#include "cheat_runtime.h"
 #include "debug_console.h"
 #include "emulator_options.h"
 #include "emulator_settings.h"
@@ -9,8 +10,10 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <chrono>
 #include <string>
 #include <string.h>
+#include <thread>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -60,6 +63,41 @@ static bool launchDetachedSelf(const std::string& appPath)
 #endif
 }
 
+static void waitForInitialCheatLoad(uint32_t previousRevision)
+{
+    for (int i = 0; i < 100; ++i)
+    {
+        if (cheatRuntimeRevision() != previousRevision)
+        {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    frontendMenuRefreshCheats();
+}
+
+static void applyStartupDebugSettings(EmulatorSettings* settings, bool externalDebugLog)
+{
+    if (!settings)
+    {
+        return;
+    }
+
+    if (settings->debugProfile || externalDebugLog)
+    {
+        if (!debugLogOpen() && settings->debugProfile)
+        {
+            settings->debugProfile = false;
+            printf("main: performance log disabled for this run because DingooPie-debug.log could not be opened\n");
+        }
+    }
+    if (settings->showDebugConsole && !debugConsoleOpen())
+    {
+        settings->showDebugConsole = false;
+        printf("main: debug console disabled for this run because the console could not be opened\n");
+    }
+}
+
 int main(int argc, char* argv[])
 {
     platformBeginHighResolutionTiming();
@@ -72,22 +110,18 @@ int main(int argc, char* argv[])
     setvbuf(stderr, NULL, _IONBF, 0);
 
     EmulatorSettings settings = emulatorLoadSettings();
-    if (settings.debugProfile || externalDebugLog)
-    {
-        debugLogOpen();
-    }
-    if (settings.showDebugConsole)
-    {
-        debugConsoleOpen();
-    }
-    printf("main: settings loaded last_app=%s show_console=%u\n",
+    applyStartupDebugSettings(&settings, externalDebugLog);
+    printf("main: settings loaded last_app=%s debug.show_console=%u debug.profile=%u external_log=%u\n",
         settings.lastAppPath.empty() ? "(empty)" : settings.lastAppPath.c_str(),
-        settings.showDebugConsole ? 1u : 0u);
+        settings.showDebugConsole ? 1u : 0u,
+        settings.debugProfile ? 1u : 0u,
+        externalDebugLog ? 1u : 0u);
     if (settings.showDebugConsole || settings.debugProfile || externalDebugLog)
     {
         emulatorTraceSettings("loaded", settings);
     }
     emulatorApplyRuntimeSettings(settings);
+    cheatRuntimeSetEnabled(settings.cheatsEnabled || emulatorEnvEnabled("DINGOO_PIE_CHEATS"));
     EmulatorOptions options = loadEmulatorOptions();
 
     std::string selectedAppPath;
@@ -145,8 +179,17 @@ int main(int argc, char* argv[])
     if (!selectedAppPath.empty())
     {
         printf("main: starting selected app\n");
-        bool gameStarted = startDingooPie(selectedAppPath.c_str(), options, selectedAppSource == STARTUP_APP_RECENT);
+        uint32_t cheatRevisionBeforeStart = cheatRuntimeRevision();
+        bool gameStarted = startDingooPie(
+            selectedAppPath.c_str(),
+            options,
+            selectedAppSource == STARTUP_APP_RECENT,
+            emulatorCheatFeatureKeysForApp(settings, selectedAppPath));
         frontendMenuSetGameRunning(gameStarted);
+        if (gameStarted)
+        {
+            waitForInitialCheatLoad(cheatRevisionBeforeStart);
+        }
     }
     frontendRunLoop(options);
     frontendMenuSetGameRunning(false);

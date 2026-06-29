@@ -43,6 +43,16 @@ std::string appFileNameFromPath(const std::string& path)
     return path.substr(pos + 1);
 }
 
+std::string appCheatFileNameFromPath(const std::string& path)
+{
+    std::string name = appFileNameFromPath(path);
+    if (appPathHasAppExtension(name))
+    {
+        name.resize(name.size() - 4);
+    }
+    return name.empty() ? name : name + ".cht";
+}
+
 std::string appGuestMainPathFromPath(const std::string& path)
 {
     std::string name = appFileNameFromPath(path);

@@ -5,7 +5,6 @@
 
 bool debugConsoleOpen(void);
 void debugConsoleClose(void);
-bool debugConsoleIsOpen(void);
 bool debugLogOpen(void);
 FILE* debugLogFile(void);
 

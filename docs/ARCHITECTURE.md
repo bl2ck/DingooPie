@@ -65,7 +65,7 @@ Help. Options contains the Video, Audio, and Input submenus. The menus include
 app opening, game pause/resume, screenshot export, video scale/anti-aliasing/effect adjustment, windowed
 fullscreen, brightness, contrast, saturation, FPS overlay, virtual controls,
 SDL GameController input, IME disable mode, language, backend/runtime timing
-options, master volume, audio disable, debug console/profile controls, log
+options, master volume, audio disable, debug console/performance log controls, log
 opening, settings save/reset, and About.
 
 ## Source Boundaries
@@ -175,6 +175,14 @@ selected IR JIT clock to the INI and `DINGOO_PIE_IRJIT_CLOCK_HZ`.
 PPSSPP IR JIT. `runtime.ostimedly_scale=` means `Auto` and uses the global
 delay scale of 1.0 unless a compatibility profile supplies a narrower app
 override.
+`runtime.cheats_enabled=0` is the default. The frontend persists this global
+cheat switch and the selected cheat feature names per game. Individual cheat
+features remain unchecked until selected by the user, then restore when the same
+game is loaded again. Cheat lookup uses the app base name, such as
+`GameName.app` -> `cheats\GameName.cht`. The optional `app_sha256` field is
+validation only and never a lookup key. Missing cheat files are silent and do
+not create a `cheats` directory; SHA mismatches disable the loaded file and show
+the user a warning.
 `audio.buffer_samples` controls only the SDL output device buffer request; the
 guest SDK still supplies waveout sample rate, sample format, and channel count.
 

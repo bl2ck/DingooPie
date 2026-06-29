@@ -30,7 +30,7 @@ void runtimeDebugDumpStack(NativeRuntime* runtime, uint32_t stackStartAddress)
     uint32_t v;
     printf("==========================STACK=================================\n");
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_SP, &v); printf("0x%08x:\t", v);
-    void *stack = toHostPtr(v);
+    void* stack = toHostPtr(v);
     int i = 0;
     for (int j = 0; j < stackStartAddress - v; j += 4)
     {
@@ -120,7 +120,7 @@ void runtimeDebugDumpReturnDisassembly(NativeRuntime* runtime)
     uint32_t ra;
     uint32_t address = 0;
     printf("==========================DISASM==============================\n");
-    nativeRuntimeReadRegister(runtime, RUNTIME_REG_RA, &ra); 
+    nativeRuntimeReadRegister(runtime, RUNTIME_REG_RA, &ra);
 
     address = ra - 256;
     while ((ra + 4) != address)
@@ -144,10 +144,9 @@ void runtimeDebugDumpDisassemblyRange(NativeRuntime* runtime, uint32_t address, 
     printf("==============================================================\n");
 }
 
-
-void runtimeDebugDumpMemory(void * buffer, uint32_t count)
+void runtimeDebugDumpMemory(void* buffer, uint32_t count)
 {
-    uint8_t * d = (uint8_t*)buffer;
+    uint8_t* d = (uint8_t*)buffer;
     for (int i = 0; i < count; ++i)
     {
         printf("%02x ", d[i]);

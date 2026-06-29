@@ -1,17 +1,23 @@
 #include "frontend_menu.h"
 
 #include "app_paths.h"
+#include "cheat_runtime.h"
 #include "debug_console.h"
 #include "emulator_config.h"
+#include "emulator_core.h"
 #include "input_controls.h"
+#include "save_state.h"
 #include "sdl_frontend.h"
 #include "platform_win32.h"
 #include "ui_strings.h"
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <sstream>
 #include <string>
+#include <time.h>
 #include <utility>
+#include <vector>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -19,16 +25,38 @@
 #endif
 #include <windows.h>
 #include <commdlg.h>
+#include <commctrl.h>
 #include <shellapi.h>
 #endif
 
 enum FrontendMenuCommand
 {
+    // Keep command IDs grouped in the same order as the Win32 menus below.
     MENU_FILE_OPEN = 1001,
     MENU_FILE_RECENT_CLEAR,
     MENU_FILE_RESTART,
     MENU_FILE_PAUSE_RESUME,
     MENU_FILE_SAVE_SCREENSHOT,
+    MENU_FILE_SAVE_STATE_SLOT_1,
+    MENU_FILE_SAVE_STATE_SLOT_2,
+    MENU_FILE_SAVE_STATE_SLOT_3,
+    MENU_FILE_SAVE_STATE_SLOT_4,
+    MENU_FILE_SAVE_STATE_SLOT_5,
+    MENU_FILE_SAVE_STATE_SLOT_6,
+    MENU_FILE_SAVE_STATE_SLOT_7,
+    MENU_FILE_SAVE_STATE_SLOT_8,
+    MENU_FILE_SAVE_STATE_SLOT_9,
+    MENU_FILE_SAVE_STATE_SLOT_10,
+    MENU_FILE_LOAD_STATE_SLOT_1,
+    MENU_FILE_LOAD_STATE_SLOT_2,
+    MENU_FILE_LOAD_STATE_SLOT_3,
+    MENU_FILE_LOAD_STATE_SLOT_4,
+    MENU_FILE_LOAD_STATE_SLOT_5,
+    MENU_FILE_LOAD_STATE_SLOT_6,
+    MENU_FILE_LOAD_STATE_SLOT_7,
+    MENU_FILE_LOAD_STATE_SLOT_8,
+    MENU_FILE_LOAD_STATE_SLOT_9,
+    MENU_FILE_LOAD_STATE_SLOT_10,
     MENU_FILE_EXIT,
     MENU_VIDEO_SCALE_1X,
     MENU_VIDEO_SCALE_2X,
@@ -47,18 +75,28 @@ enum FrontendMenuCommand
     MENU_VIDEO_EFFECT_PIXEL_GRID,
     MENU_VIDEO_EFFECT_LCD_SCANLINE,
     MENU_VIDEO_EFFECT_LIGHT_CRT,
+    MENU_VIDEO_BRIGHTNESS_50,
     MENU_VIDEO_BRIGHTNESS_75,
     MENU_VIDEO_BRIGHTNESS_90,
     MENU_VIDEO_BRIGHTNESS_100,
     MENU_VIDEO_BRIGHTNESS_110,
     MENU_VIDEO_BRIGHTNESS_125,
     MENU_VIDEO_BRIGHTNESS_150,
+    MENU_VIDEO_CONTRAST_50,
     MENU_VIDEO_CONTRAST_75,
     MENU_VIDEO_CONTRAST_90,
     MENU_VIDEO_CONTRAST_100,
     MENU_VIDEO_CONTRAST_110,
     MENU_VIDEO_CONTRAST_125,
     MENU_VIDEO_CONTRAST_150,
+    MENU_VIDEO_GAMMA_50,
+    MENU_VIDEO_GAMMA_75,
+    MENU_VIDEO_GAMMA_90,
+    MENU_VIDEO_GAMMA_100,
+    MENU_VIDEO_GAMMA_110,
+    MENU_VIDEO_GAMMA_125,
+    MENU_VIDEO_GAMMA_150,
+    MENU_VIDEO_SATURATION_50,
     MENU_VIDEO_SATURATION_75,
     MENU_VIDEO_SATURATION_90,
     MENU_VIDEO_SATURATION_100,
@@ -66,8 +104,8 @@ enum FrontendMenuCommand
     MENU_VIDEO_SATURATION_125,
     MENU_VIDEO_SATURATION_150,
     MENU_VIDEO_MINIMIZED_NORMAL,
-    MENU_VIDEO_MINIMIZED_THROTTLE,
     MENU_VIDEO_MINIMIZED_PAUSE,
+    MENU_VIDEO_MINIMIZED_THROTTLE,
     MENU_VIDEO_PORTRAIT,
     MENU_VIDEO_SHOW_FPS,
     MENU_SETTINGS_AUDIO_VOLUME_0,
@@ -131,29 +169,77 @@ enum FrontendMenuCommand
     MENU_SETTINGS_DELAY_030,
     MENU_SETTINGS_DELAY_025,
     MENU_SETTINGS_DELAY_020,
-    MENU_SETTINGS_LANGUAGE_ENGLISH,
+    MENU_SETTINGS_ENABLE_CHEATS,
     MENU_SETTINGS_LANGUAGE_CHINESE,
+    MENU_SETTINGS_LANGUAGE_ENGLISH,
     MENU_SETTINGS_RESET,
     MENU_DEBUG_SHOW_CONSOLE,
     MENU_DEBUG_PROFILE,
     MENU_DEBUG_OPEN_LOG,
+    MENU_DEBUG_CHEAT_FINDER,
+    MENU_DEBUG_DEBUGGER,
     MENU_HELP_ABOUT
 };
 
 static const unsigned int MENU_FILE_RECENT_BASE = 3000;
 static const unsigned int MENU_FILE_RECENT_MAX =
     MENU_FILE_RECENT_BASE + EMULATOR_RECENT_APP_LIMIT - 1;
+static const unsigned int MENU_CHEAT_ENTRY_BASE = 4000;
+static const unsigned int MENU_CHEAT_ENTRY_LIMIT = 128;
+static const unsigned int MENU_CHEAT_ENTRY_MAX =
+    MENU_CHEAT_ENTRY_BASE + MENU_CHEAT_ENTRY_LIMIT - 1;
+static const unsigned int MENU_SAVE_STATE_SLOT_BASE = MENU_FILE_SAVE_STATE_SLOT_1;
+static const unsigned int MENU_LOAD_STATE_SLOT_BASE = MENU_FILE_LOAD_STATE_SLOT_1;
 
 #ifdef _WIN32
 static HWND g_menuWindow = NULL;
+static HMENU g_cheatMenu = NULL;
+static HMENU g_saveStateMenu = NULL;
+static HMENU g_loadStateMenu = NULL;
 #endif
 static EmulatorSettings* g_menuSettings = NULL;
 static std::string g_currentAppPath;
 static bool g_gameRunning = false;
 static bool g_pendingRelaunch = false;
 static std::string g_pendingRelaunchPath;
+static uint32_t g_menuCheatRevision = 0xffffffffu;
+static std::string g_cheatMismatchPromptSource;
 
 static void rebuildMenu(void);
+
+class ScopedGamePauseForDialog
+{
+public:
+    explicit ScopedGamePauseForDialog(bool active)
+        : active_(active && g_gameRunning)
+    {
+        if (active_)
+        {
+            frontendBeginModalPause();
+        }
+    }
+
+    ~ScopedGamePauseForDialog()
+    {
+        if (active_)
+        {
+            frontendEndModalPause();
+        }
+    }
+
+    void dismiss(void)
+    {
+        if (!active_)
+        {
+            return;
+        }
+        frontendEndModalPause();
+        active_ = false;
+    }
+
+private:
+    bool active_;
+};
 
 static const wchar_t* uiText(UiTextId id)
 {
@@ -176,7 +262,7 @@ static std::wstring audioBufferLabel(int samples)
 
 static int percentForVideoCommand(unsigned int commandId, unsigned int firstCommand)
 {
-    static const int kValues[] = { 75, 90, 100, 110, 125, 150 };
+    static const int kValues[] = { 50, 75, 90, 100, 110, 125, 150 };
     unsigned int index = commandId - firstCommand;
     if (index >= sizeof(kValues) / sizeof(kValues[0]))
     {
@@ -213,8 +299,8 @@ struct MinimizedBehaviorPreset
 static const MinimizedBehaviorPreset kMinimizedBehaviorPresets[] =
 {
     { MENU_VIDEO_MINIMIZED_NORMAL, MINIMIZED_BEHAVIOR_NORMAL, TXT_VIDEO_MINIMIZED_NORMAL },
-    { MENU_VIDEO_MINIMIZED_THROTTLE, MINIMIZED_BEHAVIOR_THROTTLE, TXT_VIDEO_MINIMIZED_THROTTLE },
     { MENU_VIDEO_MINIMIZED_PAUSE, MINIMIZED_BEHAVIOR_PAUSE, TXT_VIDEO_MINIMIZED_PAUSE },
+    { MENU_VIDEO_MINIMIZED_THROTTLE, MINIMIZED_BEHAVIOR_THROTTLE, TXT_VIDEO_MINIMIZED_THROTTLE },
 };
 
 static const ScalePreset kRuntimeSpeedPresets[] =
@@ -356,9 +442,40 @@ static void applyAndSaveVideoSettings(void)
 }
 
 #ifdef _WIN32
+static void relaunchEmulatorAfterExit(void);
+#endif
+
+static bool applyBackendSetting(const char* backendName, const char* label)
+{
+    std::string nextBackend = backendName ? backendName : "";
+    if (g_menuSettings->backendName == nextBackend)
+    {
+        printf("frontend: backend setting unchanged as %s\n", label ? label : "auto");
+        frontendMenuRefresh();
+        return true;
+    }
+
+    g_menuSettings->backendName = nextBackend;
+    emulatorApplySettingsToEnvironment(*g_menuSettings);
+    emulatorSaveSettings(*g_menuSettings);
+    printf("frontend: backend setting saved as %s, relaunching emulator\n",
+        label ? label : "auto");
+    frontendMenuRefresh();
+#ifdef _WIN32
+    relaunchEmulatorAfterExit();
+#endif
+    return true;
+}
+
+#ifdef _WIN32
 static void appendMenuItem(HMENU menu, UINT id, const wchar_t* text)
 {
     AppendMenuW(menu, MF_STRING, id, text);
+}
+
+static void appendCheckedMenuItem(HMENU menu, UINT id, const wchar_t* text, bool checked)
+{
+    AppendMenuW(menu, MF_STRING | (checked ? MF_CHECKED : MF_UNCHECKED), id, text);
 }
 
 static void appendDisabledMenuItem(HMENU menu, const wchar_t* text)
@@ -371,6 +488,203 @@ static void appendScalePreset(HMENU menu, const ScalePreset& preset)
     wchar_t label[32];
     swprintf(label, sizeof(label) / sizeof(label[0]), L"%d%%", preset.percent);
     appendMenuItem(menu, preset.commandId, label);
+}
+
+static void setMenuEnabled(UINT id, bool enabled);
+static void setMenuText(UINT id, const wchar_t* text);
+
+static std::wstring saveStateTimeLabel(uint64_t timestamp)
+{
+    if (!timestamp)
+    {
+        return L"";
+    }
+
+    time_t value = (time_t)timestamp;
+    struct tm localTime;
+#ifdef _WIN32
+    if (localtime_s(&localTime, &value) != 0)
+    {
+        return L"";
+    }
+#else
+    if (!localtime_r(&value, &localTime))
+    {
+        return L"";
+    }
+#endif
+
+    wchar_t text[32] = {};
+    swprintf(text, sizeof(text) / sizeof(text[0]), L"%04d-%02d-%02d %02d:%02d:%02d",
+        localTime.tm_year + 1900,
+        localTime.tm_mon + 1,
+        localTime.tm_mday,
+        localTime.tm_hour,
+        localTime.tm_min,
+        localTime.tm_sec);
+    return std::wstring(text);
+}
+
+static std::wstring saveStateSlotLabel(int slot, bool exists, uint64_t modifiedTime)
+{
+    wchar_t label[96] = {};
+    bool zh = g_menuSettings && g_menuSettings->uiLanguage == UI_LANGUAGE_CHINESE;
+    std::wstring timeText = saveStateTimeLabel(modifiedTime);
+    if (zh)
+    {
+        if (exists && !timeText.empty())
+        {
+            swprintf(label, sizeof(label) / sizeof(label[0]), L"\u6863\u4f4d %d  %ls",
+                slot, timeText.c_str());
+        }
+        else
+        {
+            swprintf(label, sizeof(label) / sizeof(label[0]), L"\u6863\u4f4d %d%s",
+                slot, exists ? L"" : L" \u7a7a");
+        }
+    }
+    else
+    {
+        if (exists && !timeText.empty())
+        {
+            swprintf(label, sizeof(label) / sizeof(label[0]), L"Slot %d  %ls",
+                slot, timeText.c_str());
+        }
+        else
+        {
+            swprintf(label, sizeof(label) / sizeof(label[0]), L"Slot %d%s",
+                slot, exists ? L"" : L" (empty)");
+        }
+    }
+    return std::wstring(label);
+}
+
+static void refreshSaveStateMenus(void)
+{
+    if (!g_menuWindow)
+    {
+        return;
+    }
+
+    bool canSave = !g_currentAppPath.empty() && g_gameRunning;
+    for (int slot = 1; slot <= kSaveStateSlotCount; ++slot)
+    {
+        SaveStateSlotInfo info = {};
+        if (canSave)
+        {
+            info = saveStateSlotInfo(g_currentAppPath, slot);
+        }
+        UINT saveId = MENU_SAVE_STATE_SLOT_BASE + (UINT)(slot - 1);
+        UINT loadId = MENU_LOAD_STATE_SLOT_BASE + (UINT)(slot - 1);
+        std::wstring label = saveStateSlotLabel(slot, canSave && info.exists, info.modifiedTime);
+        setMenuText(saveId, label.c_str());
+        setMenuText(loadId, label.c_str());
+        setMenuEnabled(saveId, canSave);
+        setMenuEnabled(loadId, canSave && info.exists);
+    }
+}
+
+static std::string cheatLogName(const CheatRuntimeEntryView& entry)
+{
+    if (g_menuSettings && g_menuSettings->uiLanguage == UI_LANGUAGE_CHINESE)
+    {
+        return entry.nameChinese.empty() ? entry.name : entry.nameChinese;
+    }
+    return entry.nameEnglish.empty() ? entry.name : entry.nameEnglish;
+}
+
+static std::wstring cheatMenuLabel(const CheatRuntimeEntryView& entry)
+{
+    std::wstring label = platformUtf8ToWide(cheatLogName(entry));
+    if (label.empty())
+    {
+        label = L"(unnamed)";
+    }
+    return label;
+}
+
+static std::vector<std::string> enabledCheatFeatureKeys(const CheatRuntimeStatus& status)
+{
+    std::vector<std::string> keys;
+    for (size_t i = 0; i < status.entries.size(); ++i)
+    {
+        if (status.entries[i].enabled && !status.entries[i].name.empty())
+        {
+            keys.push_back(status.entries[i].name);
+        }
+    }
+    return keys;
+}
+
+static void refreshCheatMenu(const CheatRuntimeStatus& status)
+{
+    if (!g_cheatMenu)
+    {
+        return;
+    }
+
+    while (GetMenuItemCount(g_cheatMenu) > 0)
+    {
+        DeleteMenu(g_cheatMenu, 0, MF_BYPOSITION);
+    }
+
+    appendCheckedMenuItem(g_cheatMenu, MENU_SETTINGS_ENABLE_CHEATS,
+        uiText(TXT_SETTINGS_ENABLE_CHEATS), g_menuSettings && g_menuSettings->cheatsEnabled);
+    AppendMenuW(g_cheatMenu, MF_SEPARATOR, 0, NULL);
+
+    if (!status.loaded)
+    {
+        appendDisabledMenuItem(g_cheatMenu, uiText(TXT_CHEATS_NO_FILE));
+    }
+    else if (status.shaMismatch)
+    {
+        appendDisabledMenuItem(g_cheatMenu, uiText(TXT_CHEATS_SHA_MISMATCH));
+    }
+    else if (status.entries.empty())
+    {
+        appendDisabledMenuItem(g_cheatMenu, uiText(TXT_CHEATS_NO_FILE));
+    }
+    else
+    {
+        size_t count = status.entries.size();
+        if (count > MENU_CHEAT_ENTRY_LIMIT)
+        {
+            count = MENU_CHEAT_ENTRY_LIMIT;
+        }
+        for (size_t i = 0; i < count; ++i)
+        {
+            std::wstring label = cheatMenuLabel(status.entries[i]);
+            UINT flags = MF_STRING | (status.entries[i].enabled ? MF_CHECKED : MF_UNCHECKED);
+            AppendMenuW(g_cheatMenu, flags, MENU_CHEAT_ENTRY_BASE + (UINT)i, label.c_str());
+        }
+    }
+
+    g_menuCheatRevision = status.revision;
+    DrawMenuBar(g_menuWindow);
+}
+
+static void showCheatShaMismatchPrompt(const CheatRuntimeStatus& status)
+{
+    if (!status.loaded || !status.shaMismatch || status.sourcePath.empty())
+    {
+        return;
+    }
+    std::string promptKey = status.sourcePath + "|" + status.appSha256 + "|" + status.currentAppSha256;
+    if (g_cheatMismatchPromptSource == promptKey)
+    {
+        return;
+    }
+    g_cheatMismatchPromptSource = promptKey;
+
+    std::wstring body = uiText(TXT_CHEATS_SHA_MISMATCH);
+    body += L"\n\nFile: ";
+    body += platformUtf8ToWide(status.sourcePath);
+    body += L"\nCheat SHA256: ";
+    body += platformUtf8ToWide(status.appSha256.empty() ? "(none)" : status.appSha256);
+    body += L"\nCurrent SHA256: ";
+    body += platformUtf8ToWide(status.currentAppSha256.empty() ? "(none)" : status.currentAppSha256);
+    MessageBoxW(g_menuWindow, body.c_str(), uiText(TXT_SETTINGS_CHEAT_LIST),
+        MB_OK | MB_ICONWARNING);
 }
 
 static void setMenuCheck(UINT id, bool checked)
@@ -647,6 +961,8 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
     HMENU menuBar = CreateMenu();
     HMENU fileMenu = CreatePopupMenu();
     HMENU recentMenu = CreatePopupMenu();
+    HMENU saveStateMenu = CreatePopupMenu();
+    HMENU loadStateMenu = CreatePopupMenu();
     HMENU optionsMenu = CreatePopupMenu();
     HMENU videoMenu = CreatePopupMenu();
     HMENU scaleMenu = CreatePopupMenu();
@@ -654,18 +970,20 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
     HMENU effectMenu = CreatePopupMenu();
     HMENU brightnessMenu = CreatePopupMenu();
     HMENU contrastMenu = CreatePopupMenu();
+    HMENU gammaMenu = CreatePopupMenu();
     HMENU saturationMenu = CreatePopupMenu();
     HMENU minimizedMenu = CreatePopupMenu();
+    HMENU audioMenu = CreatePopupMenu();
+    HMENU audioVolumeMenu = CreatePopupMenu();
+    HMENU audioBufferMenu = CreatePopupMenu();
+    HMENU inputMenu = CreatePopupMenu();
     HMENU settingsMenu = CreatePopupMenu();
     HMENU backendMenu = CreatePopupMenu();
     HMENU cpuClockMenu = CreatePopupMenu();
     HMENU speedMenu = CreatePopupMenu();
     HMENU delayMenu = CreatePopupMenu();
-    HMENU audioMenu = CreatePopupMenu();
-    HMENU audioVolumeMenu = CreatePopupMenu();
-    HMENU audioBufferMenu = CreatePopupMenu();
+    HMENU cheatMenu = CreatePopupMenu();
     HMENU languageMenu = CreatePopupMenu();
-    HMENU inputMenu = CreatePopupMenu();
     HMENU debugMenu = CreatePopupMenu();
     HMENU helpMenu = CreatePopupMenu();
 
@@ -675,6 +993,16 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
     appendMenuItem(fileMenu, MENU_FILE_RESTART, uiText(TXT_FILE_RESTART));
     appendMenuItem(fileMenu, MENU_FILE_PAUSE_RESUME, uiText(TXT_FILE_PAUSE));
     appendMenuItem(fileMenu, MENU_FILE_SAVE_SCREENSHOT, uiText(TXT_FILE_SAVE_SCREENSHOT));
+    for (int slot = 1; slot <= kSaveStateSlotCount; ++slot)
+    {
+        std::wstring label = saveStateSlotLabel(slot, false, 0);
+        appendMenuItem(saveStateMenu, MENU_SAVE_STATE_SLOT_BASE + (UINT)(slot - 1), label.c_str());
+        appendMenuItem(loadStateMenu, MENU_LOAD_STATE_SLOT_BASE + (UINT)(slot - 1), label.c_str());
+    }
+    g_saveStateMenu = saveStateMenu;
+    g_loadStateMenu = loadStateMenu;
+    AppendMenuW(fileMenu, MF_POPUP, (UINT_PTR)saveStateMenu, uiText(TXT_FILE_SAVE_STATE));
+    AppendMenuW(fileMenu, MF_POPUP, (UINT_PTR)loadStateMenu, uiText(TXT_FILE_LOAD_STATE));
     AppendMenuW(fileMenu, MF_SEPARATOR, 0, NULL);
     appendMenuItem(fileMenu, MENU_FILE_EXIT, uiText(TXT_FILE_EXIT));
 
@@ -700,6 +1028,7 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
     appendMenuItem(effectMenu, MENU_VIDEO_EFFECT_LCD_SCANLINE, uiText(TXT_VIDEO_EFFECT_LCD_SCANLINE));
     appendMenuItem(effectMenu, MENU_VIDEO_EFFECT_LIGHT_CRT, uiText(TXT_VIDEO_EFFECT_LIGHT_CRT));
     AppendMenuW(videoMenu, MF_POPUP, (UINT_PTR)effectMenu, uiText(TXT_VIDEO_EFFECT));
+    appendMenuItem(brightnessMenu, MENU_VIDEO_BRIGHTNESS_50, L"50%");
     appendMenuItem(brightnessMenu, MENU_VIDEO_BRIGHTNESS_75, L"75%");
     appendMenuItem(brightnessMenu, MENU_VIDEO_BRIGHTNESS_90, L"90%");
     appendMenuItem(brightnessMenu, MENU_VIDEO_BRIGHTNESS_100, L"100%");
@@ -707,6 +1036,7 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
     appendMenuItem(brightnessMenu, MENU_VIDEO_BRIGHTNESS_125, L"125%");
     appendMenuItem(brightnessMenu, MENU_VIDEO_BRIGHTNESS_150, L"150%");
     AppendMenuW(videoMenu, MF_POPUP, (UINT_PTR)brightnessMenu, uiText(TXT_VIDEO_BRIGHTNESS));
+    appendMenuItem(contrastMenu, MENU_VIDEO_CONTRAST_50, L"50%");
     appendMenuItem(contrastMenu, MENU_VIDEO_CONTRAST_75, L"75%");
     appendMenuItem(contrastMenu, MENU_VIDEO_CONTRAST_90, L"90%");
     appendMenuItem(contrastMenu, MENU_VIDEO_CONTRAST_100, L"100%");
@@ -714,6 +1044,15 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
     appendMenuItem(contrastMenu, MENU_VIDEO_CONTRAST_125, L"125%");
     appendMenuItem(contrastMenu, MENU_VIDEO_CONTRAST_150, L"150%");
     AppendMenuW(videoMenu, MF_POPUP, (UINT_PTR)contrastMenu, uiText(TXT_VIDEO_CONTRAST));
+    appendMenuItem(gammaMenu, MENU_VIDEO_GAMMA_50, L"50%");
+    appendMenuItem(gammaMenu, MENU_VIDEO_GAMMA_75, L"75%");
+    appendMenuItem(gammaMenu, MENU_VIDEO_GAMMA_90, L"90%");
+    appendMenuItem(gammaMenu, MENU_VIDEO_GAMMA_100, L"100%");
+    appendMenuItem(gammaMenu, MENU_VIDEO_GAMMA_110, L"110%");
+    appendMenuItem(gammaMenu, MENU_VIDEO_GAMMA_125, L"125%");
+    appendMenuItem(gammaMenu, MENU_VIDEO_GAMMA_150, L"150%");
+    AppendMenuW(videoMenu, MF_POPUP, (UINT_PTR)gammaMenu, uiText(TXT_VIDEO_GAMMA));
+    appendMenuItem(saturationMenu, MENU_VIDEO_SATURATION_50, L"50%");
     appendMenuItem(saturationMenu, MENU_VIDEO_SATURATION_75, L"75%");
     appendMenuItem(saturationMenu, MENU_VIDEO_SATURATION_90, L"90%");
     appendMenuItem(saturationMenu, MENU_VIDEO_SATURATION_100, L"100%");
@@ -743,13 +1082,13 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
     appendMenuItem(audioBufferMenu, MENU_SETTINGS_AUDIO_BUFFER_2048, audioBufferLabel(2048).c_str());
     appendMenuItem(audioBufferMenu, MENU_SETTINGS_AUDIO_BUFFER_4096, audioBufferLabel(4096).c_str());
     appendMenuItem(audioBufferMenu, MENU_SETTINGS_AUDIO_BUFFER_8192, audioBufferLabel(8192).c_str());
-    appendMenuItem(inputMenu, MENU_INPUT_DISABLE_IME, uiText(TXT_INPUT_DISABLE_IME));
-    appendMenuItem(inputMenu, MENU_INPUT_SHOW_VIRTUAL_CONTROLS, uiText(TXT_INPUT_VIRTUAL_CONTROLS));
-    appendMenuItem(inputMenu, MENU_INPUT_MAPPING_WINDOW, uiText(TXT_INPUT_MAPPING_WINDOW));
-
     AppendMenuW(audioMenu, MF_POPUP, (UINT_PTR)audioVolumeMenu, uiText(TXT_SETTINGS_AUDIO_VOLUME));
     AppendMenuW(audioMenu, MF_POPUP, (UINT_PTR)audioBufferMenu, uiText(TXT_SETTINGS_AUDIO_BUFFER));
     appendMenuItem(audioMenu, MENU_SETTINGS_DROP_AUDIO, uiText(TXT_SETTINGS_DROP_AUDIO));
+
+    appendMenuItem(inputMenu, MENU_INPUT_DISABLE_IME, uiText(TXT_INPUT_DISABLE_IME));
+    appendMenuItem(inputMenu, MENU_INPUT_SHOW_VIRTUAL_CONTROLS, uiText(TXT_INPUT_VIRTUAL_CONTROLS));
+    appendMenuItem(inputMenu, MENU_INPUT_MAPPING_WINDOW, uiText(TXT_INPUT_MAPPING_WINDOW));
 
     AppendMenuW(optionsMenu, MF_POPUP, (UINT_PTR)videoMenu, uiText(TXT_ROOT_VIDEO));
     AppendMenuW(optionsMenu, MF_POPUP, (UINT_PTR)audioMenu, uiText(TXT_ROOT_AUDIO));
@@ -781,6 +1120,9 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
         appendScalePreset(delayMenu, kDelayScalePresets[i]);
     }
     AppendMenuW(settingsMenu, MF_POPUP, (UINT_PTR)delayMenu, uiText(TXT_SETTINGS_DELAY));
+    g_cheatMenu = cheatMenu;
+    refreshCheatMenu(cheatRuntimeGetStatus());
+    AppendMenuW(settingsMenu, MF_POPUP, (UINT_PTR)cheatMenu, uiText(TXT_SETTINGS_CHEAT_LIST));
     AppendMenuW(settingsMenu, MF_SEPARATOR, 0, NULL);
 
     appendMenuItem(languageMenu, MENU_SETTINGS_LANGUAGE_CHINESE, L"\u4e2d\u6587");
@@ -793,6 +1135,8 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
     appendMenuItem(debugMenu, MENU_DEBUG_SHOW_CONSOLE, uiText(TXT_DEBUG_CONSOLE));
     appendMenuItem(debugMenu, MENU_DEBUG_PROFILE, uiText(TXT_DEBUG_PROFILE));
     appendMenuItem(debugMenu, MENU_DEBUG_OPEN_LOG, uiText(TXT_DEBUG_OPEN_LOG));
+    appendMenuItem(debugMenu, MENU_DEBUG_CHEAT_FINDER, uiText(TXT_DEBUG_CHEAT_FINDER));
+    appendMenuItem(debugMenu, MENU_DEBUG_DEBUGGER, uiText(TXT_DEBUG_DEBUGGER));
 
     appendMenuItem(helpMenu, MENU_HELP_ABOUT, uiText(TXT_HELP_ABOUT));
 
@@ -804,6 +1148,7 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
 
     SetMenu(g_menuWindow, menuBar);
     DrawMenuBar(g_menuWindow);
+    g_menuCheatRevision = cheatRuntimeGetStatus().revision;
 #endif
     frontendMenuRefresh();
 }
@@ -819,6 +1164,9 @@ static void rebuildMenu(void)
     SetMenu(g_menuWindow, NULL);
     if (oldMenu)
     {
+        g_cheatMenu = NULL;
+        g_saveStateMenu = NULL;
+        g_loadStateMenu = NULL;
         DestroyMenu(oldMenu);
     }
     frontendMenuAttach(g_menuWindow, g_menuSettings, g_currentAppPath);
@@ -833,11 +1181,20 @@ void frontendMenuRefresh(void)
     }
 #ifdef _WIN32
     const bool hasCurrentApp = !g_currentAppPath.empty();
-    const bool gamePaused = frontendGamePaused();
+    const bool gamePaused = frontendUserGamePaused();
+    CheatRuntimeStatus cheatStatus = cheatRuntimeGetStatus();
+    if (cheatStatus.revision != g_menuCheatRevision)
+    {
+        refreshCheatMenu(cheatStatus);
+    }
+    showCheatShaMismatchPrompt(cheatStatus);
     setMenuEnabled(MENU_FILE_RESTART, hasCurrentApp);
     setMenuEnabled(MENU_FILE_PAUSE_RESUME, hasCurrentApp && g_gameRunning);
     setMenuText(MENU_FILE_PAUSE_RESUME, uiText(gamePaused ? TXT_FILE_RESUME : TXT_FILE_PAUSE));
     setMenuEnabled(MENU_FILE_SAVE_SCREENSHOT, hasCurrentApp && g_gameRunning);
+    setMenuEnabled(MENU_DEBUG_CHEAT_FINDER, g_gameRunning);
+    setMenuEnabled(MENU_DEBUG_DEBUGGER, g_gameRunning);
+    refreshSaveStateMenus();
     setMenuCheck(MENU_VIDEO_SCALE_1X, g_menuSettings->windowScale == 1);
     setMenuCheck(MENU_VIDEO_SCALE_2X, g_menuSettings->windowScale == 2);
     setMenuCheck(MENU_VIDEO_SCALE_3X, g_menuSettings->windowScale == 3);
@@ -855,18 +1212,28 @@ void frontendMenuRefresh(void)
     setMenuCheck(MENU_VIDEO_EFFECT_PIXEL_GRID, g_menuSettings->colorEffect == COLOR_EFFECT_PIXEL_GRID);
     setMenuCheck(MENU_VIDEO_EFFECT_LCD_SCANLINE, g_menuSettings->colorEffect == COLOR_EFFECT_LCD_SCANLINE);
     setMenuCheck(MENU_VIDEO_EFFECT_LIGHT_CRT, g_menuSettings->colorEffect == COLOR_EFFECT_LIGHT_CRT);
+    setMenuCheck(MENU_VIDEO_BRIGHTNESS_50, g_menuSettings->brightnessPercent == 50);
     setMenuCheck(MENU_VIDEO_BRIGHTNESS_75, g_menuSettings->brightnessPercent == 75);
     setMenuCheck(MENU_VIDEO_BRIGHTNESS_90, g_menuSettings->brightnessPercent == 90);
     setMenuCheck(MENU_VIDEO_BRIGHTNESS_100, g_menuSettings->brightnessPercent == 100);
     setMenuCheck(MENU_VIDEO_BRIGHTNESS_110, g_menuSettings->brightnessPercent == 110);
     setMenuCheck(MENU_VIDEO_BRIGHTNESS_125, g_menuSettings->brightnessPercent == 125);
     setMenuCheck(MENU_VIDEO_BRIGHTNESS_150, g_menuSettings->brightnessPercent == 150);
+    setMenuCheck(MENU_VIDEO_CONTRAST_50, g_menuSettings->contrastPercent == 50);
     setMenuCheck(MENU_VIDEO_CONTRAST_75, g_menuSettings->contrastPercent == 75);
     setMenuCheck(MENU_VIDEO_CONTRAST_90, g_menuSettings->contrastPercent == 90);
     setMenuCheck(MENU_VIDEO_CONTRAST_100, g_menuSettings->contrastPercent == 100);
     setMenuCheck(MENU_VIDEO_CONTRAST_110, g_menuSettings->contrastPercent == 110);
     setMenuCheck(MENU_VIDEO_CONTRAST_125, g_menuSettings->contrastPercent == 125);
     setMenuCheck(MENU_VIDEO_CONTRAST_150, g_menuSettings->contrastPercent == 150);
+    setMenuCheck(MENU_VIDEO_GAMMA_50, g_menuSettings->gammaPercent == 50);
+    setMenuCheck(MENU_VIDEO_GAMMA_75, g_menuSettings->gammaPercent == 75);
+    setMenuCheck(MENU_VIDEO_GAMMA_90, g_menuSettings->gammaPercent == 90);
+    setMenuCheck(MENU_VIDEO_GAMMA_100, g_menuSettings->gammaPercent == 100);
+    setMenuCheck(MENU_VIDEO_GAMMA_110, g_menuSettings->gammaPercent == 110);
+    setMenuCheck(MENU_VIDEO_GAMMA_125, g_menuSettings->gammaPercent == 125);
+    setMenuCheck(MENU_VIDEO_GAMMA_150, g_menuSettings->gammaPercent == 150);
+    setMenuCheck(MENU_VIDEO_SATURATION_50, g_menuSettings->saturationPercent == 50);
     setMenuCheck(MENU_VIDEO_SATURATION_75, g_menuSettings->saturationPercent == 75);
     setMenuCheck(MENU_VIDEO_SATURATION_90, g_menuSettings->saturationPercent == 90);
     setMenuCheck(MENU_VIDEO_SATURATION_100, g_menuSettings->saturationPercent == 100);
@@ -918,23 +1285,56 @@ void frontendMenuRefresh(void)
         setMenuCheck(kDelayScalePresets[i].commandId,
             checkedDelay && checkedDelay->commandId == kDelayScalePresets[i].commandId);
     }
-    setMenuCheck(MENU_SETTINGS_LANGUAGE_ENGLISH, g_menuSettings->uiLanguage == UI_LANGUAGE_ENGLISH);
+    setMenuCheck(MENU_SETTINGS_ENABLE_CHEATS, g_menuSettings->cheatsEnabled);
+    size_t cheatCount = cheatStatus.entries.size();
+    if (cheatCount > MENU_CHEAT_ENTRY_LIMIT)
+    {
+        cheatCount = MENU_CHEAT_ENTRY_LIMIT;
+    }
+    for (size_t i = 0; i < cheatCount; ++i)
+    {
+        setMenuCheck(MENU_CHEAT_ENTRY_BASE + (UINT)i, cheatStatus.entries[i].enabled);
+    }
     setMenuCheck(MENU_SETTINGS_LANGUAGE_CHINESE, g_menuSettings->uiLanguage == UI_LANGUAGE_CHINESE);
+    setMenuCheck(MENU_SETTINGS_LANGUAGE_ENGLISH, g_menuSettings->uiLanguage == UI_LANGUAGE_ENGLISH);
     setMenuCheck(MENU_DEBUG_SHOW_CONSOLE, g_menuSettings->showDebugConsole);
     setMenuCheck(MENU_DEBUG_PROFILE, g_menuSettings->debugProfile);
 #endif
 }
 
-void frontendMenuSetGameRunning(bool running)
+void frontendMenuRefreshCheats(void)
 {
-    if (g_gameRunning == running)
+    if (!g_menuSettings)
     {
         return;
     }
-    g_gameRunning = running;
-    if (!running)
+#ifdef _WIN32
+    if (!g_cheatMenu || cheatRuntimeRevision() == g_menuCheatRevision)
     {
-        frontendSetGamePaused(false);
+        return;
+    }
+
+    CheatRuntimeStatus cheatStatus = cheatRuntimeGetStatus();
+    if (cheatStatus.revision != g_menuCheatRevision)
+    {
+        refreshCheatMenu(cheatStatus);
+    }
+    showCheatShaMismatchPrompt(cheatStatus);
+#endif
+}
+
+bool frontendMenuGameRunning(void)
+{
+    return g_gameRunning;
+}
+
+void frontendMenuSetGameRunning(bool running)
+{
+    bool changed = g_gameRunning != running;
+    g_gameRunning = running;
+    if (changed && !running)
+    {
+        frontendClearPauseRequests();
     }
     frontendMenuRefresh();
 }
@@ -967,12 +1367,527 @@ static bool handleRecentAppCommand(unsigned int commandId)
     return true;
 }
 
+static bool handleCheatEntryCommand(unsigned int commandId)
+{
+    if (commandId < MENU_CHEAT_ENTRY_BASE || commandId > MENU_CHEAT_ENTRY_MAX)
+    {
+        return false;
+    }
+
+    size_t index = commandId - MENU_CHEAT_ENTRY_BASE;
+    CheatRuntimeStatus status = cheatRuntimeGetStatus();
+    if (!status.available || index >= status.entries.size())
+    {
+        return true;
+    }
+
+    bool enableEntry = !status.entries[index].enabled;
+    if (cheatRuntimeSetEntryEnabled(index, enableEntry))
+    {
+        bool settingsChanged = false;
+        if (enableEntry && !status.enabled)
+        {
+            g_menuSettings->cheatsEnabled = true;
+            cheatRuntimeSetEnabled(true);
+            emulatorApplySettingsToEnvironment(*g_menuSettings);
+            settingsChanged = true;
+        }
+        if (enableEntry)
+        {
+            cheatRuntimeApplyNow();
+        }
+        CheatRuntimeStatus updatedStatus = cheatRuntimeGetStatus();
+        // The global cheat switch and per-game feature list are saved
+        // separately so feature defaults remain unchecked until selected.
+        settingsChanged = emulatorSetCheatFeatureKeysForApp(g_menuSettings,
+            g_currentAppPath, enabledCheatFeatureKeys(updatedStatus)) || settingsChanged;
+        if (settingsChanged)
+        {
+            emulatorSaveSettings(*g_menuSettings);
+        }
+        std::string logName = cheatLogName(status.entries[index]);
+        printf("frontend: cheat '%s' %s\n",
+            logName.c_str(), enableEntry ? "enabled" : "disabled");
+        frontendMenuRefresh();
+    }
+    return true;
+}
+
+struct SaveStateDialogSlot
+{
+    int slot;
+    bool exists;
+    uint64_t modifiedTime;
+};
+
+#ifdef _WIN32
+struct SaveStateProgressDialog
+{
+    HWND window;
+    HWND label;
+    HWND progress;
+    HFONT font;
+    bool ownFont;
+    bool visible;
+};
+
+static void destroySaveStateProgressDialog(SaveStateProgressDialog* dialog)
+{
+    if (!dialog)
+    {
+        return;
+    }
+    if (dialog->window)
+    {
+        DestroyWindow(dialog->window);
+        dialog->window = NULL;
+        dialog->label = NULL;
+        dialog->progress = NULL;
+    }
+    if (dialog->font && dialog->ownFont)
+    {
+        DeleteObject(dialog->font);
+    }
+    dialog->font = NULL;
+    dialog->ownFont = false;
+    dialog->visible = false;
+}
+
+static HFONT saveStateProgressDialogFont(SaveStateProgressDialog* dialog)
+{
+    if (!dialog)
+    {
+        return (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    }
+    if (dialog->font)
+    {
+        return dialog->font;
+    }
+
+    NONCLIENTMETRICSW metrics;
+    memset(&metrics, 0, sizeof(metrics));
+    metrics.cbSize = sizeof(metrics);
+    if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, metrics.cbSize, &metrics, 0))
+    {
+        dialog->font = CreateFontIndirectW(&metrics.lfMessageFont);
+        dialog->ownFont = dialog->font != NULL;
+    }
+    if (!dialog->font)
+    {
+        dialog->font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        dialog->ownFont = false;
+    }
+    return dialog->font;
+}
+
+static void centerSaveStateProgressDialog(HWND dialogWindow)
+{
+    if (!dialogWindow)
+    {
+        return;
+    }
+
+    RECT dialogRect = {};
+    RECT parentRect = {};
+    if (!GetWindowRect(dialogWindow, &dialogRect))
+    {
+        return;
+    }
+    if (!g_menuWindow || !GetWindowRect(g_menuWindow, &parentRect))
+    {
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &parentRect, 0);
+    }
+
+    int dialogWidth = dialogRect.right - dialogRect.left;
+    int dialogHeight = dialogRect.bottom - dialogRect.top;
+    int x = parentRect.left + ((parentRect.right - parentRect.left) - dialogWidth) / 2;
+    int y = parentRect.top + ((parentRect.bottom - parentRect.top) - dialogHeight) / 2;
+    SetWindowPos(dialogWindow, NULL, x, y, 0, 0,
+        SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSIZE | SWP_NOZORDER);
+}
+
+static void ensureSaveStateProgressDialog(SaveStateProgressDialog* dialog)
+{
+    if (!dialog || dialog->window)
+    {
+        return;
+    }
+
+    INITCOMMONCONTROLSEX controls;
+    controls.dwSize = sizeof(controls);
+    controls.dwICC = ICC_PROGRESS_CLASS;
+    InitCommonControlsEx(&controls);
+
+    dialog->window = CreateWindowExW(WS_EX_TOOLWINDOW,
+        L"#32770", uiText(TXT_FILE_SAVE_STATE),
+        WS_CAPTION,
+        CW_USEDEFAULT, CW_USEDEFAULT, 360, 96,
+        g_menuWindow, NULL, GetModuleHandleW(NULL), NULL);
+    if (!dialog->window)
+    {
+        return;
+    }
+    DeleteMenu(GetSystemMenu(dialog->window, FALSE), SC_CLOSE, MF_BYCOMMAND);
+    centerSaveStateProgressDialog(dialog->window);
+
+    dialog->label = CreateWindowExW(0, L"STATIC", L"",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        18, 12, 310, 20,
+        dialog->window, NULL, GetModuleHandleW(NULL), NULL);
+    dialog->progress = CreateWindowExW(0, PROGRESS_CLASSW, L"",
+        WS_CHILD | WS_VISIBLE | PBS_SMOOTH,
+        18, 38, 310, 18,
+        dialog->window, NULL, GetModuleHandleW(NULL), NULL);
+    HFONT font = saveStateProgressDialogFont(dialog);
+    SendMessageW(dialog->window, WM_SETFONT, (WPARAM)font, TRUE);
+    SendMessageW(dialog->label, WM_SETFONT, (WPARAM)font, TRUE);
+    SendMessageW(dialog->progress, WM_SETFONT, (WPARAM)font, TRUE);
+    SendMessageW(dialog->progress, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
+}
+
+static void updateSaveStateProgressDialog(SaveStateProgressDialog* dialog,
+    const SaveStateProgress& progress)
+{
+    if (!dialog)
+    {
+        return;
+    }
+
+    ensureSaveStateProgressDialog(dialog);
+    if (!dialog->window || !IsWindow(dialog->window))
+    {
+        dialog->window = NULL;
+        dialog->label = NULL;
+        dialog->progress = NULL;
+        dialog->visible = false;
+        return;
+    }
+
+    const wchar_t* text = progress.phase == SAVE_STATE_PROGRESS_DECOMPRESS ?
+        uiText(TXT_DIALOG_STATE_DECOMPRESSING) :
+        uiText(TXT_DIALOG_STATE_COMPRESSING);
+    SetWindowTextW(dialog->label, text);
+    SendMessageW(dialog->progress, PBM_SETPOS, progress.percent, 0);
+    if (!dialog->visible)
+    {
+        ShowWindow(dialog->window, SW_SHOWNORMAL);
+        dialog->visible = true;
+    }
+    UpdateWindow(dialog->window);
+
+    MSG msg;
+    while (PeekMessageW(&msg, dialog->window, 0, 0, PM_REMOVE))
+    {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+}
+
+static void saveStateProgressCallback(const SaveStateProgress& progress, void* userData)
+{
+    updateSaveStateProgressDialog((SaveStateProgressDialog*)userData, progress);
+}
+#endif
+
+static SaveStateDialogSlot makeSaveStateDialogSlot(int slot, bool exists, uint64_t modifiedTime)
+{
+    SaveStateDialogSlot dialogSlot = {};
+    dialogSlot.slot = slot;
+    dialogSlot.exists = exists;
+    dialogSlot.modifiedTime = modifiedTime;
+    return dialogSlot;
+}
+
+static SaveStateDialogSlot makeSaveStateDialogSlot(int slot, const SaveStateSlotInfo& info)
+{
+    return makeSaveStateDialogSlot(slot, info.exists, info.modifiedTime);
+}
+
+static std::wstring saveStateMessage(UiTextId id, const SaveStateDialogSlot& slotInfo,
+    const std::string& detail)
+{
+    std::wstring message = uiText(id);
+    message += L"\n";
+    message += saveStateSlotLabel(slotInfo.slot, slotInfo.exists, slotInfo.modifiedTime);
+    if (!detail.empty())
+    {
+        message += L"\n";
+        message += platformUtf8ToWide(detail);
+    }
+    return message;
+}
+
+static bool confirmSaveStateAction(UiTextId id, const SaveStateDialogSlot& slotInfo,
+    const wchar_t* title)
+{
+#ifdef _WIN32
+    std::wstring message = saveStateMessage(id, slotInfo, "");
+    return MessageBoxW(g_menuWindow, message.c_str(), title,
+        MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES;
+#else
+    (void)id;
+    (void)slotInfo;
+    (void)title;
+    return true;
+#endif
+}
+
+static bool waitForSaveStatePause(const char* action, uint32_t* expectedOut, uint32_t* waitersOut)
+{
+    uint32_t expected = emulatorRuntimeActiveThreadCount();
+    if (expected == 0)
+    {
+        expected = 1;
+    }
+
+    // Save/load must observe all guest runtimes at a pause point before copying memory and registers.
+    bool paused = frontendWaitForRuntimePausedWaiters(2000, expected);
+    uint32_t waiters = frontendRuntimePausedWaiterCount();
+    printf("frontend: %s state pause waiters=%u expected=%u %s\n",
+        action ? action : "save",
+        waiters,
+        expected,
+        paused ? "ready" : "timeout");
+    if (expectedOut)
+    {
+        *expectedOut = expected;
+    }
+    if (waitersOut)
+    {
+        *waitersOut = waiters;
+    }
+    return paused;
+}
+
+static bool validateSaveStateRuntimeCount(const SaveStateSlotInfo& info,
+    uint32_t expected, std::string* errorOut)
+{
+    if (!info.exists)
+    {
+        return true;
+    }
+    if (!info.runtimeCountValid)
+    {
+        if (errorOut) *errorOut = "unsupported save-state file";
+        return false;
+    }
+    if (info.runtimeCount != expected)
+    {
+        if (errorOut)
+        {
+            *errorOut = platformWideToUtf8(uiText(TXT_DIALOG_STATE_STAGE_MISMATCH));
+        }
+        // A mismatch usually means the user is at a title/menu stage while the
+        // save was captured after the game created additional task runtimes.
+        printf("frontend: save-state runtime count mismatch current=%u saved=%u\n",
+            expected, info.runtimeCount);
+        return false;
+    }
+    return true;
+}
+
+static bool saveStateSlotNow(int slot, std::string* errorOut, bool showProgress)
+{
+    ScopedGamePauseForDialog pauseWhileSaving(true);
+    EmulatorRuntimeState state;
+    std::string error;
+#ifdef _WIN32
+    SaveStateProgressDialog progressDialog = {};
+    SaveStateProgressCallback progressCallback = showProgress ? saveStateProgressCallback : NULL;
+    void* progressUserData = showProgress ? &progressDialog : NULL;
+#else
+    (void)showProgress;
+    SaveStateProgressCallback progressCallback = NULL;
+    void* progressUserData = NULL;
+#endif
+    bool paused = waitForSaveStatePause("save", NULL, NULL);
+    bool ok = paused && emulatorRuntimeCaptureState(&state) &&
+        saveStateWriteSlot(g_currentAppPath, slot, state, &error,
+            progressCallback, progressUserData);
+#ifdef _WIN32
+    destroySaveStateProgressDialog(&progressDialog);
+#endif
+    if (!ok && error.empty())
+    {
+        error = paused ? "runtime state is not available" : "runtime did not pause in time";
+    }
+
+    printf("frontend: save state slot %d %s%s%s\n", slot, ok ? "saved" : "failed",
+        error.empty() ? "" : ": ", error.c_str());
+    if (errorOut)
+    {
+        *errorOut = error;
+    }
+    frontendMenuRefresh();
+    return ok;
+}
+
+static bool loadStateSlotNow(int slot, std::string* errorOut, bool showProgress)
+{
+    ScopedGamePauseForDialog pauseWhileLoading(true);
+    EmulatorRuntimeState state;
+    std::string error;
+#ifdef _WIN32
+    SaveStateProgressDialog progressDialog = {};
+    SaveStateProgressCallback progressCallback = showProgress ? saveStateProgressCallback : NULL;
+    void* progressUserData = showProgress ? &progressDialog : NULL;
+#else
+    (void)showProgress;
+    SaveStateProgressCallback progressCallback = NULL;
+    void* progressUserData = NULL;
+#endif
+    uint32_t expected = 0;
+    bool paused = waitForSaveStatePause("load", &expected, NULL);
+    SaveStateSlotInfo info = saveStateSlotInfo(g_currentAppPath, slot);
+    bool runtimeCountMatches = paused && validateSaveStateRuntimeCount(info, expected, &error);
+    bool ok = runtimeCountMatches &&
+        saveStateReadSlot(g_currentAppPath, slot, &state, &error,
+            progressCallback, progressUserData) &&
+        emulatorRuntimeRestoreState(state);
+#ifdef _WIN32
+    destroySaveStateProgressDialog(&progressDialog);
+#endif
+    if (!ok && error.empty())
+    {
+        error = paused ? "runtime state is not available" : "runtime did not pause in time";
+    }
+
+    printf("frontend: load state slot %d %s%s%s\n", slot, ok ? "loaded" : "failed",
+        error.empty() ? "" : ": ", error.c_str());
+    if (errorOut)
+    {
+        *errorOut = error;
+    }
+    frontendMenuRefresh();
+    return ok;
+}
+
+static bool handleSaveStateCommand(unsigned int commandId)
+{
+    if (commandId < MENU_SAVE_STATE_SLOT_BASE ||
+        commandId >= MENU_SAVE_STATE_SLOT_BASE + kSaveStateSlotCount)
+    {
+        return false;
+    }
+
+    int slot = (int)(commandId - MENU_SAVE_STATE_SLOT_BASE) + 1;
+    if (g_currentAppPath.empty() || !g_gameRunning)
+    {
+        return true;
+    }
+
+    SaveStateSlotInfo info = saveStateSlotInfo(g_currentAppPath, slot);
+    SaveStateDialogSlot dialogSlot = makeSaveStateDialogSlot(slot, info);
+    UiTextId confirmText = info.exists ?
+        TXT_DIALOG_STATE_CONFIRM_OVERWRITE :
+        TXT_DIALOG_STATE_CONFIRM_SAVE;
+    if (!confirmSaveStateAction(confirmText, dialogSlot, uiText(TXT_FILE_SAVE_STATE)))
+    {
+        return true;
+    }
+
+    std::string error;
+    bool ok = saveStateSlotNow(slot, &error, true);
+
+#ifdef _WIN32
+    if (!ok)
+    {
+        std::wstring message = saveStateMessage(TXT_DIALOG_STATE_SAVE_FAILED,
+            makeSaveStateDialogSlot(slot, true, 0), error);
+        MessageBoxW(g_menuWindow, message.c_str(), uiText(TXT_FILE_SAVE_STATE),
+            MB_OK | MB_ICONERROR);
+    }
+#endif
+    return true;
+}
+
+bool frontendMenuSaveStateSlotForAutomation(int slot)
+{
+    if (slot < 1 || slot > kSaveStateSlotCount || g_currentAppPath.empty() || !g_gameRunning)
+    {
+        return false;
+    }
+
+    return saveStateSlotNow(slot, NULL, false);
+}
+
+static bool handleLoadStateCommand(unsigned int commandId)
+{
+    if (commandId < MENU_LOAD_STATE_SLOT_BASE ||
+        commandId >= MENU_LOAD_STATE_SLOT_BASE + kSaveStateSlotCount)
+    {
+        return false;
+    }
+
+    int slot = (int)(commandId - MENU_LOAD_STATE_SLOT_BASE) + 1;
+    if (g_currentAppPath.empty() || !g_gameRunning)
+    {
+        return true;
+    }
+
+    SaveStateSlotInfo info = saveStateSlotInfo(g_currentAppPath, slot);
+    if (!info.exists)
+    {
+#ifdef _WIN32
+        std::wstring message = saveStateMessage(TXT_DIALOG_STATE_EMPTY,
+            makeSaveStateDialogSlot(slot, false, 0), "");
+        MessageBoxW(g_menuWindow, message.c_str(), uiText(TXT_FILE_LOAD_STATE),
+            MB_OK | MB_ICONINFORMATION);
+#endif
+        return true;
+    }
+
+    SaveStateDialogSlot dialogSlot = makeSaveStateDialogSlot(slot, info);
+    if (!confirmSaveStateAction(TXT_DIALOG_STATE_CONFIRM_LOAD, dialogSlot, uiText(TXT_FILE_LOAD_STATE)))
+    {
+        return true;
+    }
+
+    std::string error;
+    bool ok = loadStateSlotNow(slot, &error, true);
+
+#ifdef _WIN32
+    if (!ok)
+    {
+        std::wstring message = saveStateMessage(TXT_DIALOG_STATE_LOAD_FAILED,
+            makeSaveStateDialogSlot(slot, true, 0), error);
+        MessageBoxW(g_menuWindow, message.c_str(), uiText(TXT_FILE_LOAD_STATE),
+            MB_OK | MB_ICONERROR);
+    }
+#endif
+    return true;
+}
+
+bool frontendMenuLoadStateSlotForAutomation(int slot)
+{
+    if (slot < 1 || slot > kSaveStateSlotCount || g_currentAppPath.empty() || !g_gameRunning)
+    {
+        return false;
+    }
+
+    SaveStateSlotInfo info = saveStateSlotInfo(g_currentAppPath, slot);
+    if (!info.exists)
+    {
+        printf("frontend: load state slot %d failed: state slot is empty\n", slot);
+        return false;
+    }
+
+    return loadStateSlotNow(slot, NULL, false);
+}
+
 static void clearRecentAppMenu(void)
 {
     if (emulatorClearRecentApps(g_menuSettings))
     {
-        emulatorSaveSettings(*g_menuSettings);
-        rebuildMenu();
+        if (emulatorSaveSettings(*g_menuSettings))
+        {
+            suppressCurrentRunRecentAppSave();
+            rebuildMenu();
+        }
+        else
+        {
+            printf("frontend: failed to save cleared recent app list\n");
+        }
     }
 }
 
@@ -987,27 +1902,44 @@ bool frontendMenuHandleCommand(unsigned int commandId)
     {
         return true;
     }
+    if (handleCheatEntryCommand(commandId))
+    {
+        return true;
+    }
+    if (handleSaveStateCommand(commandId))
+    {
+        return true;
+    }
+    if (handleLoadStateCommand(commandId))
+    {
+        return true;
+    }
 
     switch (commandId)
     {
-    case MENU_FILE_RECENT_CLEAR:
-        clearRecentAppMenu();
-        return true;
     case MENU_FILE_OPEN:
     {
+        ScopedGamePauseForDialog pauseWhileChoosing(true);
         std::string appPath = platformSelectAppPathLocalized(uiText(TXT_DIALOG_APP_TITLE), uiText(TXT_DIALOG_APP_FILTER));
         if (!appPath.empty())
         {
             printf("frontend: selected app queued as recent app after normal exit: %s\n", appPath.c_str());
-            frontendMenuRequestOpenApp(appPath);
+            if (frontendMenuRequestOpenApp(appPath))
+            {
+                pauseWhileChoosing.dismiss();
+            }
         }
         return true;
     }
-    case MENU_FILE_SAVE_SCREENSHOT:
+    case MENU_FILE_RECENT_CLEAR:
+        clearRecentAppMenu();
+        return true;
+    case MENU_FILE_RESTART:
 #ifdef _WIN32
-        if (!g_currentAppPath.empty() && g_gameRunning)
+        if (!g_currentAppPath.empty())
         {
-            saveScreenshotWithDialog();
+            printf("frontend: restarting current app: %s\n", g_currentAppPath.c_str());
+            requestRelaunchAfterExit(g_currentAppPath);
         }
 #endif
         return true;
@@ -1017,12 +1949,11 @@ bool frontendMenuHandleCommand(unsigned int commandId)
             frontendToggleGamePaused();
         }
         return true;
-    case MENU_FILE_RESTART:
+    case MENU_FILE_SAVE_SCREENSHOT:
 #ifdef _WIN32
-        if (!g_currentAppPath.empty())
+        if (!g_currentAppPath.empty() && g_gameRunning)
         {
-            printf("frontend: restarting current app: %s\n", g_currentAppPath.c_str());
-            requestRelaunchAfterExit(g_currentAppPath);
+            saveScreenshotWithDialog();
         }
 #endif
         return true;
@@ -1124,42 +2055,57 @@ bool frontendMenuHandleCommand(unsigned int commandId)
         emulatorSaveSettings(*g_menuSettings);
         frontendMenuRefresh();
         return true;
+    case MENU_VIDEO_BRIGHTNESS_50:
     case MENU_VIDEO_BRIGHTNESS_75:
     case MENU_VIDEO_BRIGHTNESS_90:
     case MENU_VIDEO_BRIGHTNESS_100:
     case MENU_VIDEO_BRIGHTNESS_110:
     case MENU_VIDEO_BRIGHTNESS_125:
     case MENU_VIDEO_BRIGHTNESS_150:
-        g_menuSettings->brightnessPercent = percentForVideoCommand(commandId, MENU_VIDEO_BRIGHTNESS_75);
+        g_menuSettings->brightnessPercent = percentForVideoCommand(commandId, MENU_VIDEO_BRIGHTNESS_50);
         frontendApplyVideoSettings(*g_menuSettings);
         emulatorSaveSettings(*g_menuSettings);
         frontendMenuRefresh();
         return true;
+    case MENU_VIDEO_CONTRAST_50:
     case MENU_VIDEO_CONTRAST_75:
     case MENU_VIDEO_CONTRAST_90:
     case MENU_VIDEO_CONTRAST_100:
     case MENU_VIDEO_CONTRAST_110:
     case MENU_VIDEO_CONTRAST_125:
     case MENU_VIDEO_CONTRAST_150:
-        g_menuSettings->contrastPercent = percentForVideoCommand(commandId, MENU_VIDEO_CONTRAST_75);
+        g_menuSettings->contrastPercent = percentForVideoCommand(commandId, MENU_VIDEO_CONTRAST_50);
         frontendApplyVideoSettings(*g_menuSettings);
         emulatorSaveSettings(*g_menuSettings);
         frontendMenuRefresh();
         return true;
+    case MENU_VIDEO_GAMMA_50:
+    case MENU_VIDEO_GAMMA_75:
+    case MENU_VIDEO_GAMMA_90:
+    case MENU_VIDEO_GAMMA_100:
+    case MENU_VIDEO_GAMMA_110:
+    case MENU_VIDEO_GAMMA_125:
+    case MENU_VIDEO_GAMMA_150:
+        g_menuSettings->gammaPercent = percentForVideoCommand(commandId, MENU_VIDEO_GAMMA_50);
+        frontendApplyVideoSettings(*g_menuSettings);
+        emulatorSaveSettings(*g_menuSettings);
+        frontendMenuRefresh();
+        return true;
+    case MENU_VIDEO_SATURATION_50:
     case MENU_VIDEO_SATURATION_75:
     case MENU_VIDEO_SATURATION_90:
     case MENU_VIDEO_SATURATION_100:
     case MENU_VIDEO_SATURATION_110:
     case MENU_VIDEO_SATURATION_125:
     case MENU_VIDEO_SATURATION_150:
-        g_menuSettings->saturationPercent = percentForVideoCommand(commandId, MENU_VIDEO_SATURATION_75);
+        g_menuSettings->saturationPercent = percentForVideoCommand(commandId, MENU_VIDEO_SATURATION_50);
         frontendApplyVideoSettings(*g_menuSettings);
         emulatorSaveSettings(*g_menuSettings);
         frontendMenuRefresh();
         return true;
     case MENU_VIDEO_MINIMIZED_NORMAL:
-    case MENU_VIDEO_MINIMIZED_THROTTLE:
     case MENU_VIDEO_MINIMIZED_PAUSE:
+    case MENU_VIDEO_MINIMIZED_THROTTLE:
     {
         const MinimizedBehaviorPreset* preset = minimizedBehaviorPresetForCommand(commandId);
         if (preset)
@@ -1255,35 +2201,11 @@ bool frontendMenuHandleCommand(unsigned int commandId)
         frontendOpenInputMappingWindow();
         return true;
     case MENU_SETTINGS_BACKEND_AUTO:
-        g_menuSettings->backendName = "";
-        emulatorApplySettingsToEnvironment(*g_menuSettings);
-        emulatorSaveSettings(*g_menuSettings);
-        printf("frontend: backend setting saved as auto, relaunching emulator\n");
-        frontendMenuRefresh();
-#ifdef _WIN32
-        relaunchEmulatorAfterExit();
-#endif
-        return true;
+        return applyBackendSetting("", "auto");
     case MENU_SETTINGS_BACKEND_IRJIT:
-        g_menuSettings->backendName = "ppsspp_irjit";
-        emulatorApplySettingsToEnvironment(*g_menuSettings);
-        emulatorSaveSettings(*g_menuSettings);
-        printf("frontend: backend setting saved as ppsspp_irjit, relaunching emulator\n");
-        frontendMenuRefresh();
-#ifdef _WIN32
-        relaunchEmulatorAfterExit();
-#endif
-        return true;
+        return applyBackendSetting("ppsspp_irjit", "ppsspp_irjit");
     case MENU_SETTINGS_BACKEND_INTERPRETER:
-        g_menuSettings->backendName = "interpreter";
-        emulatorApplySettingsToEnvironment(*g_menuSettings);
-        emulatorSaveSettings(*g_menuSettings);
-        printf("frontend: backend setting saved as interpreter, relaunching emulator\n");
-        frontendMenuRefresh();
-#ifdef _WIN32
-        relaunchEmulatorAfterExit();
-#endif
-        return true;
+        return applyBackendSetting("interpreter", "interpreter");
     case MENU_SETTINGS_CPU_CLOCK_AUTO:
     case MENU_SETTINGS_CPU_CLOCK_200:
     case MENU_SETTINGS_CPU_CLOCK_336:
@@ -1373,8 +2295,27 @@ bool frontendMenuHandleCommand(unsigned int commandId)
         frontendMenuRefresh();
         return true;
     }
-    case MENU_SETTINGS_LANGUAGE_ENGLISH:
+    case MENU_SETTINGS_ENABLE_CHEATS:
+    {
+        CheatRuntimeStatus cheatStatus = cheatRuntimeGetStatus();
+        bool enableCheats = !g_menuSettings->cheatsEnabled;
+        g_menuSettings->cheatsEnabled = enableCheats;
+        cheatRuntimeSetEnabled(enableCheats);
+        emulatorApplySettingsToEnvironment(*g_menuSettings);
+        emulatorSaveSettings(*g_menuSettings);
+        if (enableCheats)
+        {
+            cheatRuntimeApplyNow();
+        }
+        printf("frontend: cheats setting saved as %u active=%u available=%u\n",
+            g_menuSettings->cheatsEnabled ? 1u : 0u,
+            cheatRuntimeEnabled() ? 1u : 0u,
+            cheatStatus.available ? 1u : 0u);
+        frontendMenuRefresh();
+        return true;
+    }
     case MENU_SETTINGS_LANGUAGE_CHINESE:
+    case MENU_SETTINGS_LANGUAGE_ENGLISH:
         g_menuSettings->uiLanguage = commandId == MENU_SETTINGS_LANGUAGE_CHINESE ?
             UI_LANGUAGE_CHINESE : UI_LANGUAGE_ENGLISH;
         emulatorSaveSettings(*g_menuSettings);
@@ -1386,11 +2327,12 @@ bool frontendMenuHandleCommand(unsigned int commandId)
         *g_menuSettings = emulatorDefaultSettings();
         emulatorSaveSettings(*g_menuSettings);
         emulatorApplyRuntimeSettings(*g_menuSettings);
+        cheatRuntimeSetEnabled(g_menuSettings->cheatsEnabled);
         debugConsoleClose();
         frontendApplyVideoSettings(*g_menuSettings);
         frontendApplyAudioSettings(*g_menuSettings);
         frontendApplyInputSettings(*g_menuSettings);
-        frontendMenuRefresh();
+        rebuildMenu();
 #ifdef _WIN32
         if (oldBackendName != g_menuSettings->backendName)
         {
@@ -1406,30 +2348,54 @@ bool frontendMenuHandleCommand(unsigned int commandId)
         g_menuSettings->showDebugConsole = !g_menuSettings->showDebugConsole;
         if (g_menuSettings->showDebugConsole)
         {
-            debugConsoleOpen();
+            if (!debugConsoleOpen())
+            {
+                g_menuSettings->showDebugConsole = false;
+            }
         }
         else
         {
             debugConsoleClose();
         }
         emulatorSaveSettings(*g_menuSettings);
+        printf("frontend: debug console setting applied as %u\n",
+            g_menuSettings->showDebugConsole ? 1u : 0u);
         frontendMenuRefresh();
         return true;
     case MENU_DEBUG_PROFILE:
         g_menuSettings->debugProfile = !g_menuSettings->debugProfile;
         if (g_menuSettings->debugProfile)
         {
-            debugLogOpen();
+            if (!debugLogOpen())
+            {
+                g_menuSettings->debugProfile = false;
+            }
         }
         emulatorApplyRuntimeSettings(*g_menuSettings);
         emulatorSaveSettings(*g_menuSettings);
-        printf("frontend: profile setting applied as %u\n",
+        printf("frontend: performance log setting applied as %u\n",
             g_menuSettings->debugProfile ? 1u : 0u);
         frontendMenuRefresh();
         return true;
     case MENU_DEBUG_OPEN_LOG:
 #ifdef _WIN32
         openTextFileNearExe(L"DingooPie-debug.log");
+#endif
+        return true;
+    case MENU_DEBUG_CHEAT_FINDER:
+#ifdef _WIN32
+        if (g_gameRunning)
+        {
+            frontendOpenCheatFinderWindow();
+        }
+#endif
+        return true;
+    case MENU_DEBUG_DEBUGGER:
+#ifdef _WIN32
+        if (g_gameRunning)
+        {
+            frontendOpenDebuggerWindow();
+        }
 #endif
         return true;
     case MENU_HELP_ABOUT:

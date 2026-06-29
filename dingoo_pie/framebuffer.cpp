@@ -1,4 +1,5 @@
 #include "framebuffer.h"
+#include "cheat_runtime.h"
 #include "pause_gate.h"
 #include "runtime_debug.h"
 
@@ -304,7 +305,6 @@ static void maybeDumpPresentedFrame(const uint8_t* pixels, uint32_t frameNumber)
     printf("framebuffer: dumped frame %u to %s\n", frameNumber, path);
 }
 
-
 int InitFb(NativeRuntime* runtime)
 {
     for (size_t i = 0; i < sizeof(kLcdFramebufferAliases) / sizeof(kLcdFramebufferAliases[0]); ++i)
@@ -409,10 +409,16 @@ void requestFbUpdate(void)
     // tied to the Dingoo SDK frame submission point instead of host refresh.
     // Pausing here freezes guest execution at a complete frame boundary while
     // leaving the frontend event loop responsive for menu commands.
+    uint32_t restoreGeneration = pauseGateRestoreGeneration();
     if (pauseGateWaitForResume())
     {
         resetFramebufferPacing();
+        if (restoreGeneration != pauseGateRestoreGeneration())
+        {
+            return;
+        }
     }
+    cheatRuntimeApplyFrame();
     uint64_t beginMicros = paceFramebufferSubmission();
     uint64_t previousMicros = s_LastSubmittedFrameMicros.exchange(beginMicros, std::memory_order_acq_rel);
     if (previousMicros)

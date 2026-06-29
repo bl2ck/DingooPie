@@ -8,9 +8,9 @@
 #include "framebuffer.h"
 #include "sdk_hle.h"
 #include "app_loader.h"
-#include <capstone/capstone.h>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 extern uint32_t s_AppDataAddr;
 extern uint32_t s_AppDataBuffSize;
@@ -18,6 +18,8 @@ extern void* s_AppDataBuff;
 extern app* s_app;
 
 static SDL_atomic_t s_taskShutdownRequested;
+static pthread_mutex_t s_taskRuntimeMutex = PTHREAD_MUTEX_INITIALIZER;
+static std::vector<NativeRuntime*> s_taskRuntimes;
 
 struct TaskStruct
 {
@@ -82,6 +84,60 @@ bool taskSchedulerIsShutdownRequested(void)
     return SDL_AtomicGet(&s_taskShutdownRequested) != 0;
 }
 
+void taskSchedulerRegisterRuntime(NativeRuntime* runtime)
+{
+    if (!runtime)
+    {
+        return;
+    }
+    pthread_mutex_lock(&s_taskRuntimeMutex);
+    for (size_t i = 0; i < s_taskRuntimes.size(); ++i)
+    {
+        if (s_taskRuntimes[i] == runtime)
+        {
+            pthread_mutex_unlock(&s_taskRuntimeMutex);
+            return;
+        }
+    }
+    s_taskRuntimes.push_back(runtime);
+    pthread_mutex_unlock(&s_taskRuntimeMutex);
+}
+
+void taskSchedulerUnregisterRuntime(NativeRuntime* runtime)
+{
+    pthread_mutex_lock(&s_taskRuntimeMutex);
+    for (std::vector<NativeRuntime*>::iterator it = s_taskRuntimes.begin();
+         it != s_taskRuntimes.end(); ++it)
+    {
+        if (*it == runtime)
+        {
+            s_taskRuntimes.erase(it);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&s_taskRuntimeMutex);
+}
+
+size_t taskSchedulerRuntimeCount(void)
+{
+    pthread_mutex_lock(&s_taskRuntimeMutex);
+    size_t count = s_taskRuntimes.size();
+    pthread_mutex_unlock(&s_taskRuntimeMutex);
+    return count;
+}
+
+void taskSchedulerSnapshotRuntimes(std::vector<NativeRuntime*>* out)
+{
+    if (!out)
+    {
+        return;
+    }
+    out->clear();
+    pthread_mutex_lock(&s_taskRuntimeMutex);
+    *out = s_taskRuntimes;
+    pthread_mutex_unlock(&s_taskRuntimeMutex);
+}
+
 static void hook_task_profile(NativeRuntime* runtime, uint64_t address, uint32_t size, void* user_data)
 {
     (void)runtime;
@@ -119,68 +175,6 @@ static bool hook_mem_invalid(NativeRuntime* runtime, RuntimeMemoryAccess type, u
     return false;
 }
 
-
-static void hook_mem_valid(NativeRuntime* runtime, RuntimeMemoryAccess type, uint64_t address, int size, int64_t value, void* user_data)
-{
-    printf(">>> Tracing mem_valid mem_type:%s at 0x%" PRIx64 ", size:0x%x, value:0x%" PRIx64 "\n",
-        memTypeStr(type), address, size, value);
-    if (type == RUNTIME_MEM_READ && size <= 4)
-    {
-        uint32_t v, pc;
-        nativeRuntimeReadMemory(runtime, address, &v, size);
-        nativeRuntimeReadRegister(runtime, RUNTIME_REG_PC, &pc);
-        printf( "PC:0x%X,read:0x%X\n", pc, v);
-    }
-}
-
-static void hook_code_debug(NativeRuntime* runtime, uint64_t address, uint32_t size, void* user_data)
-{
-    char str[60];
-    char* ptr;
-    int eqPos;
-    RuntimeError err;
-    uint32_t stack_start_address = *((uint32_t*)user_data);
-
-    cs_mode mode;
-    uint32_t pc;
-    nativeRuntimeReadRegister(runtime, RUNTIME_REG_PC, &pc);
-
-    if (size <= 4) {
-        cs_insn* insn;
-        uint32_t binary;
-        size_t count;
-        csh handle;
-        uint32_t cpsr;
-
-        if (cs_open(CS_ARCH_MIPS, CS_MODE_MIPS32, &handle) != CS_ERR_OK)
-        {
-            printf("debug cs_open() fail.");
-            exit(1);
-        }
-        nativeRuntimeReadMemory(runtime, address, &binary, size);
-        count = cs_disasm(handle, (uint8_t*)&binary, size, address, 1, &insn);
-        if (count > 0)
-        {
-            for (size_t j = 0; j < count; j++)
-            {
-                static int print_flag = 1;
-                if (print_flag)
-                {
-                    printf("%08X:    %08x    %s\t%s\n", pc, binary, insn[j].mnemonic, insn[j].op_str);
-                    //dumpREG(runtime);
-                    //dumpStackCall(runtime, stack_start_address);
-                }
-            }
-            cs_free(insn, count);
-        }
-        else
-        {
-            printf("%08X:     %08x    0x%" PRIXPTR "    %d]> ", pc, binary, address, size);
-        }
-        cs_close(&handle);
-    }
-}
-
 void* subTaskRun(void* data)
 {
     struct TaskStruct* taskStruct = (struct TaskStruct*)data;
@@ -206,12 +200,16 @@ void* subTaskRun(void* data)
         printf("Failed on nativeRuntimeCreate() with error returned: %u (%s)\n", err, nativeRuntimeErrorString(err));
         return NULL;
     }
+    taskSchedulerRegisterRuntime(runtime);
 
     ExecutionBackend backend = subtaskBackendFromEnv();
     err = nativeRuntimeSetBackend(runtime, backend);
     if (err)
     {
         printf("Failed on nativeRuntimeSetBackend() with error returned: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        taskSchedulerUnregisterRuntime(runtime);
+        nativeRuntimeDestroy(runtime);
+        free(taskStruct);
         return NULL;
     }
     printf("subTaskRun backend: %s\n", executionBackendName(backend));
@@ -231,7 +229,7 @@ void* subTaskRun(void* data)
         exit(1);
     }
 
-    if(InitVmMemSubTask(runtime))
+    if (InitVmMemSubTask(runtime))
     {
         printf("Failed on InitVmMemSubTask\n");
         exit(1);
@@ -250,13 +248,11 @@ void* subTaskRun(void* data)
         exit(1);
     }
 
-    //nativeRuntimeAddHook(runtime, &trace, RUNTIME_HOOK_CODE, hook_code_debug, (void*)&(taskStruct->stackPtr), 1, 0);
     nativeRuntimeAddHook(runtime, &trace, RUNTIME_HOOK_MEM_INVALID, (void*)hook_mem_invalid, NULL, 1, 0);
     if (taskProfileEnabled())
     {
         nativeRuntimeAddHook(runtime, &trace, RUNTIME_HOOK_CODE, (void*)hook_task_profile, taskStruct, 1, 0xffffffffu);
     }
-    //nativeRuntimeAddHook(runtime, &trace, RUNTIME_HOOK_MEM_VALID, hook_mem_valid, NULL, 1, 0, 0);
 
     uint32_t sp = taskStruct->stackPtr;
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_SP, &sp);
@@ -266,7 +262,6 @@ void* subTaskRun(void* data)
 
     uint32_t t9 = entry;
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_T9, &t9);
-
 
     err = nativeRuntimeStart(runtime, entry, 0xFFFFFFFF, 0, 0);
     if (err)
@@ -280,11 +275,13 @@ void* subTaskRun(void* data)
         {
             printf("Failed on nativeRuntimeStart() with error returned: %u (%s)\n", err, nativeRuntimeErrorString(err));
         }
+        taskSchedulerUnregisterRuntime(runtime);
         nativeRuntimeDestroy(runtime);
         free(taskStruct);
         return NULL;
     }
 
+    taskSchedulerUnregisterRuntime(runtime);
     nativeRuntimeDestroy(runtime);
     free(taskStruct);
     return 0;
@@ -316,7 +313,7 @@ uint32_t OSTaskCreate(uint32_t taskFuncAddr, uint32_t dataPtr, uint32_t stackPtr
         printf("pthread_create subTaskRun failed\n");
         assert(0);
     }
-    
+
     return OS_NO_ERR;
 }
 

@@ -225,8 +225,12 @@ RuntimeError ppssppIrJitStart(NativeRuntime* runtime, uint64_t begin, uint64_t u
 
 RuntimeError ppssppIrJitFlushCodeCache(NativeRuntime* runtime)
 {
-    (void)runtime;
-    return ppssppIrJitBackendAvailable() ? RUNTIME_OK : RUNTIME_ERROR_BACKEND_UNAVAILABLE;
+    if (!ppssppIrJitBackendAvailable())
+    {
+        return RUNTIME_ERROR_BACKEND_UNAVAILABLE;
+    }
+    ppssppShimClearJitCache(runtime);
+    return RUNTIME_OK;
 }
 
 void ppssppIrJitRequestStop(NativeRuntime* runtime)

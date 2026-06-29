@@ -60,7 +60,7 @@ static int mapAliasIfNeeded(NativeRuntime* runtime, uint32_t addr, uint32_t size
     return 0;
 }
 
-void initMemoryManager(void * baseAddress, uint32_t len)
+void initMemoryManager(void* baseAddress, uint32_t len)
 {
 	printf("initMemoryManager: baseAddress:0x%" PRIx64 " len: 0x%08x\n", (size_t)baseAddress, len);
 	Origin_LG_mem_base = baseAddress;
@@ -68,7 +68,7 @@ void initMemoryManager(void * baseAddress, uint32_t len)
 
 	LG_mem_base = (void*)((size_t)((size_t)Origin_LG_mem_base + 3) & (~3));
 	LG_mem_len = (Origin_LG_mem_len - ((size_t)LG_mem_base - (size_t)Origin_LG_mem_base)) & (~3);
-	LG_mem_end = (void *)((size_t)LG_mem_base + LG_mem_len);
+	LG_mem_end = (void*)((size_t)LG_mem_base + LG_mem_len);
 	LG_mem_free.next = 0;
 	LG_mem_free.len = 0;
 	((LG_mem_free_t*)LG_mem_base)->next = LG_mem_len;
@@ -213,52 +213,53 @@ int InitVmMem(NativeRuntime *runtime, app *_app)
 		return -1;
 	}
 
-    s_App_Prog_Ptr = _app->bin_data;
-    s_App_Prog_Size = _app->bin_size;
+	s_App_Prog_Ptr = _app->bin_data;
+	s_App_Prog_Size = _app->bin_size;
 
-	s_Heap_Begin_Address = ALIGN((_app->prog_size + _app->origin) ,4096);
+	s_Heap_Begin_Address = ALIGN((_app->prog_size + _app->origin), 4096);
 
 	memset(s_HeapMemPtr, 0x00, VM_HEAP_SIZE);
 	initMemoryManager(s_HeapMemPtr, VM_HEAP_SIZE);
 
 	err = nativeRuntimeMapMemory(runtime, s_Heap_Begin_Address, VM_HEAP_SIZE, RUNTIME_PROT_ALL, s_HeapMemPtr);
-	if (err) {
+	if (err)
+	{
 		printf("Failed mem map s_HeapMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
 		return -1;
 	}
-    if (mapAliasIfNeeded(runtime, s_Heap_Begin_Address, VM_HEAP_SIZE, s_HeapMemPtr, "s_HeapMemPtr"))
-    {
-        return -1;
-    }
-
+	if (mapAliasIfNeeded(runtime, s_Heap_Begin_Address, VM_HEAP_SIZE, s_HeapMemPtr, "s_HeapMemPtr"))
+	{
+		return -1;
+	}
 
 	memset(s_StackMemPtr, 0x00, VM_STACK_SIZE);
 	err = nativeRuntimeMapMemory(runtime, VM_STACK_UPPER_ADDRESS - VM_STACK_SIZE, VM_STACK_SIZE, RUNTIME_PROT_ALL, s_StackMemPtr);
-	if (err) {
+	if (err)
+	{
 		printf("Failed mem map s_StackMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
 		return -1;
 	}
-    if (mapAliasIfNeeded(runtime, VM_STACK_UPPER_ADDRESS - VM_STACK_SIZE, VM_STACK_SIZE, s_StackMemPtr, "s_StackMemPtr"))
-    {
-        return -1;
-    }
+	if (mapAliasIfNeeded(runtime, VM_STACK_UPPER_ADDRESS - VM_STACK_SIZE, VM_STACK_SIZE, s_StackMemPtr, "s_StackMemPtr"))
+	{
+		return -1;
+	}
 
 	uint32_t value = VM_STACK_UPPER_ADDRESS - 0x20u;
 	nativeRuntimeWriteRegister(runtime, RUNTIME_REG_SP, &value);
 
-
-    //Register
-    memset(s_RegisterMemPtr, 0x00, CPU_REGISTER_SIZE);
-    *(uint32_t*)(s_RegisterMemPtr + 0x2020) = 0x00000004;
-    err = nativeRuntimeMapMemory(runtime, CPU_REGISTER_BASE_ADDR, CPU_REGISTER_SIZE, RUNTIME_PROT_ALL, s_RegisterMemPtr);
-    if (err) {
-        printf("Failed mem map s_RegisterMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
-        return -1;
-    }
-    if (mapAliasIfNeeded(runtime, CPU_REGISTER_BASE_ADDR, CPU_REGISTER_SIZE, s_RegisterMemPtr, "s_RegisterMemPtr"))
-    {
-        return -1;
-    }
+	// Map the emulated CPU register page used by SDK code.
+	memset(s_RegisterMemPtr, 0x00, CPU_REGISTER_SIZE);
+	*(uint32_t*)(s_RegisterMemPtr + 0x2020) = 0x00000004;
+	err = nativeRuntimeMapMemory(runtime, CPU_REGISTER_BASE_ADDR, CPU_REGISTER_SIZE, RUNTIME_PROT_ALL, s_RegisterMemPtr);
+	if (err)
+	{
+		printf("Failed mem map s_RegisterMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
+		return -1;
+	}
+	if (mapAliasIfNeeded(runtime, CPU_REGISTER_BASE_ADDR, CPU_REGISTER_SIZE, s_RegisterMemPtr, "s_RegisterMemPtr"))
+	{
+		return -1;
+	}
 
 	return 0;
 }
@@ -289,7 +290,7 @@ int InitVmMemSubTask(NativeRuntime* runtime)
         return -1;
     }
 
-    //Register
+    // Reuse the shared emulated CPU register page for guest subtasks.
     err = nativeRuntimeMapMemory(runtime, CPU_REGISTER_BASE_ADDR, CPU_REGISTER_SIZE, RUNTIME_PROT_ALL, s_RegisterMemPtr);
     if (err)
     {
@@ -306,18 +307,23 @@ int InitVmMemSubTask(NativeRuntime* runtime)
 
 void* my_mallocExt(uint32_t len) {
     void* p = NULL;
-    if (len == 0) {
+    if (len == 0)
+    {
         return NULL;
     }
     p = my_malloc(len + 8);
-    if (p) {
-        ((uint32_t *)p)[0] = len;
-        return (void*)((uint8_t *)p + 8);
+    if (p)
+    {
+        ((uint32_t*)p)[0] = len;
+        return (void*)((uint8_t*)p + 8);
     }
     return p;
 }
-void my_freeExt(void* p) {
-    if (p) {
+
+void my_freeExt(void* p)
+{
+    if (p)
+    {
         uint32_t* t = (uint32_t*)((uint8_t*)p - 8);
         my_free(t, *t + 8);
     }
@@ -331,11 +337,13 @@ void* my_reallocExt(void* p, uint32_t newLen) {
         my_freeExt(p);
         return NULL;
     }
-    else {
+    else
+    {
         uint32_t oldlen = *(uint32_t*)((uint8_t*)p - 8);
         size_t minsize = (oldlen < newLen) ? oldlen : newLen;
         void* newblock = my_mallocExt(newLen);
-        if (newblock == NULL) {
+        if (newblock == NULL)
+        {
             return newblock;
         }
         memmove(newblock, p, minsize);
@@ -344,10 +352,9 @@ void* my_reallocExt(void* p, uint32_t newLen) {
     }
 }
 
-
 uint32_t vm_malloc(uint32_t len)
 {
-    void *p = my_mallocExt(len);
+    void* p = my_mallocExt(len);
     if (!p)
     {
         return 0;
@@ -372,8 +379,8 @@ void vm_free(uint32_t addr)
     {
         return;
     }
-    void* p = (void *)((size_t)addr - (size_t)s_Heap_Begin_Address + (size_t)s_HeapMemPtr);
-    my_freeExt((void *)p);
+    void* p = (void*)((size_t)addr - (size_t)s_Heap_Begin_Address + (size_t)s_HeapMemPtr);
+    my_freeExt((void*)p);
 }
 
 uint32_t vm_realloc(uint32_t addr, uint32_t len)
@@ -389,7 +396,7 @@ uint32_t vm_realloc(uint32_t addr, uint32_t len)
     }
 
     void* p = (void*)((size_t)addr - (size_t)s_Heap_Begin_Address + (size_t)s_HeapMemPtr);
-    void * retPtr = my_reallocExt((void*)p, len);
+    void* retPtr = my_reallocExt((void*)p, len);
     if (!retPtr)
     {
         return 0;
@@ -408,18 +415,72 @@ uint32_t vm_realloc(uint32_t addr, uint32_t len)
     return ret;
 }
 
-//framebuffer
+bool vmHeapCaptureSnapshot(VmHeapSnapshot* out)
+{
+    if (!out)
+    {
+        return false;
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(g_vmHeapMutex);
+    memset(out, 0, sizeof(*out));
+    if (!LG_mem_base || !LG_mem_end || LG_mem_len == 0)
+    {
+        return false;
+    }
+
+    out->valid = true;
+    out->beginAddress = s_Heap_Begin_Address;
+    out->size = LG_mem_len;
+    out->freeNext = (uint32_t)LG_mem_free.next;
+    out->freeLen = (uint32_t)LG_mem_free.len;
+    out->left = LG_mem_left;
+    out->min = LG_mem_min;
+    out->top = LG_mem_top;
+    return true;
+}
+
+bool vmHeapRestoreSnapshot(const VmHeapSnapshot& snapshot)
+{
+    if (!snapshot.valid)
+    {
+        return false;
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(g_vmHeapMutex);
+    if (!LG_mem_base || !LG_mem_end || LG_mem_len == 0 ||
+        snapshot.beginAddress != s_Heap_Begin_Address ||
+        snapshot.size != LG_mem_len ||
+        snapshot.freeNext > LG_mem_len ||
+        snapshot.freeLen > LG_mem_len ||
+        snapshot.left > LG_mem_len ||
+        snapshot.min > LG_mem_len ||
+        snapshot.top > LG_mem_len)
+    {
+        return false;
+    }
+
+    LG_mem_free.next = snapshot.freeNext;
+    LG_mem_free.len = snapshot.freeLen;
+    LG_mem_left = snapshot.left;
+    LG_mem_min = snapshot.min;
+    LG_mem_top = snapshot.top;
+    return true;
+}
+
+// Framebuffer memory is owned by framebuffer.cpp and can also be translated
+// through the generic VM pointer helpers below.
 extern uint32_t VM_LCD_FB_ADDRESS;
 extern uint8_t s_LcdFrameBufferPtr[VM_LCD_FB_SIZE];
 
-void * toHostPtr(uint32_t addr)
+void* toHostPtr(uint32_t addr)
 {
     uint32_t heapAlias = s_Heap_Begin_Address & 0x1fffffff;
     uint32_t stackBegin = VM_STACK_UPPER_ADDRESS - VM_STACK_SIZE;
     uint32_t stackAlias = stackBegin & 0x1fffffff;
     uint32_t appAlias = VM_APP_BEGIN_ADDRESS & 0x1fffffff;
 
-    //heap
+    // VM heap and its cached alias.
     if (addr >= s_Heap_Begin_Address && addr < s_Heap_Begin_Address + VM_HEAP_SIZE)
     {
         void* p = (void*)((size_t)addr - (size_t)s_Heap_Begin_Address + (size_t)s_HeapMemPtr);
@@ -431,7 +492,7 @@ void * toHostPtr(uint32_t addr)
         return p;
     }
 
-    //stack
+    // VM stack and its cached alias.
     if (addr <= VM_STACK_UPPER_ADDRESS && addr > stackBegin)
     {
         void* p = (void*)((size_t)addr - (size_t)stackBegin + (size_t)s_StackMemPtr);
@@ -443,7 +504,7 @@ void * toHostPtr(uint32_t addr)
         return p;
     }
 
-    //code
+    // Loaded app image and its cached alias.
     if (addr >= VM_APP_BEGIN_ADDRESS && addr < VM_APP_BEGIN_ADDRESS + s_App_Prog_Size)
     {
         void* p = (void*)((size_t)addr - (size_t)VM_APP_BEGIN_ADDRESS + (size_t)s_App_Prog_Ptr);
@@ -454,7 +515,7 @@ void * toHostPtr(uint32_t addr)
         void* p = (void*)((size_t)addr - (size_t)appAlias + (size_t)s_App_Prog_Ptr);
         return p;
     }
-    //framebuffer
+    // LCD framebuffer region.
     void* framebufferPtr = NULL;
     if (framebufferHostPointer(addr, &framebufferPtr))
     {
@@ -467,24 +528,24 @@ void * toHostPtr(uint32_t addr)
 
 uint32_t toVmPtr(void* ptr)
 {
-    //heap
+    // VM heap.
     if ((size_t)ptr >= (size_t)s_HeapMemPtr && (size_t)ptr < (size_t)s_HeapMemPtr + VM_HEAP_SIZE)
     {
         return (uint32_t)(((size_t)ptr - (size_t)s_HeapMemPtr) + s_Heap_Begin_Address);
     }
 
-    //stack
+    // VM stack.
     if ((size_t)ptr >= (size_t)s_StackMemPtr && (size_t)ptr < (size_t)s_StackMemPtr + VM_STACK_SIZE)
     {
         return (uint32_t)(((size_t)ptr - (size_t)s_StackMemPtr) + (VM_STACK_UPPER_ADDRESS - VM_STACK_SIZE));
     }
 
-    //code
+    // Loaded app image.
     if ((size_t)ptr >= (size_t)s_App_Prog_Ptr && (size_t)ptr < (size_t)s_App_Prog_Ptr + s_App_Prog_Size)
     {
         return (uint32_t)(((size_t)ptr - (size_t)s_App_Prog_Ptr) + VM_APP_BEGIN_ADDRESS);
     }
-    //framebuffer
+    // LCD framebuffer region.
     uint32_t framebufferPtr = 0;
     if (framebufferVmPointer(ptr, &framebufferPtr))
     {

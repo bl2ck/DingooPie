@@ -188,7 +188,7 @@ $lines += ""
 $lines += "1. Startup: title screen or first playable scene is visible, not black or corrupted."
 $lines += "2. Stability: no crash, no endless modal error, and the runtime reaches profile samples."
 $lines += "3. Playability: when an AutoPress sequence is provided, input changes menu selection or player state."
-$lines += "4. Timing: JIT should generally keep `avg_presented_fps` near the configured display cadence; interpreter is acceptable only when gameplay remains visually stable."
+$lines += '4. Timing: JIT should generally keep `avg_presented_fps` near the configured display cadence; interpreter is acceptable only when gameplay remains visually stable.'
 $lines += "5. Exit behavior: if a sample has a known in-game quit path, run that sequence and confirm no `DingooPie` process remains."
 
 Set-Content -LiteralPath $markdownPath -Value $lines -Encoding UTF8

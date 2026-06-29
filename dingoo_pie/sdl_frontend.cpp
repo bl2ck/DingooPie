@@ -1,6 +1,8 @@
 #include "sdl_frontend.h"
 
 #include "emulator_config.h"
+#include "cheat_finder.h"
+#include "debugger_ui.h"
 #include "input_controls.h"
 #include "framebuffer.h"
 #include "frontend_menu.h"
@@ -27,6 +29,7 @@
 #include <gdiplus.h>
 #endif
 #include <ctype.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,7 +59,9 @@ static bool g_keyboardMappingPending = false;
 static uint32_t g_keyboardMappingTarget = 0;
 static SDL_atomic_t g_quitRequested;
 static SDL_atomic_t g_gamePaused;
+static bool g_userPauseRequested = false;
 static bool g_minimizedPauseActive = false;
+static unsigned int g_modalPauseDepth = 0;
 static EmulatorSettings* g_frontendSettings = NULL;
 static uint16_t g_lastDisplayFrame[SCREEN_WIDTH * SCREEN_HEIGHT];
 static int g_lastDisplayFrameWidth = SCREEN_WIDTH;
@@ -69,6 +74,7 @@ static HWND g_inputMappingWindow = NULL;
 static HBRUSH g_inputMappingBackgroundBrush = NULL;
 static HFONT g_inputMappingFont = NULL;
 static bool g_inputMappingOwnFont = false;
+static bool g_menuLoopPauseActive = false;
 #endif
 
 static const uint64_t kMinimizedThrottlePresentIntervalMs = 250;
@@ -76,6 +82,79 @@ static const uint32_t kMinimizedThrottleLoopDelayMs = 50;
 
 static bool inputTraceEnabled(void);
 static void openFirstGameController(void);
+#ifdef _WIN32
+static void setMenuLoopPauseActive(bool active);
+#endif
+
+static const char* sdlLogCategoryName(int category)
+{
+    switch (category)
+    {
+    case SDL_LOG_CATEGORY_APPLICATION:
+        return "application";
+    case SDL_LOG_CATEGORY_ERROR:
+        return "error";
+    case SDL_LOG_CATEGORY_ASSERT:
+        return "assert";
+    case SDL_LOG_CATEGORY_SYSTEM:
+        return "system";
+    case SDL_LOG_CATEGORY_AUDIO:
+        return "audio";
+    case SDL_LOG_CATEGORY_VIDEO:
+        return "video";
+    case SDL_LOG_CATEGORY_RENDER:
+        return "render";
+    case SDL_LOG_CATEGORY_INPUT:
+        return "input";
+    case SDL_LOG_CATEGORY_TEST:
+        return "test";
+    default:
+        return "custom";
+    }
+}
+
+static const char* sdlLogPriorityName(SDL_LogPriority priority)
+{
+    switch (priority)
+    {
+    case SDL_LOG_PRIORITY_VERBOSE:
+        return "verbose";
+    case SDL_LOG_PRIORITY_DEBUG:
+        return "debug";
+    case SDL_LOG_PRIORITY_INFO:
+        return "info";
+    case SDL_LOG_PRIORITY_WARN:
+        return "warn";
+    case SDL_LOG_PRIORITY_ERROR:
+        return "error";
+    case SDL_LOG_PRIORITY_CRITICAL:
+        return "critical";
+    default:
+        return "unknown";
+    }
+}
+
+static void SDLCALL frontendSdlLogOutput(void* userdata, int category,
+    SDL_LogPriority priority, const char* message)
+{
+    (void)userdata;
+    printf("sdl-log: %s %s: %s\n",
+        sdlLogPriorityName(priority),
+        sdlLogCategoryName(category),
+        message ? message : "");
+}
+
+static void presentBlackFrame(void)
+{
+    if (!g_renderer)
+    {
+        return;
+    }
+    SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
+    SDL_RenderClear(g_renderer);
+    SDL_RenderPresent(g_renderer);
+}
 
 static uint32_t controlMask(uint32_t controlBit)
 {
@@ -166,22 +245,6 @@ static const uint8_t kLetterX[7] = { 0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11 };
 static const uint8_t kLetterY[7] = { 0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04 };
 static const uint8_t kColon[7]   = { 0x00, 0x04, 0x04, 0x00, 0x04, 0x04, 0x00 };
 
-static void drawGlyph(const uint8_t* glyph, int x, int y, int scale, SDL_Color color)
-{
-    SDL_SetRenderDrawColor(g_renderer, color.r, color.g, color.b, color.a);
-    for (int row = 0; row < 7; ++row)
-    {
-        for (int col = 0; col < 5; ++col)
-        {
-            if (glyph[row] & (1 << (4 - col)))
-            {
-                SDL_Rect rect = { x + col * scale, y + row * scale, scale, scale };
-                SDL_RenderFillRect(g_renderer, &rect);
-            }
-        }
-    }
-}
-
 static const uint8_t* glyphForChar(char ch)
 {
     if (ch >= '0' && ch <= '9')
@@ -207,20 +270,6 @@ static const uint8_t* glyphForChar(char ch)
     case 'Y': return kLetterY;
     case ':': return kColon;
     default: return NULL;
-    }
-}
-
-static void drawText(const char* text, int x, int y, int scale, SDL_Color color)
-{
-    int cursor = x;
-    for (const char* p = text; *p; ++p)
-    {
-        const uint8_t* glyph = glyphForChar(*p);
-        if (glyph)
-        {
-            drawGlyph(glyph, cursor, y, scale, color);
-        }
-        cursor += 6 * scale;
     }
 }
 
@@ -1341,14 +1390,94 @@ static void handleSystemWindowEvent(const SDL_Event& ev)
     {
         handleRawKeyboardInput((HRAWINPUT)msg->msg.win.lParam);
     }
-    else if (msg->msg.win.msg == WM_COMMAND)
-    {
-        frontendMenuHandleCommand(LOWORD(msg->msg.win.wParam));
-    }
 }
 #endif
 
 #ifdef _WIN32
+static void setMenuLoopPauseActive(bool active)
+{
+    active = active && frontendMenuGameRunning();
+    if (g_menuLoopPauseActive == active)
+    {
+        return;
+    }
+
+    g_menuLoopPauseActive = active;
+    if (active)
+    {
+        frontendBeginModalPause();
+    }
+    else
+    {
+        frontendEndModalPause();
+    }
+}
+
+static LRESULT CALLBACK nativeWindowSubclassProc(
+    HWND hwnd,
+    UINT msg,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR subclassId,
+    DWORD_PTR refData)
+{
+    (void)subclassId;
+    (void)refData;
+
+    if (msg == WM_ERASEBKGND)
+    {
+        RECT rect;
+        GetClientRect(hwnd, &rect);
+        FillRect((HDC)wParam, &rect, (HBRUSH)GetStockObject(BLACK_BRUSH));
+        return 1;
+    }
+    if (msg == WM_ENTERMENULOOP)
+    {
+        setMenuLoopPauseActive(true);
+    }
+    else if (msg == WM_EXITMENULOOP)
+    {
+        setMenuLoopPauseActive(false);
+    }
+    else if (msg == WM_NCDESTROY)
+    {
+        setMenuLoopPauseActive(false);
+    }
+    else if (msg == WM_INITMENUPOPUP)
+    {
+        frontendMenuRefresh();
+    }
+    else if (msg == WM_COMMAND)
+    {
+        if (frontendMenuHandleCommand(LOWORD(wParam)))
+        {
+            return 0;
+        }
+    }
+
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
+static void installNativeWindowSubclass(void)
+{
+    if (!g_nativeWindow)
+    {
+        return;
+    }
+    if (!SetWindowSubclass(g_nativeWindow, nativeWindowSubclassProc, 1, 0))
+    {
+        printf("frontend: SetWindowSubclass failed: %lu\n", GetLastError());
+    }
+}
+
+static void uninstallNativeWindowSubclass(void)
+{
+    if (g_nativeWindow)
+    {
+        RemoveWindowSubclass(g_nativeWindow, nativeWindowSubclassProc, 1);
+    }
+}
+
 static bool updateNativeWindowHandle(void)
 {
     if (!g_window)
@@ -1476,6 +1605,16 @@ bool frontendGamePaused(void)
     return SDL_AtomicGet(&g_gamePaused) != 0;
 }
 
+bool frontendUserGamePaused(void)
+{
+    return g_userPauseRequested;
+}
+
+static bool frontendEffectivePauseRequested(void)
+{
+    return g_userPauseRequested || g_minimizedPauseActive || g_modalPauseDepth > 0;
+}
+
 static bool isWindowMinimized(void)
 {
     return g_window && (SDL_GetWindowFlags(g_window) & SDL_WINDOW_MINIMIZED) != 0;
@@ -1483,13 +1622,18 @@ static bool isWindowMinimized(void)
 
 static MinimizedBehavior currentMinimizedBehavior(void)
 {
-    return g_frontendSettings ? g_frontendSettings->minimizedBehavior : MINIMIZED_BEHAVIOR_THROTTLE;
+    return g_frontendSettings ? g_frontendSettings->minimizedBehavior : MINIMIZED_BEHAVIOR_PAUSE;
 }
 
-static void setFrontendGamePaused(bool paused, bool refreshMenu)
+static void applyFrontendPauseState(bool refreshMenu)
 {
+    bool paused = frontendEffectivePauseRequested();
     if (frontendGamePaused() == paused)
     {
+        if (refreshMenu)
+        {
+            frontendMenuRefresh();
+        }
         return;
     }
 
@@ -1509,32 +1653,87 @@ static void setFrontendGamePaused(bool paused, bool refreshMenu)
 
 static void setMinimizedPauseActive(bool active)
 {
-    // Only own pauses caused by minimization; a pre-existing user pause must
-    // not be cleared automatically when the window is restored.
-    if (active && frontendGamePaused())
-    {
-        return;
-    }
     if (g_minimizedPauseActive == active)
     {
         return;
     }
     g_minimizedPauseActive = active;
-    setFrontendGamePaused(active, true);
+    applyFrontendPauseState(true);
 }
 
 void frontendSetGamePaused(bool paused)
 {
+    bool changed = g_userPauseRequested != paused;
+    if (changed)
+    {
+        g_userPauseRequested = paused;
+    }
     if (!paused)
     {
         g_minimizedPauseActive = false;
     }
-    setFrontendGamePaused(paused, true);
+    if (!changed && frontendGamePaused() == frontendEffectivePauseRequested())
+    {
+        return;
+    }
+    applyFrontendPauseState(true);
 }
 
 void frontendToggleGamePaused(void)
 {
-    frontendSetGamePaused(!frontendGamePaused());
+    frontendSetGamePaused(!frontendUserGamePaused());
+}
+
+void frontendBeginModalPause(void)
+{
+    ++g_modalPauseDepth;
+    applyFrontendPauseState(true);
+}
+
+void frontendEndModalPause(void)
+{
+    if (g_modalPauseDepth == 0)
+    {
+        return;
+    }
+    --g_modalPauseDepth;
+    applyFrontendPauseState(true);
+}
+
+bool frontendWaitForRuntimePaused(uint32_t timeoutMs)
+{
+    return pauseGateWaitForPaused(timeoutMs);
+}
+
+bool frontendWaitForRuntimePausedWaiters(uint32_t timeoutMs, uint32_t minimumWaiters)
+{
+    return pauseGateWaitForPausedWaiters(timeoutMs, minimumWaiters);
+}
+
+uint32_t frontendRuntimePausedWaiterCount(void)
+{
+    return pauseGateWaiterCount();
+}
+
+static void resetFrontendPauseRequests(void)
+{
+    g_userPauseRequested = false;
+    g_minimizedPauseActive = false;
+    g_modalPauseDepth = 0;
+#ifdef _WIN32
+    g_menuLoopPauseActive = false;
+#endif
+}
+
+static void clearFrontendPauseRequests(bool refreshMenu)
+{
+    resetFrontendPauseRequests();
+    applyFrontendPauseState(refreshMenu);
+}
+
+void frontendClearPauseRequests(void)
+{
+    clearFrontendPauseRequests(true);
 }
 
 struct ControllerPhysicalSource
@@ -2101,7 +2300,12 @@ static void setInputMappingStatus(const wchar_t* text)
     HWND status = inputMappingItem(kInputMappingIdStatus);
     if (status)
     {
+        SendMessageW(status, WM_SETREDRAW, FALSE, 0);
+        SetWindowTextW(status, L"");
         SetWindowTextW(status, text ? text : L"");
+        SendMessageW(status, WM_SETREDRAW, TRUE, 0);
+        InvalidateRect(status, NULL, TRUE);
+        UpdateWindow(status);
     }
 }
 
@@ -2295,12 +2499,19 @@ static LRESULT CALLBACK inputMappingWindowProc(HWND hwnd, UINT msg, WPARAM wPara
         bool valueField =
             (id >= kInputMappingIdKeyboardTextBase && id < kInputMappingIdKeyboardTextBase + rowCount) ||
             (id >= kInputMappingIdControllerTextBase && id < kInputMappingIdControllerTextBase + rowCount);
-        if (valueField)
+        if (valueField || id == kInputMappingIdStatus)
         {
             SetBkMode((HDC)wParam, OPAQUE);
-            SetBkColor((HDC)wParam, GetSysColor(COLOR_WINDOW));
-            SetTextColor((HDC)wParam, GetSysColor(COLOR_WINDOWTEXT));
-            return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+            if (valueField)
+            {
+                SetBkColor((HDC)wParam, GetSysColor(COLOR_WINDOW));
+                SetTextColor((HDC)wParam, GetSysColor(COLOR_WINDOWTEXT));
+                return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+            }
+            SetBkColor((HDC)wParam, GetSysColor(COLOR_BTNFACE));
+            SetTextColor((HDC)wParam, GetSysColor(COLOR_BTNTEXT));
+            return (LRESULT)(g_inputMappingBackgroundBrush ?
+                g_inputMappingBackgroundBrush : GetSysColorBrush(COLOR_BTNFACE));
         }
         SetBkMode((HDC)wParam, TRANSPARENT);
         return (LRESULT)(g_inputMappingBackgroundBrush ?
@@ -2369,8 +2580,7 @@ void frontendOpenInputMappingWindow(void)
 {
     if (g_inputMappingWindow)
     {
-        ShowWindow(g_inputMappingWindow, SW_SHOWNORMAL);
-        SetForegroundWindow(g_inputMappingWindow);
+        ShowWindow(g_inputMappingWindow, SW_SHOWNOACTIVATE);
         return;
     }
 
@@ -2385,7 +2595,7 @@ void frontendOpenInputMappingWindow(void)
         zh ? L"\u6309\u952e\u6620\u5c04" : L"Input Mapping",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, width, height,
-        g_nativeWindow, NULL, GetModuleHandleW(NULL), NULL);
+        NULL, NULL, GetModuleHandleW(NULL), NULL);
     if (!g_inputMappingWindow)
     {
         return;
@@ -2430,8 +2640,30 @@ void frontendOpenInputMappingWindow(void)
     setInputMappingStatus(zh ?
         L"\u70b9\u51fb\u8bbe\u7f6e\u952e\u76d8\u6216\u8bbe\u7f6e\u624b\u67c4\u540e\u6309\u4e0b\u76ee\u6807\u6309\u952e\u3002" :
         L"Choose Set Key or Set Pad, then press the target input.");
-    ShowWindow(g_inputMappingWindow, SW_SHOWNORMAL);
+    ShowWindow(g_inputMappingWindow, SW_SHOWNOACTIVATE);
     UpdateWindow(g_inputMappingWindow);
+}
+
+void frontendOpenCheatFinderWindow(void)
+{
+#ifdef _WIN32
+    if (!frontendMenuGameRunning())
+    {
+        return;
+    }
+    cheatFinderOpenWindow(g_nativeWindow, frontendUiLanguage());
+#endif
+}
+
+void frontendOpenDebuggerWindow(void)
+{
+#ifdef _WIN32
+    if (!frontendMenuGameRunning())
+    {
+        return;
+    }
+    debuggerUiOpenWindow(g_nativeWindow, frontendUiLanguage());
+#endif
 }
 
 static void initCommonControlsForNativeWindows(void)
@@ -2931,13 +3163,14 @@ void frontendApplyVideoSettings(const EmulatorSettings& settings)
             textureLinearSamplingEnabled(settings) ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
     }
 
-    printf("frontend: video settings scale=%d fullscreen=%u anti_aliasing=%s effect=%s brightness=%d contrast=%d saturation=%d minimized_behavior=%s portrait=%u show_fps=%u virtual_controls=%u\n",
+    printf("frontend: video settings scale=%d fullscreen=%u anti_aliasing=%s effect=%s brightness=%d contrast=%d gamma=%d saturation=%d minimized_behavior=%s portrait=%u show_fps=%u virtual_controls=%u\n",
         clampedWindowScale(&settings),
         settings.fullscreen ? 1u : 0u,
         emulatorAntiAliasingName(settings.antiAliasing),
         emulatorColorEffectName(settings.colorEffect),
         settings.brightnessPercent,
         settings.contrastPercent,
+        settings.gammaPercent,
         settings.saturationPercent,
         emulatorMinimizedBehaviorName(settings.minimizedBehavior),
         settings.portraitMode ? 1u : 0u,
@@ -3717,17 +3950,61 @@ static int clampPercent(int value, int minValue, int maxValue)
     return value;
 }
 
-static uint16_t applyVideoAdjustmentsToPixel(uint16_t pixel)
+struct VideoAdjustmentParams
 {
-    if (!g_frontendSettings)
+    int brightness;
+    int contrast;
+    int gamma;
+    int saturation;
+    uint8_t gammaTable[256];
+};
+
+static void buildGammaTable(uint8_t* table, int gammaPercent)
+{
+    if (!table)
     {
-        return pixel;
+        return;
     }
 
-    int brightness = clampPercent(g_frontendSettings->brightnessPercent, 50, 150);
-    int contrast = clampPercent(g_frontendSettings->contrastPercent, 50, 150);
-    int saturation = clampPercent(g_frontendSettings->saturationPercent, 0, 200);
-    if (brightness == 100 && contrast == 100 && saturation == 100)
+    double gamma = (double)gammaPercent / 100.0;
+    for (int i = 0; i < 256; ++i)
+    {
+        double normalized = (double)i / 255.0;
+        int adjusted = (int)(pow(normalized, gamma) * 255.0 + 0.5);
+        table[i] = (uint8_t)clampColor8(adjusted);
+    }
+}
+
+static bool buildVideoAdjustmentParams(VideoAdjustmentParams* params)
+{
+    if (!params || !g_frontendSettings)
+    {
+        return false;
+    }
+
+    params->brightness = clampPercent(g_frontendSettings->brightnessPercent, 50, 150);
+    params->contrast = clampPercent(g_frontendSettings->contrastPercent, 50, 150);
+    params->gamma = clampPercent(g_frontendSettings->gammaPercent, 50, 150);
+    params->saturation = clampPercent(g_frontendSettings->saturationPercent, 0, 200);
+    bool enabled = params->brightness != 100 ||
+        params->contrast != 100 ||
+        params->gamma != 100 ||
+        params->saturation != 100;
+    if (params->gamma != 100)
+    {
+        buildGammaTable(params->gammaTable, params->gamma);
+    }
+    return enabled;
+}
+
+static uint16_t applyVideoAdjustmentsToPixel(
+    uint16_t pixel,
+    const VideoAdjustmentParams& params)
+{
+    if (params.brightness == 100 &&
+        params.contrast == 100 &&
+        params.gamma == 100 &&
+        params.saturation == 100)
     {
         return pixel;
     }
@@ -3741,40 +4018,50 @@ static uint16_t applyVideoAdjustmentsToPixel(uint16_t pixel)
     int g = (int)g8;
     int b = (int)b8;
 
-    r = ((r - 128) * contrast) / 100 + 128;
-    g = ((g - 128) * contrast) / 100 + 128;
-    b = ((b - 128) * contrast) / 100 + 128;
+    r = ((r - 128) * params.contrast) / 100 + 128;
+    g = ((g - 128) * params.contrast) / 100 + 128;
+    b = ((b - 128) * params.contrast) / 100 + 128;
 
-    r = (r * brightness) / 100;
-    g = (g * brightness) / 100;
-    b = (b * brightness) / 100;
+    r = (r * params.brightness) / 100;
+    g = (g * params.brightness) / 100;
+    b = (b * params.brightness) / 100;
 
     int y = (77 * r + 150 * g + 29 * b) >> 8;
-    r = y + ((r - y) * saturation) / 100;
-    g = y + ((g - y) * saturation) / 100;
-    b = y + ((b - y) * saturation) / 100;
+    r = y + ((r - y) * params.saturation) / 100;
+    g = y + ((g - y) * params.saturation) / 100;
+    b = y + ((b - y) * params.saturation) / 100;
+
+    if (params.gamma != 100)
+    {
+        r = params.gammaTable[clampColor8(r)];
+        g = params.gammaTable[clampColor8(g)];
+        b = params.gammaTable[clampColor8(b)];
+    }
 
     return rgb888ToRgb565(clampColor8(r), clampColor8(g), clampColor8(b));
 }
 
-static void applyVideoAdjustments(uint16_t* pixels, size_t pixelCount)
+static void applyVideoAdjustments(
+    uint16_t* pixels,
+    size_t pixelCount,
+    const VideoAdjustmentParams& params)
 {
-    if (!pixels || !g_frontendSettings)
+    if (!pixels)
     {
         return;
     }
 
-    int brightness = clampPercent(g_frontendSettings->brightnessPercent, 50, 150);
-    int contrast = clampPercent(g_frontendSettings->contrastPercent, 50, 150);
-    int saturation = clampPercent(g_frontendSettings->saturationPercent, 0, 200);
-    if (brightness == 100 && contrast == 100 && saturation == 100)
+    if (params.brightness == 100 &&
+        params.contrast == 100 &&
+        params.gamma == 100 &&
+        params.saturation == 100)
     {
         return;
     }
 
     for (size_t i = 0; i < pixelCount; ++i)
     {
-        pixels[i] = applyVideoAdjustmentsToPixel(pixels[i]);
+        pixels[i] = applyVideoAdjustmentsToPixel(pixels[i], params);
     }
 }
 
@@ -3878,10 +4165,8 @@ static bool drawFrame(uint16_t* pixels, int displayedFps)
     uint16_t* uploadPixels = pixels;
     ColorEffectMode colorEffect = g_frontendSettings ? g_frontendSettings->colorEffect : COLOR_EFFECT_NORMAL;
     bool hasColorEffect = colorEffectNeedsPixelPostProcess(colorEffect);
-    bool hasVideoAdjustments = g_frontendSettings &&
-        (g_frontendSettings->brightnessPercent != 100 ||
-            g_frontendSettings->contrastPercent != 100 ||
-            g_frontendSettings->saturationPercent != 100);
+    VideoAdjustmentParams videoAdjustments;
+    bool hasVideoAdjustments = buildVideoAdjustmentParams(&videoAdjustments);
     AntiAliasingMode antiAliasing = currentAntiAliasingMode();
     bool hasAntiAliasPostProcess = antiAliasingNeedsPostProcess(antiAliasing);
 
@@ -3904,7 +4189,7 @@ static bool drawFrame(uint16_t* pixels, int displayedFps)
 
     if (hasVideoAdjustments)
     {
-        applyVideoAdjustments(uploadPixels, SCREEN_WIDTH * SCREEN_HEIGHT);
+        applyVideoAdjustments(uploadPixels, SCREEN_WIDTH * SCREEN_HEIGHT, videoAdjustments);
     }
     if (portraitModeEnabled())
     {
@@ -4007,13 +4292,14 @@ bool frontendSaveAutoScreenshot(void)
 
 bool frontendInit(EmulatorSettings* settings, const char* currentAppPath)
 {
+    SDL_LogSetOutputFunction(frontendSdlLogOutput, NULL);
     g_frontendSettings = settings;
     g_lastDisplayFrameValid = false;
     g_lastDisplayFrameWidth = displayWidthForSettings(settings);
     g_lastDisplayFrameHeight = displayHeightForSettings(settings);
     SDL_AtomicSet(&g_quitRequested, 0);
     SDL_AtomicSet(&g_gamePaused, 0);
-    g_minimizedPauseActive = false;
+    resetFrontendPauseRequests();
     pauseGateSetPaused(false);
     SDL_SetHint(SDL_HINT_IME_SHOW_UI, (!settings || settings->disableIme) ? "0" : "1");
 
@@ -4036,7 +4322,7 @@ bool frontendInit(EmulatorSettings* settings, const char* currentAppPath)
     g_window = SDL_CreateWindow("DingooPie", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         displayWidthForSettings(settings) * windowScale,
         displayHeightForSettings(settings) * windowScale,
-        SDL_WINDOW_RESIZABLE);
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN);
     if (!g_window)
     {
         printf("frontend: SDL_CreateWindow failed: %s\n", SDL_GetError());
@@ -4048,6 +4334,7 @@ bool frontendInit(EmulatorSettings* settings, const char* currentAppPath)
         disableWindowIme();
     }
 #ifdef _WIN32
+    installNativeWindowSubclass();
     initCommonControlsForNativeWindows();
     applyWindowIcon();
     SDL_EventState(SDL_SYSWMEVENT, SDL_ENABLE);
@@ -4088,6 +4375,11 @@ bool frontendInit(EmulatorSettings* settings, const char* currentAppPath)
         frontendApplyInputSettings(*settings);
     }
 
+    // Keep restart relaunches from exposing the default Win32 client background
+    // before the first emulated frame is ready.
+    presentBlackFrame();
+    SDL_ShowWindow(g_window);
+    presentBlackFrame();
     SDL_RaiseWindow(g_window);
     SDL_SetWindowInputFocus(g_window);
 
@@ -4097,8 +4389,7 @@ bool frontendInit(EmulatorSettings* settings, const char* currentAppPath)
 void frontendRequestQuit(void)
 {
     printf("frontend: quit requested\n");
-    setFrontendGamePaused(false, false);
-    g_minimizedPauseActive = false;
+    clearFrontendPauseRequests(false);
     SDL_AtomicSet(&g_quitRequested, 1);
 }
 
@@ -4109,8 +4400,7 @@ bool frontendQuitRequested(void)
 
 void frontendShutdown(void)
 {
-    setFrontendGamePaused(false, false);
-    g_minimizedPauseActive = false;
+    clearFrontendPauseRequests(false);
     closeGameController();
     resetFpsOverlayTexture();
     if (g_frameTexture)
@@ -4126,6 +4416,9 @@ void frontendShutdown(void)
     if (g_window)
     {
         enableWindowIme();
+#ifdef _WIN32
+        uninstallNativeWindowSubclass();
+#endif
         SDL_DestroyWindow(g_window);
         g_window = NULL;
     }
@@ -4160,12 +4453,30 @@ void frontendRunLoop(const EmulatorOptions& options)
     {
         minPresentIntervalMs = 1;
     }
+    uint64_t autotestSaveStateMs = parsePositiveEnv("DINGOO_PIE_AUTOTEST_SAVE_STATE_MS", 0, 0, 60 * 60 * 1000);
+    uint64_t autotestLoadStateMs = parsePositiveEnv("DINGOO_PIE_AUTOTEST_LOAD_STATE_MS", 0, 0, 60 * 60 * 1000);
+    bool autotestSaveStateDone = autotestSaveStateMs == 0;
+    bool autotestLoadStateDone = autotestLoadStateMs == 0;
     uint64_t lastPresentTicks = 0;
     bool pendingFrameRequest = false;
     uint16_t frameCopy[SCREEN_WIDTH * SCREEN_HEIGHT];
 
     while (running && !SDL_AtomicGet(&g_quitRequested))
     {
+        uint64_t loopNow = SDL_GetTicks64();
+        uint64_t loopElapsed = loopNow - startTicks;
+        if (!autotestSaveStateDone && loopElapsed >= autotestSaveStateMs)
+        {
+            autotestSaveStateDone = true;
+            frontendMenuSaveStateSlotForAutomation(1);
+        }
+        if (!autotestLoadStateDone && loopElapsed >= autotestLoadStateMs)
+        {
+            autotestLoadStateDone = true;
+            frontendMenuLoadStateSlotForAutomation(1);
+        }
+
+        frontendMenuRefreshCheats();
         bool drewFrame = false;
         while (SDL_PollEvent(&ev))
         {
@@ -4306,6 +4617,7 @@ void frontendRunLoop(const EmulatorOptions& options)
                     }
                     releaseFrontendInputControls();
                     if (ev.window.event == SDL_WINDOWEVENT_MINIMIZED &&
+                        frontendMenuGameRunning() &&
                         currentMinimizedBehavior() == MINIMIZED_BEHAVIOR_PAUSE)
                     {
                         setMinimizedPauseActive(true);

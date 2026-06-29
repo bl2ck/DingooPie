@@ -12,19 +12,19 @@ typedef enum {
 } _file_type_e;
 
 typedef struct {
-    uint32_t/* _file_type_e */ type;
-    uint32_t/* void* */ data;
-    uint32_t /*bool*/ eof;
+    uint32_t type; // _file_type_e
+    uint32_t data; // void*
+    uint32_t eof;  // bool
 } _file_t;
 
 typedef struct {
-    uint32_t /*uintptr_t*/ base;
-	uint32_t /* void* */size;
-	uint32_t /*uintptr_t*/ offset;
-    uint32_t /*bool*/      read, write;
-    uint32_t /*bool*/      alloc;
+    uint32_t base;   // VM buffer base address
+    uint32_t size;   // VM buffer length in bytes
+    uint32_t offset; // Current read/write offset
+    uint32_t read;   // bool
+    uint32_t write;  // bool
+    uint32_t alloc;  // bool
 } _file_mem_t;
-
 
 typedef void FSYS_FILE;
 extern void fsys_set_app(app* inApp);

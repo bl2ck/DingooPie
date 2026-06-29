@@ -6,7 +6,8 @@
 #include "emulator_config.h"
 #include "app_loader.h"
 
-#define VM_LCD_FB_SIZE  0x00026000 //ALIGN((sizeof(uint16_t) * SCREEN_WIDTH * SCREEN_HEIGHT), 0x1000);
+// 320x240 RGB565 framebuffer, rounded up to a 4 KB page boundary.
+#define VM_LCD_FB_SIZE  0x00026000
 
 int InitFb(NativeRuntime* runtime);
 

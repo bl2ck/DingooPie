@@ -8,11 +8,7 @@
 
 #define OS_TICKS_PER_SEC 100
 
-
-
-//----------------------------------------------------------------------
-// Register Definitions
-//
+// JZ4740 peripheral base addresses used by Dingoo SDK guests.
 #define	CPM_BASE	0xB0000000
 #define	INTC_BASE	0xB0001000
 #define	TCU_BASE	0xB0002000
@@ -34,6 +30,5 @@
 #define	SLCD_BASE	0xB3050000
 #define	CIM_BASE	0xB3060000
 #define	ETH_BASE	0xB3100000
-
 
 #endif

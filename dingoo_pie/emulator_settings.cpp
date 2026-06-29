@@ -12,6 +12,8 @@
 #include <stdint.h>
 #include <string.h>
 #include <errno.h>
+#include <ctype.h>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -20,6 +22,8 @@
 #endif
 #include <windows.h>
 #endif
+
+static std::string trimIniText(const std::string& text);
 
 static int clampInt(int value, int minValue, int maxValue)
 {
@@ -95,7 +99,26 @@ static bool parseDoubleText(const std::string& text, double* out)
 
 static bool stringEqualsIgnoreCase(const std::string& value, const char* expected)
 {
+    if (!expected)
+    {
+        return value.empty();
+    }
+#ifdef _WIN32
     return _stricmp(value.c_str(), expected) == 0;
+#else
+    if (value.size() != strlen(expected))
+    {
+        return false;
+    }
+    for (size_t i = 0; i < value.size(); ++i)
+    {
+        if (tolower((unsigned char)value[i]) != tolower((unsigned char)expected[i]))
+        {
+            return false;
+        }
+    }
+    return true;
+#endif
 }
 
 static std::string normalizeBackendName(const std::string& value, const std::string& fallback)
@@ -256,13 +279,13 @@ static MinimizedBehavior parseMinimizedBehavior(const std::string& value, Minimi
     {
         return MINIMIZED_BEHAVIOR_NORMAL;
     }
-    if (_stricmp(value.c_str(), "throttle") == 0)
-    {
-        return MINIMIZED_BEHAVIOR_THROTTLE;
-    }
     if (_stricmp(value.c_str(), "pause") == 0)
     {
         return MINIMIZED_BEHAVIOR_PAUSE;
+    }
+    if (_stricmp(value.c_str(), "throttle") == 0)
+    {
+        return MINIMIZED_BEHAVIOR_THROTTLE;
     }
     return fallback;
 }
@@ -355,6 +378,132 @@ static std::vector<std::string> buildNormalizedRecentAppList(
         appendRecentIfUnique(&normalized, appPaths[i]);
     }
     return normalized;
+}
+
+static std::string cheatSelectionKeyForApp(const std::string& appPath)
+{
+    return appCheatFileNameFromPath(appPath);
+}
+
+static bool cheatSelectionKeysMatch(const std::string& a, const std::string& b)
+{
+    return stringEqualsIgnoreCase(a, b.c_str());
+}
+
+static int hexDigitValue(char ch)
+{
+    if (ch >= '0' && ch <= '9')
+    {
+        return ch - '0';
+    }
+    if (ch >= 'a' && ch <= 'f')
+    {
+        return ch - 'a' + 10;
+    }
+    if (ch >= 'A' && ch <= 'F')
+    {
+        return ch - 'A' + 10;
+    }
+    return -1;
+}
+
+static std::string encodeCheatFeatureKey(const std::string& key)
+{
+    // Escape only the delimiters used by this INI value; UTF-8 names stay
+    // readable so users can still inspect or edit the file by hand.
+    static const char kHex[] = "0123456789ABCDEF";
+    std::string out;
+    for (size_t i = 0; i < key.size(); ++i)
+    {
+        unsigned char ch = (unsigned char)key[i];
+        if (ch == '%' || ch == '|')
+        {
+            out.push_back('%');
+            out.push_back(kHex[ch >> 4]);
+            out.push_back(kHex[ch & 0x0f]);
+        }
+        else
+        {
+            out.push_back((char)ch);
+        }
+    }
+    return out;
+}
+
+static std::string decodeCheatFeatureKey(const std::string& key)
+{
+    std::string out;
+    for (size_t i = 0; i < key.size(); ++i)
+    {
+        if (key[i] == '%' && i + 2 < key.size())
+        {
+            int hi = hexDigitValue(key[i + 1]);
+            int lo = hexDigitValue(key[i + 2]);
+            if (hi >= 0 && lo >= 0)
+            {
+                out.push_back((char)((hi << 4) | lo));
+                i += 2;
+                continue;
+            }
+        }
+        out.push_back(key[i]);
+    }
+    return out;
+}
+
+static std::string encodeCheatFeatureKeys(const std::vector<std::string>& featureKeys)
+{
+    // The [cheats] section stores stable feature keys from the loaded .cht
+    // file, not localized labels selected by the current UI language.
+    std::string out;
+    for (size_t i = 0; i < featureKeys.size(); ++i)
+    {
+        if (featureKeys[i].empty())
+        {
+            continue;
+        }
+        if (!out.empty())
+        {
+            out.push_back('|');
+        }
+        out += encodeCheatFeatureKey(featureKeys[i]);
+    }
+    return out;
+}
+
+static bool hasWritableCheatSelection(const std::vector<EmulatorCheatSelection>& selections)
+{
+    for (size_t i = 0; i < selections.size(); ++i)
+    {
+        if (!selections[i].cheatFileName.empty() && !selections[i].enabledFeatureKeys.empty())
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+static std::vector<std::string> decodeCheatFeatureKeys(const std::string& text)
+{
+    std::vector<std::string> keys;
+    size_t begin = 0;
+    while (begin <= text.size())
+    {
+        size_t sep = text.find('|', begin);
+        std::string part = sep == std::string::npos ?
+            text.substr(begin) : text.substr(begin, sep - begin);
+        part = decodeCheatFeatureKey(trimIniText(part));
+        if (!part.empty())
+        {
+            keys.push_back(part);
+        }
+        if (sep == std::string::npos)
+        {
+            break;
+        }
+        begin = sep + 1;
+    }
+    return keys;
 }
 
 static bool recentListsEqual(
@@ -472,6 +621,7 @@ static bool writeOrderedSettingsFile(const EmulatorSettings& settings, const std
     appendIniValue(&text, L"effect", emulatorColorEffectName(settings.colorEffect));
     appendIniValue(&text, L"brightness", clampInt(settings.brightnessPercent, 50, 150));
     appendIniValue(&text, L"contrast", clampInt(settings.contrastPercent, 50, 150));
+    appendIniValue(&text, L"gamma", clampInt(settings.gammaPercent, 50, 150));
     appendIniValue(&text, L"saturation", clampInt(settings.saturationPercent, 0, 200));
     appendIniValue(&text, L"minimized_behavior", emulatorMinimizedBehaviorName(settings.minimizedBehavior));
     appendIniValue(&text, L"portrait", settings.portraitMode);
@@ -493,6 +643,21 @@ static bool writeOrderedSettingsFile(const EmulatorSettings& settings, const std
     appendIniValue(&text, L"cpu_hz", settings.cpuClockHz);
     appendIniValue(&text, L"speed_scale", settings.runtimeSpeedScale);
     appendIniValue(&text, L"ostimedly_scale", settings.ostimeDlyScale);
+    appendIniValue(&text, L"cheats_enabled", settings.cheatsEnabled);
+
+    if (hasWritableCheatSelection(settings.cheatSelections))
+    {
+        appendIniSection(&text, L"cheats");
+        for (size_t i = 0; i < settings.cheatSelections.size(); ++i)
+        {
+            const EmulatorCheatSelection& selection = settings.cheatSelections[i];
+            if (!selection.cheatFileName.empty() && !selection.enabledFeatureKeys.empty())
+            {
+                appendIniValue(&text, platformUtf8ToWide(selection.cheatFileName).c_str(),
+                    encodeCheatFeatureKeys(selection.enabledFeatureKeys));
+            }
+        }
+    }
 
     appendIniSection(&text, L"ui");
     appendIniValue(&text, L"language", emulatorUiLanguageName(settings.uiLanguage));
@@ -700,7 +865,8 @@ static std::string readIniString(const char* section, const char* key, const cha
         }
         std::string itemKey = trimIniText(line.substr(0, eq));
         std::string itemValue = trimIniText(line.substr(eq + 1));
-        if (_stricmp(currentSection.c_str(), section) == 0 && _stricmp(itemKey.c_str(), key) == 0)
+        if (stringEqualsIgnoreCase(currentSection, section) &&
+            stringEqualsIgnoreCase(itemKey, key))
         {
             return itemValue;
         }
@@ -714,6 +880,50 @@ static int readIniInt(const char* section, const char* key, int fallback, const 
     std::string text = readIniString(section, key, "", path);
     int parsed = 0;
     return parseIntText(text, &parsed) ? parsed : fallback;
+}
+
+static std::vector<std::pair<std::string, std::string> > readIniSectionValues(
+    const char* section,
+    const std::string& path)
+{
+    std::vector<std::pair<std::string, std::string> > values;
+    std::string text;
+    if (!section || !readTextFileUtf8(path, &text))
+    {
+        return values;
+    }
+
+    std::string currentSection;
+    size_t pos = 0;
+    while (pos <= text.size())
+    {
+        size_t lineEnd = text.find('\n', pos);
+        std::string line = lineEnd == std::string::npos ? text.substr(pos) : text.substr(pos, lineEnd - pos);
+        pos = lineEnd == std::string::npos ? text.size() + 1 : lineEnd + 1;
+
+        line = trimIniText(line);
+        if (line.empty() || line[0] == ';' || line[0] == '#')
+        {
+            continue;
+        }
+        if (line.front() == '[' && line.back() == ']')
+        {
+            currentSection = trimIniText(line.substr(1, line.size() - 2));
+            continue;
+        }
+
+        size_t eq = line.find('=');
+        if (eq == std::string::npos ||
+            !stringEqualsIgnoreCase(currentSection, section))
+        {
+            continue;
+        }
+        values.push_back(std::make_pair(
+            trimIniText(line.substr(0, eq)),
+            trimIniText(line.substr(eq + 1))));
+    }
+
+    return values;
 }
 
 static bool writeIniString(const char* section, const char* key, const std::string& value, const std::string& path)
@@ -772,8 +982,9 @@ EmulatorSettings emulatorDefaultSettings(void)
     settings.colorEffect = COLOR_EFFECT_NORMAL;
     settings.brightnessPercent = 100;
     settings.contrastPercent = 100;
+    settings.gammaPercent = 100;
     settings.saturationPercent = 100;
-    settings.minimizedBehavior = MINIMIZED_BEHAVIOR_THROTTLE;
+    settings.minimizedBehavior = MINIMIZED_BEHAVIOR_PAUSE;
     settings.portraitMode = false;
     settings.showFps = false;
 
@@ -790,6 +1001,8 @@ EmulatorSettings emulatorDefaultSettings(void)
     settings.cpuClockHz = "";
     settings.runtimeSpeedScale = "";
     settings.ostimeDlyScale = "";
+    settings.cheatsEnabled = false;
+    settings.cheatSelections.clear();
 
     settings.uiLanguage = UI_LANGUAGE_CHINESE;
 
@@ -843,6 +1056,7 @@ EmulatorSettings emulatorLoadSettings(void)
     settings.colorEffect = parseColorEffectMode(effect, defaults.colorEffect);
     settings.brightnessPercent = clampInt(readIniInt("video", "brightness", defaults.brightnessPercent, path), 50, 150);
     settings.contrastPercent = clampInt(readIniInt("video", "contrast", defaults.contrastPercent, path), 50, 150);
+    settings.gammaPercent = clampInt(readIniInt("video", "gamma", defaults.gammaPercent, path), 50, 150);
     settings.saturationPercent = clampInt(readIniInt("video", "saturation", defaults.saturationPercent, path), 0, 200);
     std::string minimizedBehavior = readIniString("video", "minimized_behavior", emulatorMinimizedBehaviorName(defaults.minimizedBehavior), path);
     settings.minimizedBehavior = parseMinimizedBehavior(minimizedBehavior, defaults.minimizedBehavior);
@@ -872,6 +1086,22 @@ EmulatorSettings emulatorLoadSettings(void)
     settings.ostimeDlyScale = normalizeScaleValue(
         readIniString("runtime", "ostimedly_scale", defaults.ostimeDlyScale.c_str(), path),
         defaults.ostimeDlyScale);
+    settings.cheatsEnabled = parseBoolText(readIniString("runtime", "cheats_enabled", defaults.cheatsEnabled ? "1" : "0", path).c_str(), defaults.cheatsEnabled);
+    std::vector<std::pair<std::string, std::string> > cheatValues =
+        readIniSectionValues("cheats", path);
+    settings.cheatSelections.clear();
+    settings.cheatSelections.reserve(cheatValues.size());
+    for (size_t i = 0; i < cheatValues.size(); ++i)
+    {
+        if (cheatValues[i].first.empty())
+        {
+            continue;
+        }
+        EmulatorCheatSelection selection;
+        selection.cheatFileName = cheatValues[i].first;
+        selection.enabledFeatureKeys = decodeCheatFeatureKeys(cheatValues[i].second);
+        settings.cheatSelections.push_back(selection);
+    }
 
     std::string language = readIniString("ui", "language", emulatorUiLanguageName(defaults.uiLanguage), path);
     settings.uiLanguage = parseUiLanguage(language, defaults.uiLanguage);
@@ -905,6 +1135,7 @@ bool emulatorSaveSettings(const EmulatorSettings& settings)
     ok = writeIniString("video", "effect", emulatorColorEffectName(settings.colorEffect), path) && ok;
     ok = writeIniString("video", "brightness", std::to_string(clampInt(settings.brightnessPercent, 50, 150)), path) && ok;
     ok = writeIniString("video", "contrast", std::to_string(clampInt(settings.contrastPercent, 50, 150)), path) && ok;
+    ok = writeIniString("video", "gamma", std::to_string(clampInt(settings.gammaPercent, 50, 150)), path) && ok;
     ok = writeIniString("video", "saturation", std::to_string(clampInt(settings.saturationPercent, 0, 200)), path) && ok;
     ok = writeIniString("video", "minimized_behavior", emulatorMinimizedBehaviorName(settings.minimizedBehavior), path) && ok;
     ok = writeIniString("video", "portrait", settings.portraitMode ? "1" : "0", path) && ok;
@@ -920,6 +1151,16 @@ bool emulatorSaveSettings(const EmulatorSettings& settings)
     ok = writeIniString("runtime", "cpu_hz", settings.cpuClockHz, path) && ok;
     ok = writeIniString("runtime", "speed_scale", settings.runtimeSpeedScale, path) && ok;
     ok = writeIniString("runtime", "ostimedly_scale", settings.ostimeDlyScale, path) && ok;
+    ok = writeIniString("runtime", "cheats_enabled", settings.cheatsEnabled ? "1" : "0", path) && ok;
+    for (size_t i = 0; i < settings.cheatSelections.size(); ++i)
+    {
+        const EmulatorCheatSelection& selection = settings.cheatSelections[i];
+        if (!selection.cheatFileName.empty() && !selection.enabledFeatureKeys.empty())
+        {
+            ok = writeIniString("cheats", selection.cheatFileName.c_str(),
+                encodeCheatFeatureKeys(selection.enabledFeatureKeys), path) && ok;
+        }
+    }
     ok = writeIniString("ui", "language", emulatorUiLanguageName(settings.uiLanguage), path) && ok;
     ok = writeIniString("debug", "show_console", settings.showDebugConsole ? "1" : "0", path) && ok;
     ok = writeIniString("debug", "profile", settings.debugProfile ? "1" : "0", path) && ok;
@@ -1002,6 +1243,73 @@ bool emulatorClearRecentApps(EmulatorSettings* settings)
     return changed;
 }
 
+std::vector<std::string> emulatorCheatFeatureKeysForApp(
+    const EmulatorSettings& settings,
+    const std::string& appPath)
+{
+    std::string cheatFileName = cheatSelectionKeyForApp(appPath);
+    if (cheatFileName.empty())
+    {
+        return std::vector<std::string>();
+    }
+
+    for (size_t i = 0; i < settings.cheatSelections.size(); ++i)
+    {
+        if (cheatSelectionKeysMatch(settings.cheatSelections[i].cheatFileName, cheatFileName))
+        {
+            return settings.cheatSelections[i].enabledFeatureKeys;
+        }
+    }
+    return std::vector<std::string>();
+}
+
+bool emulatorSetCheatFeatureKeysForApp(
+    EmulatorSettings* settings,
+    const std::string& appPath,
+    const std::vector<std::string>& featureKeys)
+{
+    if (!settings)
+    {
+        return false;
+    }
+
+    std::string cheatFileName = cheatSelectionKeyForApp(appPath);
+    if (cheatFileName.empty())
+    {
+        return false;
+    }
+
+    for (size_t i = 0; i < settings->cheatSelections.size(); ++i)
+    {
+        if (!cheatSelectionKeysMatch(settings->cheatSelections[i].cheatFileName, cheatFileName))
+        {
+            continue;
+        }
+        if (featureKeys.empty())
+        {
+            settings->cheatSelections.erase(settings->cheatSelections.begin() + i);
+            return true;
+        }
+        if (settings->cheatSelections[i].enabledFeatureKeys == featureKeys)
+        {
+            return false;
+        }
+        settings->cheatSelections[i].enabledFeatureKeys = featureKeys;
+        return true;
+    }
+
+    if (featureKeys.empty())
+    {
+        return false;
+    }
+
+    EmulatorCheatSelection selection;
+    selection.cheatFileName = cheatFileName;
+    selection.enabledFeatureKeys = featureKeys;
+    settings->cheatSelections.push_back(selection);
+    return true;
+}
+
 void emulatorTraceSettings(const char* reason, const EmulatorSettings& settings)
 {
     const char* label = (reason && reason[0]) ? reason : "snapshot";
@@ -1017,7 +1325,7 @@ void emulatorTraceSettings(const char* reason, const EmulatorSettings& settings)
             (unsigned int)(i + 1),
             recentApps[i].c_str());
     }
-    printf("settings-trace: %s video.scale=%d video.fullscreen=%u video.anti_aliasing=%s video.effect=%s video.brightness=%d video.contrast=%d video.saturation=%d video.minimized_behavior=%s video.portrait=%u video.show_fps=%u\n",
+    printf("settings-trace: %s video.scale=%d video.fullscreen=%u video.anti_aliasing=%s video.effect=%s video.brightness=%d video.contrast=%d video.gamma=%d video.saturation=%d video.minimized_behavior=%s video.portrait=%u video.show_fps=%u\n",
         label,
         clampInt(settings.windowScale, 1, 3),
         settings.fullscreen ? 1u : 0u,
@@ -1025,6 +1333,7 @@ void emulatorTraceSettings(const char* reason, const EmulatorSettings& settings)
         emulatorColorEffectName(settings.colorEffect),
         clampInt(settings.brightnessPercent, 50, 150),
         clampInt(settings.contrastPercent, 50, 150),
+        clampInt(settings.gammaPercent, 50, 150),
         clampInt(settings.saturationPercent, 0, 200),
         emulatorMinimizedBehaviorName(settings.minimizedBehavior),
         settings.portraitMode ? 1u : 0u,
@@ -1040,12 +1349,13 @@ void emulatorTraceSettings(const char* reason, const EmulatorSettings& settings)
         settings.showVirtualControls ? 1u : 0u,
         settings.keyboardMapping.empty() ? "(default)" : settings.keyboardMapping.c_str(),
         settings.controllerMapping.empty() ? "(default)" : settings.controllerMapping.c_str());
-    printf("settings-trace: %s runtime.backend=%s runtime.cpu_hz=%s runtime.speed_scale=%s runtime.ostimedly_scale=%s\n",
+    printf("settings-trace: %s runtime.backend=%s runtime.cpu_hz=%s runtime.speed_scale=%s runtime.ostimedly_scale=%s runtime.cheats_enabled=%u\n",
         label,
         settings.backendName.empty() ? "auto" : settings.backendName.c_str(),
         settings.cpuClockHz.empty() ? "auto" : settings.cpuClockHz.c_str(),
         settings.runtimeSpeedScale.empty() ? "auto" : settings.runtimeSpeedScale.c_str(),
-        settings.ostimeDlyScale.empty() ? "auto" : settings.ostimeDlyScale.c_str());
+        settings.ostimeDlyScale.empty() ? "auto" : settings.ostimeDlyScale.c_str(),
+        settings.cheatsEnabled ? 1u : 0u);
     printf("settings-trace: %s ui.language=%s\n",
         label,
         emulatorUiLanguageName(settings.uiLanguage));

@@ -2,21 +2,25 @@
 
 #include "app_loader.h"
 #include "app_paths.h"
+#include "cheat_runtime.h"
 #include "debug_console.h"
 #include "emulator_settings.h"
 #include "sdk_hle.h"
 #include "framebuffer.h"
 #include "guest_format.h"
 #include "compat_profile.h"
+#include "pause_gate.h"
 #include "platform_win32.h"
 #include "instruction_compat.h"
 #include "emulated_memory.h"
 #include "ppsspp_irjit_backend.h"
+#include "runtime_debug.h"
 #include "sdl_frontend.h"
 #include "task_scheduler.h"
 #include "guest_filesystem.h"
 #include "Common/Crypto/sha256.h"
 
+#include <algorithm>
 #include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -26,13 +30,16 @@
 #include <stdlib.h>
 #include <atomic>
 #include <chrono>
+#include <list>
 #include <string>
 #include <string.h>
 #include <thread>
+#include <capstone/capstone.h>
 #include "native_runtime.h"
 
 static std::string g_appLoadPath;
 static std::string g_appMainPath;
+static std::vector<std::string> g_enabledCheatFeatureKeys;
 static EmulatorOptions g_options;
 static bool g_clearRecentOnStartupFailure = false;
 static pthread_mutex_t g_runtimeThreadMutex = PTHREAD_MUTEX_INITIALIZER;
@@ -41,6 +48,7 @@ static bool g_runtimeThreadStarted = false;
 static NativeRuntime* g_mainRuntime = NULL;
 static std::atomic<bool> g_runtimeStopRequested(false);
 static std::atomic<bool> g_lastRunExitedNormally(false);
+static std::atomic<bool> g_suppressCurrentRunRecentAppSave(false);
 static std::string g_lastRunAppPath;
 
 uint32_t s_AppDataAddr = 0;
@@ -51,12 +59,231 @@ app* s_app = NULL;
 static uint32_t g_appMainEntry = 0;
 static uint32_t g_appMainInitCheckAddress = 0;
 
+struct RuntimeDebugHookEntry
+{
+    uint32_t address;
+    uint32_t size;
+    bool enabled;
+    uint64_t hits;
+    uint32_t lastPc;
+    uint32_t lastAddress;
+    uint32_t lastSize;
+    uint64_t lastValue;
+    RuntimeHook hook;
+};
+
+static pthread_mutex_t g_debuggerMutex = PTHREAD_MUTEX_INITIALIZER;
+static std::list<RuntimeDebugHookEntry> g_debugBreakpoints;
+static std::list<RuntimeDebugHookEntry> g_debugWriteWatches;
+
+static bool rangesOverlap(uint32_t aStart, uint32_t aSize, uint32_t bStart, uint32_t bSize)
+{
+    uint64_t aEnd = (uint64_t)aStart + aSize;
+    uint64_t bEnd = (uint64_t)bStart + bSize;
+    return aStart < bEnd && bStart < aEnd;
+}
+
+static bool debuggerInclusiveRangeEnd(uint32_t address, uint32_t size, uint32_t* outEnd)
+{
+    if (size == 0)
+    {
+        return false;
+    }
+
+    uint64_t end = (uint64_t)address + (uint64_t)size - 1u;
+    if (end > 0xffffffffull)
+    {
+        return false;
+    }
+
+    if (outEnd)
+    {
+        *outEnd = (uint32_t)end;
+    }
+    return true;
+}
+
+static uint32_t runtimeRegisterValue(NativeRuntime* runtime, int reg)
+{
+    if (!runtime)
+    {
+        return 0;
+    }
+    if (reg >= RUNTIME_REG_ZERO && reg <= RUNTIME_REG_RA)
+    {
+        uint32_t* gpr = nativeRuntimeGpr(runtime);
+        return gpr ? gpr[reg] : 0;
+    }
+    if (reg == RUNTIME_REG_PC)
+    {
+        uint32_t* pc = nativeRuntimePc(runtime);
+        return pc ? *pc : 0;
+    }
+    if (reg == RUNTIME_REG_HI)
+    {
+        uint32_t* hi = nativeRuntimeHi(runtime);
+        return hi ? *hi : 0;
+    }
+    if (reg == RUNTIME_REG_LO)
+    {
+        uint32_t* lo = nativeRuntimeLo(runtime);
+        return lo ? *lo : 0;
+    }
+    return 0;
+}
+
+static void debuggerCodeHook(NativeRuntime* runtime, uint64_t address, uint32_t size, void* userData)
+{
+    (void)size;
+    RuntimeDebugHookEntry* entry = (RuntimeDebugHookEntry*)userData;
+    if (!entry)
+    {
+        return;
+    }
+
+    pthread_mutex_lock(&g_debuggerMutex);
+    if (entry->enabled)
+    {
+        entry->hits++;
+        entry->lastPc = runtimeRegisterValue(runtime, RUNTIME_REG_PC);
+        entry->lastAddress = (uint32_t)address;
+        entry->lastSize = 4;
+        entry->lastValue = 0;
+    }
+    pthread_mutex_unlock(&g_debuggerMutex);
+}
+
+static bool debuggerWriteHook(NativeRuntime* runtime, RuntimeMemoryAccess type, uint64_t address, int size, int64_t value, void* userData)
+{
+    RuntimeDebugHookEntry* entry = (RuntimeDebugHookEntry*)userData;
+    if (!entry || type != RUNTIME_MEM_WRITE || size <= 0)
+    {
+        return false;
+    }
+
+    pthread_mutex_lock(&g_debuggerMutex);
+    bool matched = entry->enabled &&
+        rangesOverlap(entry->address, entry->size, (uint32_t)address, (uint32_t)size);
+    if (matched)
+    {
+        entry->hits++;
+        entry->lastPc = runtimeRegisterValue(runtime, RUNTIME_REG_PC);
+        entry->lastAddress = (uint32_t)address;
+        entry->lastSize = (uint32_t)size;
+        entry->lastValue = (uint64_t)value;
+    }
+    pthread_mutex_unlock(&g_debuggerMutex);
+    return matched;
+}
+
+static void uninstallDebuggerHooksLocked(NativeRuntime* runtime)
+{
+    if (!runtime)
+    {
+        return;
+    }
+    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugBreakpoints.begin();
+        it != g_debugBreakpoints.end(); ++it)
+    {
+        if (it->hook)
+        {
+            nativeRuntimeRemoveHook(runtime, it->hook);
+            it->hook = 0;
+        }
+    }
+    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugWriteWatches.begin();
+        it != g_debugWriteWatches.end(); ++it)
+    {
+        if (it->hook)
+        {
+            nativeRuntimeRemoveHook(runtime, it->hook);
+            it->hook = 0;
+        }
+    }
+}
+
+static void installDebuggerHooksLocked(NativeRuntime* runtime)
+{
+    if (!runtime)
+    {
+        return;
+    }
+    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugBreakpoints.begin();
+        it != g_debugBreakpoints.end();)
+    {
+        if (!it->enabled && !it->hook)
+        {
+            it = g_debugBreakpoints.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugWriteWatches.begin();
+        it != g_debugWriteWatches.end();)
+    {
+        if (!it->enabled && !it->hook)
+        {
+            it = g_debugWriteWatches.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugBreakpoints.begin();
+        it != g_debugBreakpoints.end(); ++it)
+    {
+        RuntimeDebugHookEntry& entry = *it;
+        if (entry.enabled && !entry.hook)
+        {
+            nativeRuntimeAddHook(runtime, &entry.hook, RUNTIME_HOOK_CODE,
+                (void*)debuggerCodeHook, &entry, entry.address, entry.address);
+        }
+    }
+    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugWriteWatches.begin();
+        it != g_debugWriteWatches.end(); ++it)
+    {
+        RuntimeDebugHookEntry& entry = *it;
+        if (entry.enabled && !entry.hook)
+        {
+            uint32_t end = 0;
+            if (!debuggerInclusiveRangeEnd(entry.address, entry.size, &end))
+            {
+                entry.enabled = false;
+                continue;
+            }
+            nativeRuntimeAddHook(runtime, &entry.hook, RUNTIME_HOOK_MEM_VALID,
+                (void*)debuggerWriteHook, &entry, entry.address, end);
+        }
+    }
+}
+
+static EmulatorRuntimeDebugEntry exportDebugEntry(const RuntimeDebugHookEntry& entry)
+{
+    EmulatorRuntimeDebugEntry out;
+    out.address = entry.address;
+    out.size = entry.size;
+    out.enabled = entry.enabled;
+    out.hits = entry.hits;
+    out.lastPc = entry.lastPc;
+    out.lastAddress = entry.lastAddress;
+    out.lastSize = entry.lastSize;
+    out.lastValue = entry.lastValue;
+    return out;
+}
+
 static void clearMainRuntimeIfCurrent(NativeRuntime* runtime)
 {
     pthread_mutex_lock(&g_runtimeThreadMutex);
     if (g_mainRuntime == runtime)
     {
+        pthread_mutex_lock(&g_debuggerMutex);
+        uninstallDebuggerHooksLocked(runtime);
+        pthread_mutex_unlock(&g_debuggerMutex);
         g_mainRuntime = NULL;
+        cheatRuntimeUnbind(runtime);
     }
     pthread_mutex_unlock(&g_runtimeThreadMutex);
 }
@@ -157,6 +384,61 @@ static void clearRecentAppIfStillCurrent(const char* reason)
     }
 }
 
+static bool isPpssppRunBlockMarkerValue(uint32_t value)
+{
+    return (value & 0xff000000u) == 0x68000000u;
+}
+
+static uint32_t loadStateLe32(const uint8_t* p)
+{
+    return (uint32_t)p[0] |
+        ((uint32_t)p[1] << 8) |
+        ((uint32_t)p[2] << 16) |
+        ((uint32_t)p[3] << 24);
+}
+
+static void storeStateLe32(uint8_t* p, uint32_t value)
+{
+    p[0] = (uint8_t)(value & 0xff);
+    p[1] = (uint8_t)((value >> 8) & 0xff);
+    p[2] = (uint8_t)((value >> 16) & 0xff);
+    p[3] = (uint8_t)((value >> 24) & 0xff);
+}
+
+static void stripIrJitMarkersFromCapturedRegion(EmulatorRuntimeStateRegion* region)
+{
+    if (!region || region->data.size() != region->size || region->size < sizeof(uint32_t))
+    {
+        return;
+    }
+
+    // PPSSPP IRJIT writes transient runblock markers over guest code; savestates
+    // must store the original guest instructions so newly created saves reload cleanly.
+    uint32_t strippedCount = 0;
+    for (size_t offset = 0; offset + sizeof(uint32_t) <= region->data.size(); offset += sizeof(uint32_t))
+    {
+        uint8_t* bytes = region->data.data() + offset;
+        uint32_t value = loadStateLe32(bytes);
+        if (!isPpssppRunBlockMarkerValue(value))
+        {
+            continue;
+        }
+
+        uint32_t original = 0;
+        if (ppssppShimResolveEmuHack(region->start + (uint32_t)offset, value, &original))
+        {
+            storeStateLe32(bytes, original);
+            strippedCount++;
+        }
+    }
+
+    if (strippedCount && getenv("DINGOO_PIE_IRJIT_TRACE"))
+    {
+        printf("save-state: stripped %u IRJIT marker(s) in region 0x%08x\n",
+            strippedCount, region->start);
+    }
+}
+
 static void saveRecentAppPath(const std::string& appPath, const char* reason)
 {
     if (appPath.empty())
@@ -243,92 +525,6 @@ static void hookForceAppInitSuccess(NativeRuntime* runtime, uint64_t address, ui
 
     uint32_t forceSuccess = 1;
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &forceSuccess);
-}
-
-static uint32_t parseHexEnvValue(const char* name)
-{
-    const char* value = getenv(name);
-    if (!value || !value[0])
-    {
-        return 0;
-    }
-
-    return (uint32_t)strtoul(value, NULL, 0);
-}
-
-static bool traceCopyOverlaps(uint32_t address, uint32_t size)
-{
-    static bool initialized = false;
-    static bool enabled = false;
-    static uint32_t traceStart = 0;
-    static uint32_t traceEnd = 0;
-
-    if (!initialized)
-    {
-        enabled = getenv("DINGOO_PIE_TRACE_COPY") != NULL;
-        traceStart = parseHexEnvValue("DINGOO_PIE_TRACE_MEM_START");
-        traceEnd = parseHexEnvValue("DINGOO_PIE_TRACE_MEM_END");
-        initialized = true;
-    }
-
-    if (!enabled)
-    {
-        return false;
-    }
-    if (!traceStart || !traceEnd)
-    {
-        return true;
-    }
-
-    uint64_t begin = address;
-    uint64_t end = begin + size;
-    return begin < traceEnd && end > traceStart;
-}
-
-static void hookInternalMemcpy(NativeRuntime* runtime, uint64_t address, uint32_t size, void* userData)
-{
-    (void)address;
-    (void)size;
-    (void)userData;
-
-    uint32_t dstPtr = 0;
-    uint32_t srcPtr = 0;
-    uint32_t length = 0;
-    uint32_t ra = 0;
-    nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &dstPtr);
-    nativeRuntimeReadRegister(runtime, RUNTIME_REG_A1, &srcPtr);
-    nativeRuntimeReadRegister(runtime, RUNTIME_REG_A2, &length);
-    nativeRuntimeReadRegister(runtime, RUNTIME_REG_RA, &ra);
-
-    if (length == 0)
-    {
-        // Zero-length copies are no-ops even when the guest passes placeholder pointers.
-        nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &dstPtr);
-        nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &ra);
-        return;
-    }
-
-    void* dst = toHostPtr(dstPtr);
-    void* src = toHostPtr(srcPtr);
-    if (!dst || !src)
-    {
-        printf("DingooPie: internal memcpy invalid dst=0x%08x src=0x%08x len=%u\n",
-            dstPtr, srcPtr, length);
-        frontendRequestQuit();
-        return;
-    }
-
-    if (traceCopyOverlaps(dstPtr, length) || traceCopyOverlaps(srcPtr, length))
-    {
-        printf("trace-copy: pc=0x%08x dst=0x%08x src=0x%08x len=%u ra=0x%08x\n",
-            (uint32_t)address, dstPtr, srcPtr, length, ra);
-        printf("trace-copy-src:\n");
-        dumpMem(src, length < 0x40 ? length : 0x40);
-    }
-
-    memmove(dst, src, length);
-    nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &dstPtr);
-    nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &ra);
 }
 
 static void hookAppMain(NativeRuntime* runtime, uint64_t address, uint32_t size, void* userData)
@@ -582,6 +778,10 @@ static NativeRuntime* initDingooPie(void)
     std::string appSha256 = sha256Hex(loadedApp->file_data, loadedApp->file_size);
     bridge_set_app_identity(appSha256.c_str());
     fsys_set_app_identity(appSha256.c_str());
+    cheatRuntimeLoadForApp(
+        appSha256.c_str(),
+        g_appLoadPath.c_str(),
+        g_enabledCheatFeatureKeys);
     printf("DingooPie: app sha256: %s\n", appSha256.c_str());
     printf("DingooPie: compat profile: %s\n", compatProfileName(appSha256.c_str()));
     ppssppShimSetFastMemoryOverride(-1);
@@ -607,6 +807,7 @@ static NativeRuntime* initDingooPie(void)
         destroyMainRuntime(runtime);
         return NULL;
     }
+    cheatRuntimeBind(runtime);
 
     printf("DingooPie: init bridge begin\n");
     err = bridge_init(runtime, loadedApp);
@@ -657,6 +858,7 @@ static NativeRuntime* initDingooPie(void)
         return NULL;
     }
     printf("DingooPie: install core hooks done\n");
+    cheatRuntimeApplyStartup(runtime);
 
     err = nativeRuntimeWriteRegister(runtime, RUNTIME_REG_RA, &appMainEntry);
     if (err)
@@ -728,13 +930,18 @@ static void* dingoopieRun(void* data)
     return 0;
 }
 
-bool startDingooPie(const char* appPath, const EmulatorOptions& options, bool clearRecentOnStartupFailure)
+bool startDingooPie(
+    const char* appPath,
+    const EmulatorOptions& options,
+    bool clearRecentOnStartupFailure,
+    const std::vector<std::string>& enabledCheatFeatureKeys)
 {
     g_runtimeStopRequested.store(false, std::memory_order_release);
     g_lastRunExitedNormally.store(false, std::memory_order_release);
     g_lastRunAppPath.clear();
     g_options = options;
     g_clearRecentOnStartupFailure = clearRecentOnStartupFailure;
+    g_enabledCheatFeatureKeys = enabledCheatFeatureKeys;
     g_appLoadPath = appNormalizePath(appPath);
     if (g_appLoadPath.empty())
     {
@@ -761,6 +968,733 @@ bool startDingooPie(const char* appPath, const EmulatorOptions& options, bool cl
     pthread_mutex_unlock(&g_runtimeThreadMutex);
 
     return true;
+}
+
+void suppressCurrentRunRecentAppSave(void)
+{
+    // Clearing the recent list is an explicit user choice; do not let the
+    // normal runtime-exit save path immediately re-add the running app.
+    g_suppressCurrentRunRecentAppSave.store(true, std::memory_order_release);
+}
+
+bool emulatorRuntimeReadMemory(uint32_t address, void* out, size_t size)
+{
+    if (!out || size == 0)
+    {
+        return false;
+    }
+
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    NativeRuntime* runtime = g_mainRuntime;
+    bool ok = runtime && nativeRuntimeReadRaw(runtime, address, out, size);
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+    return ok;
+}
+
+bool emulatorRuntimeWriteMemory(uint32_t address, const void* in, size_t size)
+{
+    if (!in || size == 0)
+    {
+        return false;
+    }
+
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    NativeRuntime* runtime = g_mainRuntime;
+    bool ok = runtime && nativeRuntimeWriteRaw(runtime, address, in, size);
+    if (ok)
+    {
+        int64_t value = 0;
+        size_t valueBytes = size < sizeof(value) ? size : sizeof(value);
+        memcpy(&value, in, valueBytes);
+        nativeRuntimeNotifyMemoryAccess(runtime, RUNTIME_MEM_WRITE, address, (int)size, value);
+        nativeRuntimeFlushCodeCache(runtime);
+    }
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+    return ok;
+}
+
+static void readRuntimeRegisterSnapshotLocked(NativeRuntime* runtime, EmulatorRuntimeRegisterSnapshot* out)
+{
+    memset(out, 0, sizeof(*out));
+    if (!runtime)
+    {
+        return;
+    }
+
+    if (nativeRuntimeGetBackend(runtime) == EXECUTION_BACKEND_PPSSPP_IRJIT)
+    {
+        ppssppShimSyncStateToRuntime(runtime);
+    }
+
+    out->running = true;
+    for (int i = 0; i < 32; ++i)
+    {
+        nativeRuntimeReadRegister(runtime, i, &out->gpr[i]);
+    }
+    float* fpr = nativeRuntimeFpr(runtime);
+    float* vfpu = nativeRuntimeVfpu(runtime);
+    uint32_t* vfpuCtrl = nativeRuntimeVfpuCtrl(runtime);
+    uint32_t* fcr31 = nativeRuntimeFcr31(runtime);
+    uint32_t* fpcond = nativeRuntimeFpCond(runtime);
+    if (fpr)
+    {
+        memcpy(out->fpr, fpr, sizeof(out->fpr));
+    }
+    if (vfpu)
+    {
+        memcpy(out->vfpu, vfpu, sizeof(out->vfpu));
+    }
+    if (vfpuCtrl)
+    {
+        memcpy(out->vfpuCtrl, vfpuCtrl, sizeof(out->vfpuCtrl));
+    }
+    if (fcr31)
+    {
+        out->fcr31 = *fcr31;
+    }
+    if (fpcond)
+    {
+        out->fpcond = *fpcond;
+    }
+    nativeRuntimeReadRegister(runtime, RUNTIME_REG_PC, &out->pc);
+    nativeRuntimeReadRegister(runtime, RUNTIME_REG_HI, &out->hi);
+    nativeRuntimeReadRegister(runtime, RUNTIME_REG_LO, &out->lo);
+}
+
+static bool writeRuntimeRegisterSnapshotLocked(NativeRuntime* runtime, const EmulatorRuntimeRegisterSnapshot& in)
+{
+    if (!runtime)
+    {
+        return false;
+    }
+
+    uint32_t zero = 0;
+    nativeRuntimeWriteRegister(runtime, RUNTIME_REG_ZERO, &zero);
+    for (int i = 1; i < 32; ++i)
+    {
+        if (nativeRuntimeWriteRegister(runtime, i, &in.gpr[i]) != RUNTIME_OK)
+        {
+            return false;
+        }
+    }
+    if (nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &in.pc) != RUNTIME_OK ||
+        nativeRuntimeWriteRegister(runtime, RUNTIME_REG_HI, &in.hi) != RUNTIME_OK ||
+        nativeRuntimeWriteRegister(runtime, RUNTIME_REG_LO, &in.lo) != RUNTIME_OK)
+    {
+        return false;
+    }
+    float* fpr = nativeRuntimeFpr(runtime);
+    float* vfpu = nativeRuntimeVfpu(runtime);
+    uint32_t* vfpuCtrl = nativeRuntimeVfpuCtrl(runtime);
+    uint32_t* fcr31 = nativeRuntimeFcr31(runtime);
+    uint32_t* fpcond = nativeRuntimeFpCond(runtime);
+    if (fpr)
+    {
+        memcpy(fpr, in.fpr, sizeof(in.fpr));
+    }
+    if (vfpu)
+    {
+        memcpy(vfpu, in.vfpu, sizeof(in.vfpu));
+    }
+    if (vfpuCtrl)
+    {
+        memcpy(vfpuCtrl, in.vfpuCtrl, sizeof(in.vfpuCtrl));
+    }
+    if (fcr31)
+    {
+        *fcr31 = in.fcr31;
+    }
+    if (fpcond)
+    {
+        *fpcond = in.fpcond;
+    }
+    if (nativeRuntimeGetBackend(runtime) == EXECUTION_BACKEND_PPSSPP_IRJIT)
+    {
+        ppssppShimSyncStateFromRuntime(runtime);
+    }
+    return true;
+}
+
+bool emulatorRuntimeCaptureState(EmulatorRuntimeState* out)
+{
+    if (!out)
+    {
+        return false;
+    }
+    out->regions.clear();
+    out->taskRegisters.clear();
+    memset(&out->registers, 0, sizeof(out->registers));
+    memset(&out->heap, 0, sizeof(out->heap));
+    out->osTicks = 0;
+
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    NativeRuntime* runtime = g_mainRuntime;
+    if (!runtime)
+    {
+        pthread_mutex_unlock(&g_runtimeThreadMutex);
+        return false;
+    }
+
+    readRuntimeRegisterSnapshotLocked(runtime, &out->registers);
+    out->osTicks = bridge_capture_os_ticks();
+    if (!vmHeapCaptureSnapshot(&out->heap))
+    {
+        pthread_mutex_unlock(&g_runtimeThreadMutex);
+        return false;
+    }
+
+    std::vector<NativeRuntime*> taskRuntimes;
+    taskSchedulerSnapshotRuntimes(&taskRuntimes);
+    out->taskRegisters.reserve(taskRuntimes.size());
+    for (size_t i = 0; i < taskRuntimes.size(); ++i)
+    {
+        EmulatorRuntimeRegisterSnapshot taskSnapshot;
+        readRuntimeRegisterSnapshotLocked(taskRuntimes[i], &taskSnapshot);
+        if (taskSnapshot.running)
+        {
+            out->taskRegisters.push_back(taskSnapshot);
+        }
+    }
+
+    size_t count = nativeRuntimeMemoryRegionCount(runtime);
+    out->regions.reserve(count);
+    std::vector<const uint8_t*> capturedDataPointers;
+    capturedDataPointers.reserve(count);
+    for (size_t i = 0; i < count; ++i)
+    {
+        RuntimeMemoryRegion region;
+        if (!nativeRuntimeGetMemoryRegion(runtime, i, &region) ||
+            !region.data ||
+            !(region.perms & RUNTIME_PROT_WRITE) ||
+            region.size == 0)
+        {
+            continue;
+        }
+        if (std::find(capturedDataPointers.begin(), capturedDataPointers.end(), region.data) !=
+            capturedDataPointers.end())
+        {
+            continue;
+        }
+
+        EmulatorRuntimeStateRegion stateRegion;
+        stateRegion.start = region.start;
+        stateRegion.size = region.size;
+        stateRegion.perms = region.perms;
+        stateRegion.data.resize(region.size);
+        memcpy(stateRegion.data.data(), region.data, stateRegion.data.size());
+        stripIrJitMarkersFromCapturedRegion(&stateRegion);
+        out->regions.push_back(stateRegion);
+        capturedDataPointers.push_back(region.data);
+    }
+
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+    return out->registers.running && !out->regions.empty();
+}
+
+bool emulatorRuntimeRestoreState(const EmulatorRuntimeState& state)
+{
+    if (!state.registers.running)
+    {
+        return false;
+    }
+
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    NativeRuntime* runtime = g_mainRuntime;
+    if (!runtime)
+    {
+        pthread_mutex_unlock(&g_runtimeThreadMutex);
+        return false;
+    }
+    std::vector<NativeRuntime*> taskRuntimes;
+    taskSchedulerSnapshotRuntimes(&taskRuntimes);
+    // A save-state can only be restored into the same runtime topology that
+    // created it: main runtime plus the exact captured task runtime set.
+    if (taskRuntimes.size() != state.taskRegisters.size())
+    {
+        printf("save-state: task count mismatch current=%u saved=%u\n",
+            (unsigned)taskRuntimes.size(), (unsigned)state.taskRegisters.size());
+        pthread_mutex_unlock(&g_runtimeThreadMutex);
+        return false;
+    }
+
+    nativeRuntimeFlushCodeCache(runtime);
+    for (size_t i = 0; i < taskRuntimes.size(); ++i)
+    {
+        nativeRuntimeFlushCodeCache(taskRuntimes[i]);
+    }
+
+    size_t count = nativeRuntimeMemoryRegionCount(runtime);
+    std::vector<RuntimeMemoryRegion> runtimeRegions;
+    runtimeRegions.reserve(count);
+    for (size_t i = 0; i < count; ++i)
+    {
+        RuntimeMemoryRegion region;
+        if (nativeRuntimeGetMemoryRegion(runtime, i, &region) &&
+            region.data &&
+            (region.perms & RUNTIME_PROT_WRITE) &&
+            region.size > 0)
+        {
+            runtimeRegions.push_back(region);
+        }
+    }
+
+    for (size_t i = 0; i < state.regions.size(); ++i)
+    {
+        const EmulatorRuntimeStateRegion& region = state.regions[i];
+        if (region.size == 0 || region.data.size() != region.size)
+        {
+            pthread_mutex_unlock(&g_runtimeThreadMutex);
+            return false;
+        }
+
+        RuntimeMemoryRegion* target = NULL;
+        for (size_t j = 0; j < runtimeRegions.size(); ++j)
+        {
+            RuntimeMemoryRegion& runtimeRegion = runtimeRegions[j];
+            if (runtimeRegion.start == region.start && runtimeRegion.size >= region.size)
+            {
+                target = &runtimeRegion;
+                break;
+            }
+        }
+        if (!target)
+        {
+            pthread_mutex_unlock(&g_runtimeThreadMutex);
+            return false;
+        }
+        memcpy(target->data, region.data.data(), region.data.size());
+    }
+
+    bool ok = vmHeapRestoreSnapshot(state.heap) &&
+        writeRuntimeRegisterSnapshotLocked(runtime, state.registers);
+    if (ok)
+    {
+        bridge_restore_os_ticks(state.osTicks);
+    }
+    if (ok)
+    {
+        for (size_t i = 0; ok && i < state.taskRegisters.size(); ++i)
+        {
+            ok = writeRuntimeRegisterSnapshotLocked(taskRuntimes[i], state.taskRegisters[i]);
+            if (ok)
+            {
+                nativeRuntimeFlushCodeCache(taskRuntimes[i]);
+            }
+        }
+    }
+    if (ok)
+    {
+        nativeRuntimeFlushCodeCache(runtime);
+        pauseGateMarkRuntimeRestored();
+    }
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+    return ok;
+}
+
+uint32_t emulatorRuntimeActiveThreadCount(void)
+{
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    uint32_t count = g_mainRuntime ? 1u : 0u;
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+    if (count)
+    {
+        count += (uint32_t)taskSchedulerRuntimeCount();
+    }
+    return count;
+}
+
+bool emulatorRuntimeForEachReadableRegion(bool (*callback)(uint32_t start, uint32_t size, void* userData), void* userData)
+{
+    if (!callback)
+    {
+        return false;
+    }
+
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    NativeRuntime* runtime = g_mainRuntime;
+    if (!runtime)
+    {
+        pthread_mutex_unlock(&g_runtimeThreadMutex);
+        return false;
+    }
+
+    size_t count = nativeRuntimeMemoryRegionCount(runtime);
+    std::vector<RuntimeMemoryRegion> regions;
+    regions.reserve(count);
+    for (size_t i = 0; i < count; ++i)
+    {
+        RuntimeMemoryRegion region;
+        if (nativeRuntimeGetMemoryRegion(runtime, i, &region) &&
+            (region.perms & RUNTIME_PROT_READ) &&
+            region.size > 0)
+        {
+            regions.push_back(region);
+        }
+    }
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+
+    for (size_t i = 0; i < regions.size(); ++i)
+    {
+        if (!callback(regions[i].start, regions[i].size, userData))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool emulatorRuntimeGetRegisterSnapshot(EmulatorRuntimeRegisterSnapshot* out)
+{
+    if (!out)
+    {
+        return false;
+    }
+
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    NativeRuntime* runtime = g_mainRuntime;
+    if (!runtime)
+    {
+        pthread_mutex_unlock(&g_runtimeThreadMutex);
+        return false;
+    }
+
+    readRuntimeRegisterSnapshotLocked(runtime, out);
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+    return true;
+}
+
+bool emulatorRuntimeMemoryRegions(std::vector<EmulatorRuntimeMemoryRegionInfo>* out)
+{
+    if (!out)
+    {
+        return false;
+    }
+    out->clear();
+
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    NativeRuntime* runtime = g_mainRuntime;
+    if (!runtime)
+    {
+        pthread_mutex_unlock(&g_runtimeThreadMutex);
+        return false;
+    }
+
+    size_t count = nativeRuntimeMemoryRegionCount(runtime);
+    out->reserve(count);
+    for (size_t i = 0; i < count; ++i)
+    {
+        RuntimeMemoryRegion region;
+        if (nativeRuntimeGetMemoryRegion(runtime, i, &region))
+        {
+            EmulatorRuntimeMemoryRegionInfo info;
+            info.start = region.start;
+            info.size = region.size;
+            info.perms = region.perms;
+            out->push_back(info);
+        }
+    }
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+    return true;
+}
+
+bool emulatorRuntimeDisassemble(uint32_t address, uint32_t instructionCount, std::vector<EmulatorRuntimeDisassemblyLine>* out)
+{
+    if (!out || instructionCount == 0)
+    {
+        return false;
+    }
+    out->clear();
+    out->reserve(instructionCount);
+
+    csh handle;
+    if (cs_open(CS_ARCH_MIPS, CS_MODE_MIPS32, &handle) != CS_ERR_OK)
+    {
+        return false;
+    }
+
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    NativeRuntime* runtime = g_mainRuntime;
+    if (!runtime)
+    {
+        pthread_mutex_unlock(&g_runtimeThreadMutex);
+        cs_close(&handle);
+        return false;
+    }
+
+    for (uint32_t i = 0; i < instructionCount; ++i)
+    {
+        EmulatorRuntimeDisassemblyLine line;
+        line.address = address + i * 4u;
+        line.encoding = 0;
+        line.text.clear();
+        line.valid = false;
+
+        if (nativeRuntimeReadRaw(runtime, line.address, &line.encoding, sizeof(line.encoding)))
+        {
+            cs_insn* insn = NULL;
+            size_t count = cs_disasm(handle, (const uint8_t*)&line.encoding,
+                sizeof(line.encoding), line.address, 1, &insn);
+            if (count > 0)
+            {
+                line.text = insn[0].mnemonic;
+                if (insn[0].op_str[0])
+                {
+                    line.text += " ";
+                    line.text += insn[0].op_str;
+                }
+                line.valid = true;
+                cs_free(insn, count);
+            }
+            else
+            {
+                line.text = "disasm-error";
+            }
+        }
+        else
+        {
+            line.text = "unmapped";
+        }
+        out->push_back(line);
+    }
+
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+    cs_close(&handle);
+    return true;
+}
+
+static bool runtimeDebuggerHasRuntimeLocked(void)
+{
+    return g_mainRuntime != NULL;
+}
+
+bool emulatorRuntimeAddBreakpoint(uint32_t address)
+{
+    address &= ~3u;
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    pthread_mutex_lock(&g_debuggerMutex);
+    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugBreakpoints.begin();
+        it != g_debugBreakpoints.end(); ++it)
+    {
+        if (it->address == address)
+        {
+            RuntimeDebugHookEntry& entry = *it;
+            if (!entry.enabled)
+            {
+                entry.enabled = true;
+                if (g_mainRuntime && !entry.hook)
+                {
+                    nativeRuntimeAddHook(g_mainRuntime, &entry.hook, RUNTIME_HOOK_CODE,
+                        (void*)debuggerCodeHook, &entry, entry.address, entry.address);
+                }
+            }
+            pthread_mutex_unlock(&g_debuggerMutex);
+            pthread_mutex_unlock(&g_runtimeThreadMutex);
+            return true;
+        }
+    }
+
+    RuntimeDebugHookEntry entry;
+    memset(&entry, 0, sizeof(entry));
+    entry.address = address;
+    entry.size = 4;
+    entry.enabled = true;
+    g_debugBreakpoints.push_back(entry);
+    if (runtimeDebuggerHasRuntimeLocked())
+    {
+        installDebuggerHooksLocked(g_mainRuntime);
+    }
+    pthread_mutex_unlock(&g_debuggerMutex);
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+    return true;
+}
+
+bool emulatorRuntimeRemoveBreakpoint(uint32_t address)
+{
+    address &= ~3u;
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    pthread_mutex_lock(&g_debuggerMutex);
+    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugBreakpoints.begin();
+        it != g_debugBreakpoints.end(); ++it)
+    {
+        if (it->address == address)
+        {
+            if (g_mainRuntime && it->hook)
+            {
+                nativeRuntimeRemoveHook(g_mainRuntime, it->hook);
+                it->hook = 0;
+                it->enabled = false;
+            }
+            else
+            {
+                g_debugBreakpoints.erase(it);
+            }
+            pthread_mutex_unlock(&g_debuggerMutex);
+            pthread_mutex_unlock(&g_runtimeThreadMutex);
+            return true;
+        }
+    }
+    pthread_mutex_unlock(&g_debuggerMutex);
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+    return false;
+}
+
+void emulatorRuntimeClearBreakpoints(void)
+{
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    pthread_mutex_lock(&g_debuggerMutex);
+    if (g_mainRuntime)
+    {
+        for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugBreakpoints.begin();
+            it != g_debugBreakpoints.end(); ++it)
+        {
+            if (it->hook)
+            {
+                nativeRuntimeRemoveHook(g_mainRuntime, it->hook);
+                it->hook = 0;
+            }
+            it->enabled = false;
+        }
+    }
+    else
+    {
+        g_debugBreakpoints.clear();
+    }
+    pthread_mutex_unlock(&g_debuggerMutex);
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+}
+
+std::vector<EmulatorRuntimeDebugEntry> emulatorRuntimeBreakpoints(void)
+{
+    std::vector<EmulatorRuntimeDebugEntry> out;
+    pthread_mutex_lock(&g_debuggerMutex);
+    out.reserve(g_debugBreakpoints.size());
+    for (std::list<RuntimeDebugHookEntry>::const_iterator it = g_debugBreakpoints.begin();
+        it != g_debugBreakpoints.end(); ++it)
+    {
+        if (it->enabled)
+        {
+            out.push_back(exportDebugEntry(*it));
+        }
+    }
+    pthread_mutex_unlock(&g_debuggerMutex);
+    return out;
+}
+
+bool emulatorRuntimeAddWriteWatch(uint32_t address, uint32_t size)
+{
+    uint32_t end = 0;
+    if (!debuggerInclusiveRangeEnd(address, size, &end))
+    {
+        return false;
+    }
+
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    pthread_mutex_lock(&g_debuggerMutex);
+    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugWriteWatches.begin();
+        it != g_debugWriteWatches.end(); ++it)
+    {
+        if (it->address == address && it->size == size)
+        {
+            RuntimeDebugHookEntry& entry = *it;
+            if (!entry.enabled)
+            {
+                entry.enabled = true;
+                if (g_mainRuntime && !entry.hook)
+                {
+                    nativeRuntimeAddHook(g_mainRuntime, &entry.hook, RUNTIME_HOOK_MEM_VALID,
+                        (void*)debuggerWriteHook, &entry, entry.address, end);
+                }
+            }
+            pthread_mutex_unlock(&g_debuggerMutex);
+            pthread_mutex_unlock(&g_runtimeThreadMutex);
+            return true;
+        }
+    }
+
+    RuntimeDebugHookEntry entry;
+    memset(&entry, 0, sizeof(entry));
+    entry.address = address;
+    entry.size = size;
+    entry.enabled = true;
+    g_debugWriteWatches.push_back(entry);
+    if (runtimeDebuggerHasRuntimeLocked())
+    {
+        installDebuggerHooksLocked(g_mainRuntime);
+    }
+    pthread_mutex_unlock(&g_debuggerMutex);
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+    return true;
+}
+
+bool emulatorRuntimeRemoveWriteWatch(uint32_t address, uint32_t size)
+{
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    pthread_mutex_lock(&g_debuggerMutex);
+    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugWriteWatches.begin();
+        it != g_debugWriteWatches.end(); ++it)
+    {
+        if (it->address == address && it->size == size)
+        {
+            if (g_mainRuntime && it->hook)
+            {
+                nativeRuntimeRemoveHook(g_mainRuntime, it->hook);
+                it->hook = 0;
+                it->enabled = false;
+            }
+            else
+            {
+                g_debugWriteWatches.erase(it);
+            }
+            pthread_mutex_unlock(&g_debuggerMutex);
+            pthread_mutex_unlock(&g_runtimeThreadMutex);
+            return true;
+        }
+    }
+    pthread_mutex_unlock(&g_debuggerMutex);
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+    return false;
+}
+
+void emulatorRuntimeClearWriteWatches(void)
+{
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    pthread_mutex_lock(&g_debuggerMutex);
+    if (g_mainRuntime)
+    {
+        for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugWriteWatches.begin();
+            it != g_debugWriteWatches.end(); ++it)
+        {
+            if (it->hook)
+            {
+                nativeRuntimeRemoveHook(g_mainRuntime, it->hook);
+                it->hook = 0;
+            }
+            it->enabled = false;
+        }
+    }
+    else
+    {
+        g_debugWriteWatches.clear();
+    }
+    pthread_mutex_unlock(&g_debuggerMutex);
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+}
+
+std::vector<EmulatorRuntimeDebugEntry> emulatorRuntimeWriteWatches(void)
+{
+    std::vector<EmulatorRuntimeDebugEntry> out;
+    pthread_mutex_lock(&g_debuggerMutex);
+    out.reserve(g_debugWriteWatches.size());
+    for (std::list<RuntimeDebugHookEntry>::const_iterator it = g_debugWriteWatches.begin();
+        it != g_debugWriteWatches.end(); ++it)
+    {
+        if (it->enabled)
+        {
+            out.push_back(exportDebugEntry(*it));
+        }
+    }
+    pthread_mutex_unlock(&g_debuggerMutex);
+    return out;
 }
 
 void stopDingooPie(void)
@@ -800,15 +1734,22 @@ void stopDingooPie(void)
         }
     }
 
+    bool exitedNormally = joinedRuntime && g_lastRunExitedNormally.load(std::memory_order_acquire);
+    bool suppressRecentSave = g_suppressCurrentRunRecentAppSave.exchange(false, std::memory_order_acq_rel);
+
     if (shouldJoin && !joinedRuntime)
     {
         printf("DingooPie: recent app not saved because runtime thread did not join\n");
     }
-    else if (shouldJoin && !g_lastRunExitedNormally.load(std::memory_order_acquire))
+    else if (shouldJoin && !exitedNormally)
     {
         printf("DingooPie: recent app not saved because runtime did not exit normally\n");
     }
-    if (joinedRuntime && g_lastRunExitedNormally.load(std::memory_order_acquire))
+    if (exitedNormally && suppressRecentSave)
+    {
+        printf("DingooPie: recent app not saved because recent list was cleared\n");
+    }
+    else if (exitedNormally)
     {
         saveRecentAppPath(g_lastRunAppPath, "normal runtime exit");
     }

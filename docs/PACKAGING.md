@@ -21,12 +21,17 @@ package to `release\`. The release contains:
 - `libcapstone.dll`
 - `libwinpthread-1.dll`
 - `README.md`
+- `cheats\` when the project `cheats\` directory contains `.cht` files
 - `manifest.sha256`
 
 `README.md` is copied from `RELEASE_README.md` when that file exists; otherwise
-the root `README.md` is used. `manifest.sha256` records SHA256 hashes for the
-release files. Stale files in `release\` are removed after the manifest is
-written.
+the root `README.md` is used. The release README is intentionally user-facing:
+keep it limited to basic operation, input, menus, and cheat usage. Detailed
+implementation and build notes belong in the root README or `docs\`.
+`manifest.sha256` records SHA256 hashes for the core release files: the
+executable, runtime DLLs, and release README. Cheat files are copied into the
+release when present but are not listed in `manifest.sha256`. Stale files in
+`release\` are removed after the manifest is written.
 
 Required runtime DLLs must exist before release generation. `libwinpthread-1.dll`
 is resolved from `w64devkit\bin` first, then from
@@ -44,6 +49,7 @@ Run:
 `dist\_verify`, and validates the extracted manifest. In a Git worktree it
 copies tracked project files from:
 
+- `cheats\`
 - `dingoo_pie\`
 - `docs\`
 - `patches\`

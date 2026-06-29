@@ -120,22 +120,6 @@ enum TinyPredicateKind
     TINY_PREDICATE_TILE_BLOCKED
 };
 
-static bool instructionMatchesAt(const uint8_t* bin, uint32_t off, uint32_t scanSize, const uint32_t* signature, uint32_t count)
-{
-    if (off + count * sizeof(uint32_t) > scanSize)
-    {
-        return false;
-    }
-    for (uint32_t i = 0; i < count; ++i)
-    {
-        if (readLe32(bin + off + i * sizeof(uint32_t)) != signature[i])
-        {
-            return false;
-        }
-    }
-    return true;
-}
-
 static MemoryRoutineKind instructionLooksLikeMemoryRoutine(const uint8_t* bin, uint32_t off, uint32_t scanSize)
 {
     if (off + 12 * sizeof(uint32_t) <= scanSize)

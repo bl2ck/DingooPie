@@ -1,0 +1,24 @@
+# 7 Days / 七夜正式版.app
+# SHA256:
+# AF681C338A9932C98A3B450D4391C43D13747F1DFD937232AE38BEDB44359BF0
+#
+# Notes:
+# - Sets the runtime sedative count to 99.
+# - Unlocks title-menu hidden costume and weapon checks without changing save data.
+
+app_sha256=AF681C338A9932C98A3B450D4391C43D13747F1DFD937232AE38BEDB44359BF0
+
+on|镇定剂 99 个/Sedative x99|u32|0x81019394|99
+once|解锁隐藏道具/Unlock Title Hidden Items：打开隐藏道具选择|u32|0x80A2DBEC|0x24020001|0x8C22A21C
+once|解锁隐藏道具/Unlock Title Hidden Items：显示隐藏服装选项|u32|0x80A2DD58|0x24020001|0x8C22A214
+once|解锁隐藏道具/Unlock Title Hidden Items：选择隐藏服装选项|u32|0x80A2DDEC|0x24020001|0x8C22A214
+once|解锁隐藏道具/Unlock Title Hidden Items：隐藏服装锁定检查|u32|0x80A2DE3C|0x24020001|0x8C22A214
+once|解锁隐藏道具/Unlock Title Hidden Items：下一项隐藏服装选择|u32|0x80A2DFB4|0x24020001|0x8C22A214
+once|解锁隐藏道具/Unlock Title Hidden Items：上一项隐藏服装选择|u32|0x80A2E04C|0x24020001|0x8C22A214
+once|解锁隐藏道具/Unlock Title Hidden Items：空隐藏服装选择检查|u32|0x80A2E0A4|0x24020001|0x8C42A214
+once|解锁隐藏道具/Unlock Title Hidden Items：显示隐藏武器选项|u32|0x80A2DD80|0x24020001|0x8C22A218
+once|解锁隐藏道具/Unlock Title Hidden Items：选择隐藏武器选项|u32|0x80A2DE14|0x24020001|0x8C22A218
+once|解锁隐藏道具/Unlock Title Hidden Items：隐藏武器锁定检查|u32|0x80A2DE64|0x24020001|0x8C22A218
+once|解锁隐藏道具/Unlock Title Hidden Items：下一项隐藏武器选择|u32|0x80A2DFE0|0x24020001|0x8C22A218
+once|解锁隐藏道具/Unlock Title Hidden Items：上一项隐藏武器选择|u32|0x80A2E078|0x24020001|0x8C22A218
+once|解锁隐藏道具/Unlock Title Hidden Items：空隐藏武器选择检查|u32|0x80A2E0B8|0x24020001|0x8C42A218

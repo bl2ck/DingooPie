@@ -1,0 +1,23 @@
+# Tiandi Dao / Tiandidao.app
+# SHA256:
+# 6FA335AD49FE2FE68E6ECE552D72C2DEC352E715B7255FDCE9AED88248FB2C23
+#
+# Notes:
+# - Skips player hurt and player-only HP loss paths.
+# - Redirects player-facing HP reads to max HP.
+# - Generic entity HP paths are intentionally not patched, so enemies remain killable.
+
+app_sha256=6FA335AD49FE2FE68E6ECE552D72C2DEC352E715B7255FDCE9AED88248FB2C23
+
+on|无敌/Invincible：跳过玩家受击流程|u32|0x80A578D4|0x10000191|0x14400191
+on|无敌/Invincible：跳过固定扣血辅助流程|u32|0x80A49EA8|0x10000008|0x14400008
+on|无敌/Invincible：跳过脚本负数扣血|u32|0x80A2AB68|0x0440001E|0x00000000
+on|无敌/Invincible：跳过周期负数扣血|u32|0x80A4990C|0x04600008|0x00000000
+on|无敌/Invincible：跳过脚本直接设低血量分支|u32|0x80A2AB24|0x10000007|0x14600007
+on|无敌/Invincible：跳过脚本直接写低血量|u32|0x80A2AB28|0x00000000|0xAC430780
+on|无敌/Invincible：血条第1段读取最大血量|u32|0x80A3592C|0x8C830784|0x8C830780
+on|无敌/Invincible：血条第2段读取最大血量|u32|0x80A3598C|0x8C830784|0x8C830780
+on|无敌/Invincible：血条第3段读取最大血量|u32|0x80A359EC|0x8C830784|0x8C830780
+on|无敌/Invincible：低血量检查读取最大血量|u32|0x80A35A60|0x8C420784|0x8C420780
+on|无敌/Invincible：玩家状态导出读取最大血量|u32|0x80A20590|0x8E250784|0x8E250780
+on|无敌/Invincible：脚本查询玩家血量读取最大血量|u32|0x80A2AA84|0x8C510784|0x8C510780

@@ -1,0 +1,15 @@
+# Ultimate Drift / 极限漂移.app
+# SHA256:
+# E4E23B19515716445EEE4A79BF6F081B77F5C0911D43456205902475653373F9
+#
+# Notes:
+# - Unlocks locked cars and tracks by patching menu lock and selection checks.
+
+app_sha256=E4E23B19515716445EEE4A79BF6F081B77F5C0911D43456205902475653373F9
+
+once|解锁所有赛车/Unlock All Cars：隐藏锁图标|u32|0x80A9B190|0x1000000F
+once|解锁所有赛车/Unlock All Cars：允许选择|u32|0x80A9C3E8|0x10000005
+once|解锁所有地图/Unlock All Tracks：隐藏第2张地图锁图标|u32|0x80A9DA24|0x10000018
+once|解锁所有地图/Unlock All Tracks：隐藏第3张地图锁图标|u32|0x80A9DA48|0x1000000F
+once|解锁所有地图/Unlock All Tracks：允许选择第2张地图|u32|0x80A9DB10|0x00000000
+once|解锁所有地图/Unlock All Tracks：允许选择第3张地图|u32|0x80A9DB34|0x00000000

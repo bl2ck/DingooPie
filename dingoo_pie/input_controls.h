@@ -35,6 +35,4 @@ std::string inputKeyboardSourceForControl(uint32_t controlBit);
 bool inputSetKeyboardMappingForControl(uint32_t controlBit, SDL_Scancode scancode);
 void inputResetKeyboardMapping(void);
 
-
 #endif
-

@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <ctype.h>
+#include <mutex>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +14,7 @@
 #include <vector>
 
 #include "framebuffer.h"
+#include "pause_gate.h"
 
 struct MemoryRegion
 {
@@ -64,6 +66,7 @@ struct NativeRuntime
     bool cachedRegionValid;
     MemoryRegion cachedFetchRegion;
     bool cachedFetchRegionValid;
+    std::mutex hookMutex;
     std::vector<HookEntry> hooks;
     std::unordered_map<uint32_t, std::vector<size_t> > codeHookIndex;
     std::vector<size_t> rangedCodeHooks;
@@ -600,6 +603,17 @@ maybe_print:
     lastMicros = nowMicros;
 }
 
+static bool waitForInterpreterResume(NativeRuntime* runtime)
+{
+    uint32_t restoreGeneration = pauseGateRestoreGeneration();
+    if (pauseGateWaitForResume() && restoreGeneration != pauseGateRestoreGeneration())
+    {
+        runtime->cachedFetchRegionValid = false;
+        runtime->cachedRegionValid = false;
+    }
+    return !runtime->stopRequested.load(std::memory_order_acquire);
+}
+
 static void setReg(NativeRuntime* runtime, uint32_t index, uint32_t value)
 {
     if (index != 0 && index < 32)
@@ -634,34 +648,61 @@ static void storeLe16(uint8_t* p, uint16_t value)
 
 static void callCodeHooks(NativeRuntime* runtime, uint32_t address)
 {
-    if (!codeHookPageMayContain(runtime, address))
+    std::vector<HookEntry> hooksToRun;
     {
-        return;
+        std::lock_guard<std::mutex> lock(runtime->hookMutex);
+        if (!codeHookPageMayContain(runtime, address))
+        {
+            return;
+        }
+
+        uint32_t indexedHookList = UINT32_MAX;
+        bool hasIndexedHooks = findExactCodeHookListIndex(runtime, address, &indexedHookList);
+        bool checkRangedHooks = runtime->hasRangedCodeHooks && codeHookPageMayContainRange(runtime, address);
+        if (!hasIndexedHooks && !checkRangedHooks)
+        {
+            return;
+        }
+
+        auto collectHook = [&](size_t index) {
+            if (index >= runtime->hooks.size())
+            {
+                return;
+            }
+            HookEntry& hook = runtime->hooks[index];
+            if (!hook.active || !(hook.type & RUNTIME_HOOK_CODE))
+            {
+                return;
+            }
+            if (address < hook.begin || address > hook.end)
+            {
+                return;
+            }
+            hooksToRun.push_back(hook);
+        };
+
+        if (hasIndexedHooks)
+        {
+            size_t hookCount = runtime->exactCodeHookLists[indexedHookList].size();
+            for (size_t i = 0; i < hookCount; ++i)
+            {
+                collectHook(runtime->exactCodeHookLists[indexedHookList][i]);
+            }
+        }
+
+        if (checkRangedHooks)
+        {
+            for (size_t i = 0; i < runtime->rangedCodeHooks.size(); ++i)
+            {
+                collectHook(runtime->rangedCodeHooks[i]);
+            }
+        }
     }
 
-    uint32_t indexedHookList = UINT32_MAX;
-    bool hasIndexedHooks = findExactCodeHookListIndex(runtime, address, &indexedHookList);
-    bool checkRangedHooks = runtime->hasRangedCodeHooks && codeHookPageMayContainRange(runtime, address);
-    if (!hasIndexedHooks && !checkRangedHooks)
+    // Collect callbacks first so hook changes during dispatch are safe.
+    for (size_t i = 0; i < hooksToRun.size(); ++i)
     {
-        return;
-    }
-
-    auto runHook = [&](size_t index) {
-        if (index >= runtime->hooks.size())
-        {
-            return;
-        }
-        HookEntry& hook = runtime->hooks[index];
-        if (!hook.active || !(hook.type & RUNTIME_HOOK_CODE))
-        {
-            return;
-        }
-        if (address < hook.begin || address > hook.end)
-        {
-            return;
-        }
-
+        const HookEntry& hook = hooksToRun[i];
         uint32_t beforePc = runtime->pc;
         RuntimeCodeHookCallback cb = (RuntimeCodeHookCallback)hook.callback;
         cb(runtime, address, 4, hook.userData);
@@ -685,30 +726,12 @@ static void callCodeHooks(NativeRuntime* runtime, uint32_t address)
                 }
             }
         }
-    };
-
-    if (hasIndexedHooks)
-    {
-        size_t hookCount = runtime->exactCodeHookLists[indexedHookList].size();
-        for (size_t i = 0; i < hookCount; ++i)
-        {
-            runHook(runtime->exactCodeHookLists[indexedHookList][i]);
-        }
-    }
-
-    if (!checkRangedHooks)
-    {
-        return;
-    }
-
-    for (size_t i = 0; i < runtime->rangedCodeHooks.size(); ++i)
-    {
-        runHook(runtime->rangedCodeHooks[i]);
     }
 }
 
 static bool hasCodeHook(NativeRuntime* runtime, uint32_t address)
 {
+    std::lock_guard<std::mutex> lock(runtime->hookMutex);
     if (!codeHookPageMayContain(runtime, address))
     {
         return false;
@@ -755,13 +778,58 @@ static bool hasCodeHook(NativeRuntime* runtime, uint32_t address)
 static bool callInvalidMemoryHooks(NativeRuntime* runtime, RuntimeMemoryAccess type, uint32_t address, int size, int64_t value)
 {
     bool handled = false;
-    for (size_t i = 0; i < runtime->hooks.size(); ++i)
+    std::vector<HookEntry> hooksToRun;
     {
-        HookEntry& hook = runtime->hooks[i];
-        if (!hook.active || !(hook.type & RUNTIME_HOOK_MEM_INVALID))
+        std::lock_guard<std::mutex> lock(runtime->hookMutex);
+        for (size_t i = 0; i < runtime->hooks.size(); ++i)
         {
-            continue;
+            HookEntry& hook = runtime->hooks[i];
+            if (!hook.active || !(hook.type & RUNTIME_HOOK_MEM_INVALID))
+            {
+                continue;
+            }
+            hooksToRun.push_back(hook);
         }
+    }
+    for (size_t i = 0; i < hooksToRun.size(); ++i)
+    {
+        const HookEntry& hook = hooksToRun[i];
+        RuntimeMemoryHookCallback cb = (RuntimeMemoryHookCallback)hook.callback;
+        if (cb(runtime, type, address, size, value, hook.userData))
+        {
+            handled = true;
+        }
+    }
+    return handled;
+}
+
+static bool callValidMemoryHooks(NativeRuntime* runtime, RuntimeMemoryAccess type, uint32_t address, int size, int64_t value)
+{
+    bool handled = false;
+    std::vector<HookEntry> hooksToRun;
+    {
+        std::lock_guard<std::mutex> lock(runtime->hookMutex);
+        for (size_t i = 0; i < runtime->hooks.size(); ++i)
+        {
+            HookEntry& hook = runtime->hooks[i];
+            if (!hook.active || !(hook.type & RUNTIME_HOOK_MEM_VALID))
+            {
+                continue;
+            }
+            uint64_t accessBegin = address;
+            uint64_t accessEnd = accessBegin + (uint32_t)size;
+            uint64_t hookBegin = hook.begin;
+            uint64_t hookEnd = (uint64_t)hook.end + 1u;
+            if (accessBegin >= hookEnd || hookBegin >= accessEnd)
+            {
+                continue;
+            }
+            hooksToRun.push_back(hook);
+        }
+    }
+    for (size_t i = 0; i < hooksToRun.size(); ++i)
+    {
+        const HookEntry& hook = hooksToRun[i];
         RuntimeMemoryHookCallback cb = (RuntimeMemoryHookCallback)hook.callback;
         if (cb(runtime, type, address, size, value, hook.userData))
         {
@@ -860,6 +928,7 @@ static bool writeU8(NativeRuntime* runtime, uint32_t address, uint32_t value)
             runtime->pc, runtime->gpr[4], runtime->gpr[5], runtime->gpr[6], address, 1u, v);
     }
     *p = (uint8_t)value;
+    callValidMemoryHooks(runtime, RUNTIME_MEM_WRITE, address, 1, value & 0xffu);
     trackFramebufferWrite(address, sizeof(uint8_t));
     return true;
 }
@@ -880,6 +949,7 @@ static bool writeU16(NativeRuntime* runtime, uint32_t address, uint32_t value)
             (unsigned)(value & 0xffu), (unsigned)((value >> 8) & 0xffu));
     }
     storeLe16(p, (uint16_t)value);
+    callValidMemoryHooks(runtime, RUNTIME_MEM_WRITE, address, 2, value & 0xffffu);
     trackFramebufferWrite(address, sizeof(uint16_t));
     return true;
 }
@@ -901,6 +971,7 @@ static bool writeU32(NativeRuntime* runtime, uint32_t address, uint32_t value)
             (unsigned)((value >> 16) & 0xffu), (unsigned)((value >> 24) & 0xffu));
     }
     storeLe32(p, value);
+    callValidMemoryHooks(runtime, RUNTIME_MEM_WRITE, address, 4, value);
     trackFramebufferWrite(address, sizeof(uint32_t));
     return true;
 }
@@ -1274,7 +1345,6 @@ static bool executeOne(NativeRuntime* runtime, bool allowBranch, bool* branched)
     uint32_t op = insn >> 26;
     uint32_t rs = (insn >> 21) & 0x1f;
     uint32_t rt = (insn >> 16) & 0x1f;
-    uint32_t rd = (insn >> 11) & 0x1f;
     uint32_t imm = insn & 0xffff;
     uint32_t target = insn & 0x03ffffffu;
     uint32_t addr = 0;
@@ -1567,12 +1637,22 @@ RuntimeError nativeRuntimeStart(NativeRuntime* runtime, uint64_t begin, uint64_t
     }
 
     size_t executed = 0;
+    uint32_t pausePollCountdown = 1;
     while (runtime->pc != (uint32_t)until)
     {
         if (runtime->stopRequested.load(std::memory_order_acquire))
         {
             runtime->pc = (uint32_t)until;
             break;
+        }
+        if (--pausePollCountdown == 0)
+        {
+            pausePollCountdown = 256;
+            if (!waitForInterpreterResume(runtime))
+            {
+                runtime->pc = (uint32_t)until;
+                break;
+            }
         }
         tracePcSample(runtime, runtime->pc);
         bool branched = false;
@@ -1799,36 +1879,6 @@ bool nativeRuntimeWriteRaw(NativeRuntime* runtime, uint32_t address, const void*
     return runtime && in && writeMemRaw(runtime, address, in, size);
 }
 
-bool nativeRuntimeReadU8(NativeRuntime* runtime, uint32_t address, uint32_t* out)
-{
-    return runtime && out && readU8(runtime, address, out);
-}
-
-bool nativeRuntimeReadU16(NativeRuntime* runtime, uint32_t address, uint32_t* out)
-{
-    return runtime && out && readU16(runtime, address, out);
-}
-
-bool nativeRuntimeReadU32(NativeRuntime* runtime, uint32_t address, uint32_t* out)
-{
-    return runtime && out && readU32(runtime, address, out);
-}
-
-bool nativeRuntimeWriteU8(NativeRuntime* runtime, uint32_t address, uint32_t value)
-{
-    return runtime && writeU8(runtime, address, value);
-}
-
-bool nativeRuntimeWriteU16(NativeRuntime* runtime, uint32_t address, uint32_t value)
-{
-    return runtime && writeU16(runtime, address, value);
-}
-
-bool nativeRuntimeWriteU32(NativeRuntime* runtime, uint32_t address, uint32_t value)
-{
-    return runtime && writeU32(runtime, address, value);
-}
-
 uint8_t* nativeRuntimeHostPointer(NativeRuntime* runtime, uint32_t address, size_t size)
 {
     return runtime ? hostPtrFor(runtime, address, size) : NULL;
@@ -1862,6 +1912,8 @@ RuntimeError nativeRuntimeAddHook(NativeRuntime* runtime, RuntimeHook* hh, int t
     hook.callback = callback;
     hook.userData = user_data;
     hook.active = true;
+
+    std::lock_guard<std::mutex> lock(runtime->hookMutex);
     size_t hookIndex = runtime->hooks.size();
     runtime->hooks.push_back(hook);
     if (type & RUNTIME_HOOK_CODE)
@@ -1890,6 +1942,7 @@ RuntimeError nativeRuntimeRemoveHook(NativeRuntime* runtime, RuntimeHook hh)
         return RUNTIME_ERROR_ARG;
     }
 
+    std::lock_guard<std::mutex> lock(runtime->hookMutex);
     for (size_t i = 0; i < runtime->hooks.size(); ++i)
     {
         if (runtime->hooks[i].handle == hh)
@@ -1908,6 +1961,22 @@ RuntimeError nativeRuntimeFlushCodeCache(NativeRuntime* runtime)
         return ppssppIrJitFlushCodeCache(runtime);
     }
     return RUNTIME_OK;
+}
+
+void nativeRuntimeNotifyMemoryAccess(NativeRuntime* runtime, RuntimeMemoryAccess type, uint32_t address, int size, int64_t value)
+{
+    if (!runtime || size <= 0)
+    {
+        return;
+    }
+    if (type == RUNTIME_MEM_WRITE || type == RUNTIME_MEM_READ || type == RUNTIME_MEM_FETCH || type == RUNTIME_MEM_READ_AFTER)
+    {
+        callValidMemoryHooks(runtime, type, address, size, value);
+    }
+    else
+    {
+        callInvalidMemoryHooks(runtime, type, address, size, value);
+    }
 }
 
 const char* nativeRuntimeErrorString(RuntimeError err)

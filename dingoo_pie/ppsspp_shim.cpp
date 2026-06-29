@@ -1030,6 +1030,13 @@ static void rememberEmuHackOriginal(uint32_t address, uint32_t marker)
     g_emuhackOriginalOps[alias] = original;
 }
 
+static void clearEmuHackOriginals()
+{
+    // Runblock markers are only valid for the current JIT cache and runtime.
+    std::lock_guard<std::mutex> lock(g_emuhackMutex);
+    g_emuhackOriginalOps.clear();
+}
+
 bool ppssppShimResolveEmuHack(uint32_t address, uint32_t value, uint32_t* original)
 {
     if (!original || !isPpssppRunBlockMarker(value))
@@ -1274,6 +1281,14 @@ static bool writeRawCanonical(uint32_t address, const void* in, size_t size)
     return tryWriteRuntimeRegionAlias(address, in, size, 0x03ffffffu);
 }
 
+static void notifyRuntimeWrite(uint32_t address, int size, int64_t value)
+{
+    if (g_ppssppRuntime)
+    {
+        nativeRuntimeNotifyMemoryAccess(g_ppssppRuntime, RUNTIME_MEM_WRITE, address, size, value);
+    }
+}
+
 static uint8_t* hostPointerCanonical(uint32_t address, size_t size)
 {
     if (!g_ppssppRuntime)
@@ -1410,6 +1425,31 @@ static void syncRuntimeStateToPpsspp()
     }
 }
 
+void ppssppShimSyncStateToRuntime(NativeRuntime* runtime)
+{
+    if (runtime && runtime == g_ppssppRuntime)
+    {
+        syncPpssppStateToRuntime();
+    }
+}
+
+void ppssppShimSyncStateFromRuntime(NativeRuntime* runtime)
+{
+    if (runtime && runtime == g_ppssppRuntime)
+    {
+        syncRuntimeStateToPpsspp();
+    }
+}
+
+void ppssppShimClearJitCache(NativeRuntime* runtime)
+{
+    if (runtime && runtime == g_ppssppRuntime && MIPSComp::jit)
+    {
+        MIPSComp::jit->ClearCache();
+        clearEmuHackOriginals();
+    }
+}
+
 static bool addressMatchesAny(uint32_t address, std::initializer_list<uint32_t> values)
 {
     for (uint32_t value : values)
@@ -1459,23 +1499,6 @@ static bool writeFastKeyStatus(uint32_t address)
             (unsigned long)status.status,
             bridge_get_app_identity());
     }
-    return true;
-}
-
-static bool readFastWrappedFile(uint32_t streamPtr, _file_t* out)
-{
-    if (!out)
-    {
-        return false;
-    }
-
-    uint8_t* data = hostPointerCanonical(streamPtr, sizeof(_file_t));
-    if (!data)
-    {
-        return false;
-    }
-
-    memcpy(out, data, sizeof(_file_t));
     return true;
 }
 
@@ -1888,6 +1911,7 @@ static void initVfpuOrder()
 
 void ppssppShimAttachRuntime(NativeRuntime* runtime)
 {
+    clearEmuHackOriginals();
     g_ppssppRuntime = runtime;
     g_fastFramebufferDirectEnabled = ppssppShimParseEnabledEnv("DINGOO_PIE_IRJIT_FASTMEM_FB", true);
     rebuildFastMemoryRegions(runtime);
@@ -1957,6 +1981,7 @@ void ppssppShimDetachRuntime(NativeRuntime* runtime)
     {
         g_ppssppRuntime = NULL;
     }
+    clearEmuHackOriginals();
     g_fastRegions.clear();
     g_lastFastRegion = (size_t)-1;
     g_runtimeBeginTicks = 0;
@@ -1990,78 +2015,98 @@ uint32_t ppssppShimRunCodeHook(uint32_t address)
         return address;
     }
 
-    bool hasHook = nativeRuntimeHasCodeHook(g_ppssppRuntime, address);
-    if (irjitTraceEnabled() && g_irjitDispatchTraceCount < 128)
+    uint32_t currentAddress = address;
+    for (uint32_t pass = 0; pass < 4; ++pass)
     {
-        printf("irjit-dispatch: pc=0x%08x hook=%u ra=0x%08x sp=0x%08x downcount=%d\n",
-            address,
-            hasHook ? 1u : 0u,
-            currentMIPS->r[MIPS_REG_RA],
-            currentMIPS->r[MIPS_REG_SP],
-            currentMIPS->downcount);
-        g_irjitDispatchTraceCount++;
-    }
+        bool hasHook = nativeRuntimeHasCodeHook(g_ppssppRuntime, currentAddress);
+        if (irjitTraceEnabled() && g_irjitDispatchTraceCount < 128)
+        {
+            printf("irjit-dispatch: pc=0x%08x hook=%u ra=0x%08x sp=0x%08x downcount=%d\n",
+                currentAddress,
+                hasHook ? 1u : 0u,
+                currentMIPS->r[MIPS_REG_RA],
+                currentMIPS->r[MIPS_REG_SP],
+                currentMIPS->downcount);
+            g_irjitDispatchTraceCount++;
+        }
 
-    if (!hasHook)
-    {
-        return address;
-    }
+        if (!hasHook)
+        {
+            return currentAddress;
+        }
 
-    // Synchronize only when a generated block reaches an HLE/compat hook. This
-    // keeps normal JIT execution hot while preserving the native hook contract.
-    g_ppssppHookCalls++;
-    ppssppShimProfileTick();
-    pauseGateWaitForResume();
+        // Synchronize only when a generated block reaches an HLE/compat hook.
+        // If save-state restore moves PC to another hook, process that hook
+        // before returning to the dispatcher so SDK import stubs are not
+        // executed as ordinary guest instructions.
+        g_ppssppHookCalls++;
+        ppssppShimProfileTick();
+        {
+            uint32_t restoreGeneration = pauseGateRestoreGeneration();
+            if (pauseGateWaitForResume() &&
+                restoreGeneration != pauseGateRestoreGeneration())
+            {
+                syncRuntimeStateToPpsspp();
+                if (currentMIPS->pc != currentAddress)
+                {
+                    currentAddress = currentMIPS->pc;
+                    continue;
+                }
+            }
+        }
 
-    uint32_t fastReturnValue = 0;
-    if (bridge_try_fast_return_hook(address, &fastReturnValue))
-    {
+        uint32_t fastReturnValue = 0;
+        if (bridge_try_fast_return_hook(currentAddress, &fastReturnValue))
+        {
+            if (irjitTraceEnabled() && g_irjitHookTraceCount < 128)
+            {
+                printf("irjit-hook: fast-return pc=0x%08x ret=0x%08x ra=0x%08x\n",
+                    currentAddress, fastReturnValue, currentMIPS->r[MIPS_REG_RA]);
+                g_irjitHookTraceCount++;
+            }
+            currentMIPS->r[MIPS_REG_V0] = fastReturnValue;
+            currentMIPS->pc = currentMIPS->r[MIPS_REG_RA];
+            return currentMIPS->pc;
+        }
+
+        if (tryRunFastHle(currentAddress))
+        {
+            if (irjitTraceEnabled() && g_irjitHookTraceCount < 128)
+            {
+                printf("irjit-hook: fast-hle pc=0x%08x next=0x%08x v0=0x%08x ra=0x%08x\n",
+                    currentAddress, currentMIPS->pc, currentMIPS->r[MIPS_REG_V0], currentMIPS->r[MIPS_REG_RA]);
+                g_irjitHookTraceCount++;
+            }
+            return currentMIPS->pc;
+        }
+
+        currentMIPS->pc = currentAddress;
+        syncPpssppStateToRuntime();
+        uint32_t* runtimePc = nativeRuntimePc(g_ppssppRuntime);
+        if (runtimePc)
+        {
+            *runtimePc = currentAddress;
+        }
+
+        nativeRuntimeCallCodeHooks(g_ppssppRuntime, currentAddress);
+        syncRuntimeStateToPpsspp();
+
+        uint32_t after = currentAddress;
+        if (runtimePc)
+        {
+            after = *runtimePc;
+        }
+        currentMIPS->pc = after;
         if (irjitTraceEnabled() && g_irjitHookTraceCount < 128)
         {
-            printf("irjit-hook: fast-return pc=0x%08x ret=0x%08x ra=0x%08x\n",
-                address, fastReturnValue, currentMIPS->r[MIPS_REG_RA]);
+            printf("irjit-hook: native pc=0x%08x next=0x%08x v0=0x%08x ra=0x%08x\n",
+                currentAddress, after, currentMIPS->r[MIPS_REG_V0], currentMIPS->r[MIPS_REG_RA]);
             g_irjitHookTraceCount++;
         }
-        currentMIPS->r[MIPS_REG_V0] = fastReturnValue;
-        currentMIPS->pc = currentMIPS->r[MIPS_REG_RA];
-        return currentMIPS->pc;
+        return after;
     }
 
-    if (tryRunFastHle(address))
-    {
-        if (irjitTraceEnabled() && g_irjitHookTraceCount < 128)
-        {
-            printf("irjit-hook: fast-hle pc=0x%08x next=0x%08x v0=0x%08x ra=0x%08x\n",
-                address, currentMIPS->pc, currentMIPS->r[MIPS_REG_V0], currentMIPS->r[MIPS_REG_RA]);
-            g_irjitHookTraceCount++;
-        }
-        return currentMIPS->pc;
-    }
-
-    currentMIPS->pc = address;
-    syncPpssppStateToRuntime();
-    uint32_t* runtimePc = nativeRuntimePc(g_ppssppRuntime);
-    if (runtimePc)
-    {
-        *runtimePc = address;
-    }
-
-    nativeRuntimeCallCodeHooks(g_ppssppRuntime, address);
-    syncRuntimeStateToPpsspp();
-
-    uint32_t after = address;
-    if (runtimePc)
-    {
-        after = *runtimePc;
-    }
-    currentMIPS->pc = after;
-    if (irjitTraceEnabled() && g_irjitHookTraceCount < 128)
-    {
-        printf("irjit-hook: native pc=0x%08x next=0x%08x v0=0x%08x ra=0x%08x\n",
-            address, after, currentMIPS->r[MIPS_REG_V0], currentMIPS->r[MIPS_REG_RA]);
-        g_irjitHookTraceCount++;
-    }
-    return after;
+    return currentMIPS->pc;
 }
 
 void ppssppShimTraceJitExit(uint32_t pc)
@@ -2219,6 +2264,7 @@ void ppssppShimWrite8(uint32_t address, uint32_t value)
     if (ptr)
     {
         *ptr = (uint8_t)value;
+        notifyRuntimeWrite(address, 1, value & 0xffu);
         trackFramebufferWrite(address, 1);
         return;
     }
@@ -2230,6 +2276,7 @@ void ppssppShimWrite8(uint32_t address, uint32_t value)
     }
     else
     {
+        notifyRuntimeWrite(address, 1, value & 0xffu);
         trackFramebufferWrite(address, sizeof(byte));
     }
 }
@@ -2241,6 +2288,7 @@ void ppssppShimWrite16(uint32_t address, uint32_t value)
     if (ptr)
     {
         storeFastLe16(ptr, value);
+        notifyRuntimeWrite(address, 2, value & 0xffffu);
         trackFramebufferWrite(address, 2);
         return;
     }
@@ -2254,6 +2302,7 @@ void ppssppShimWrite16(uint32_t address, uint32_t value)
     }
     else
     {
+        notifyRuntimeWrite(address, 2, value & 0xffffu);
         trackFramebufferWrite(address, sizeof(bytes));
     }
 }
@@ -2266,6 +2315,7 @@ void ppssppShimWrite32(uint32_t address, uint32_t value)
     {
         rememberEmuHackOriginal(address, value);
         storeLe32(ptr, value);
+        notifyRuntimeWrite(address, 4, value);
         trackFramebufferWrite(address, 4);
         return;
     }
@@ -2279,6 +2329,7 @@ void ppssppShimWrite32(uint32_t address, uint32_t value)
     }
     else
     {
+        notifyRuntimeWrite(address, 4, value);
         trackFramebufferWrite(address, sizeof(bytes));
     }
 }
@@ -2310,6 +2361,7 @@ void ppssppShimWrite64(uint32_t address, uint64_t value)
     if (ptr)
     {
         storeFastLe64(ptr, value);
+        notifyRuntimeWrite(address, 8, (int64_t)value);
         trackFramebufferWrite(address, 8);
         return;
     }
@@ -2323,6 +2375,7 @@ void ppssppShimWrite64(uint32_t address, uint64_t value)
     }
     else
     {
+        notifyRuntimeWrite(address, 8, (int64_t)value);
         trackFramebufferWrite(address, sizeof(bytes));
     }
 }
@@ -2348,6 +2401,7 @@ void ppssppShimWriteBlock(uint32_t address, const void* in, uint32_t size)
     else
     {
         g_ppssppWrites++;
+        notifyRuntimeWrite(address, (int)size, 0);
         trackFramebufferWrite(address, size);
     }
 }

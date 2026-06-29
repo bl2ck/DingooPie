@@ -51,7 +51,7 @@ function Copy-GitTrackedPath($RelativePath) {
 }
 
 function Copy-GitTrackedTree($RelativeRoot) {
-    $entries = git -C $ProjectRoot ls-files -- $RelativeRoot
+    $entries = git -C $ProjectRoot -c core.quotepath=false ls-files -- $RelativeRoot
     foreach ($entry in $entries) {
         Copy-GitTrackedPath $entry
     }
@@ -97,6 +97,7 @@ function Copy-OptionalSourceFile($RelativePath) {
 function Write-Manifest($Root) {
     $manifestFiles = Join-Path $Root 'manifest.files.txt'
     $manifestHash = Join-Path $Root 'manifest.sha256'
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     $files = Get-ChildItem -LiteralPath $Root -Recurse -File |
         Where-Object { $_.FullName -notlike "*manifest.files.txt" -and $_.FullName -notlike "*manifest.sha256" } |
         Sort-Object FullName
@@ -104,14 +105,14 @@ function Write-Manifest($Root) {
     $relativeFiles = foreach ($file in $files) {
         $file.FullName.Substring($Root.Length + 1).Replace('\', '/')
     }
-    Set-Content -LiteralPath $manifestFiles -Value $relativeFiles -Encoding ASCII
+    [System.IO.File]::WriteAllLines($manifestFiles, [string[]]$relativeFiles, $utf8NoBom)
 
     $hashLines = foreach ($file in $files) {
         $relative = $file.FullName.Substring($Root.Length + 1).Replace('\', '/')
         $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
         "$hash  $relative"
     }
-    Set-Content -LiteralPath $manifestHash -Value $hashLines -Encoding ASCII
+    [System.IO.File]::WriteAllLines($manifestHash, [string[]]$hashLines, $utf8NoBom)
 }
 
 function Assert-NoForbiddenFiles($Root) {
@@ -126,7 +127,7 @@ function Assert-NoForbiddenFiles($Root) {
 function Test-Manifest($Root) {
     $manifestHash = Join-Path $Root 'manifest.sha256'
     Require-File $manifestHash
-    foreach ($line in Get-Content -LiteralPath $manifestHash) {
+    foreach ($line in [System.IO.File]::ReadAllLines($manifestHash, [System.Text.Encoding]::UTF8)) {
         if (!$line.Trim()) {
             continue
         }
@@ -156,6 +157,7 @@ New-Item -ItemType Directory -Path $StageRoot -Force | Out-Null
 $UseGitTrackedFiles = Test-GitWorkspace
 
 Copy-SourceTree 'dingoo_pie'
+Copy-SourceTree 'cheats'
 Copy-SourceTree 'docs'
 Copy-SourceTree 'patches'
 Copy-SourceTree 'resources'
@@ -163,6 +165,7 @@ Copy-SourceTree 'scripts'
 Copy-SourceTree 'tools'
 
 Copy-WorkspaceSourceFile 'dingoo_pie\app_metadata.h'
+Copy-WorkspaceSourceFile 'scripts\debug_output_regression.ps1'
 
 Copy-SourceFile 'CMakeLists.txt'
 Copy-SourceFile 'LICENSE'
@@ -194,11 +197,13 @@ $required = @(
     'dingoo_pie\ui_strings.cpp',
     'dingoo_pie\ui_strings.h',
     'dingoo_pie\ppsspp_shim.cpp',
+    'cheats\README.md',
     'docs\ARCHITECTURE.md',
     'docs\A320_X760_PLUS_3D_BASELINES.md',
     'docs\DEBUGGING.md',
     'scripts\bootstrap_windows.ps1',
     'scripts\build_release.ps1',
+    'scripts\debug_output_regression.ps1',
     'scripts\profile_sample.ps1',
     'scripts\profile_samples.ps1',
     'scripts\smoke_test.ps1',

@@ -65,6 +65,25 @@ function Copy-ReleaseFile {
     return $true
 }
 
+function Copy-ReleaseTree {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Destination
+    )
+
+    if (!(Test-Path -LiteralPath $Source -PathType Container)) {
+        return
+    }
+
+    if (Test-Path -LiteralPath $Destination) {
+        Remove-Item -LiteralPath $Destination -Recurse -Force
+    }
+    Copy-Item -LiteralPath $Source -Destination $Destination -Recurse -Force
+}
+
 function Resolve-RequiredFile {
     param(
         [Parameter(Mandatory = $true)]
@@ -104,6 +123,9 @@ function New-DingooPieRelease {
 
     $releaseFiles = New-Object System.Collections.Generic.List[string]
     $runtimeDlls = Resolve-ReleaseRuntimeDlls
+    $cheatSourceDir = Join-Path $ProjectRoot 'cheats'
+    $includeCheats = (Test-Path -LiteralPath $cheatSourceDir -PathType Container) -and
+        ($null -ne (Get-ChildItem -LiteralPath $cheatSourceDir -Filter '*.cht' -File -ErrorAction SilentlyContinue | Select-Object -First 1))
 
     if (Copy-ReleaseFile -Source (Join-Path $BuildDir 'DingooPie.exe') -Destination (Join-Path $ReleaseDir 'DingooPie.exe')) {
         $releaseFiles.Add('DingooPie.exe')
@@ -125,6 +147,9 @@ function New-DingooPieRelease {
     if (Copy-ReleaseFile -Source $readmeSource -Destination (Join-Path $ReleaseDir 'README.md')) {
         $releaseFiles.Add('README.md')
     }
+    if ($includeCheats) {
+        Copy-ReleaseTree -Source $cheatSourceDir -Destination (Join-Path $ReleaseDir 'cheats')
+    }
 
     $ManifestPath = Join-Path $ReleaseDir 'manifest.sha256'
     $HashLines = foreach ($fileName in $releaseFiles) {
@@ -135,7 +160,8 @@ function New-DingooPieRelease {
         $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
         "$hash  $fileName"
     }
-    Set-Content -LiteralPath $ManifestPath -Value $HashLines -Encoding ASCII
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllLines($ManifestPath, [string[]]$HashLines, $utf8NoBom)
 
     $keepFiles = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($fileName in $releaseFiles) {
@@ -145,6 +171,9 @@ function New-DingooPieRelease {
     Get-ChildItem -LiteralPath $ReleaseDir -File -ErrorAction SilentlyContinue |
         Where-Object { -not $keepFiles.Contains($_.Name) } |
         Remove-Item -Force
+    Get-ChildItem -LiteralPath $ReleaseDir -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $includeCheats -eq $false -or $_.Name -ne 'cheats' } |
+        Remove-Item -Recurse -Force
 
     Write-Host "Release written to $ReleaseDir"
     Write-Host "Release manifest written to $ManifestPath"

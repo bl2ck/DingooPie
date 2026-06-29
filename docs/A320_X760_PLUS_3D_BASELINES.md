@@ -10,8 +10,8 @@ Dingoo Technology; samples must be legally obtained by the user.
 ```powershell
 .\scripts\profile_samples.ps1 `
   -SampleDir '<local Dingoo A320 or Gemei X760+ sample directory>' `
-  -BuildDir 'D:\Project\C++\dingoo-pie\build\win64' `
-  -OutputDir 'D:\Project\C++\dingoo-pie\test_artifacts\a320-x760plus-3d-baseline2' `
+  -BuildDir 'D:\Project\C++\dingoo-emu\build\win64' `
+  -OutputDir 'D:\Project\C++\dingoo-emu\test_artifacts\a320-x760plus-3d-baseline2' `
   -Seconds 10 `
   -SkipProfileSamples 2 `
   -DumpFrameStart 120 `
@@ -22,9 +22,9 @@ Dingoo Technology; samples must be legally obtained by the user.
 
 Artifacts from the run:
 
-- CSV: `D:\Project\C++\dingoo-pie\test_artifacts\a320-x760plus-3d-baseline2\20260614-135403-summary.csv`
-- JSON: `D:\Project\C++\dingoo-pie\test_artifacts\a320-x760plus-3d-baseline2\20260614-135403-summary.json`
-- Markdown: `D:\Project\C++\dingoo-pie\test_artifacts\a320-x760plus-3d-baseline2\20260614-135403-summary.md`
+- CSV: `D:\Project\C++\dingoo-emu\test_artifacts\a320-x760plus-3d-baseline2\20260614-135403-summary.csv`
+- JSON: `D:\Project\C++\dingoo-emu\test_artifacts\a320-x760plus-3d-baseline2\20260614-135403-summary.json`
+- Markdown: `D:\Project\C++\dingoo-emu\test_artifacts\a320-x760plus-3d-baseline2\20260614-135403-summary.md`
 
 ## Result Summary
 
@@ -73,8 +73,8 @@ If a sample returns to its title screen after the quit option, record that as
 ```powershell
 .\scripts\quit_samples.ps1 `
   -SampleDir '<local Dingoo A320 or Gemei X760+ sample directory>' `
-  -BuildDir 'D:\Project\C++\dingoo-pie\build\win64' `
-  -OutputDir 'D:\Project\C++\dingoo-pie\test_artifacts\a320-x760plus-3d-quits' `
+  -BuildDir 'D:\Project\C++\dingoo-emu\build\win64' `
+  -OutputDir 'D:\Project\C++\dingoo-emu\test_artifacts\a320-x760plus-3d-quits' `
   -TimeoutSeconds 20 `
   -Backend ppsspp_irjit `
   -DefaultAutoPressSequence 'START@1500:150,MENU@3500:150,A@5000:150'

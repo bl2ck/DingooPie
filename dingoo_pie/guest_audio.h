@@ -6,12 +6,11 @@
 #include "app_loader.h"
 #include "native_runtime.h"
 
-
-/* Audio Sample Format */
+// Dingoo SDK audio sample format values.
 #define	AFMT_U8			8
 #define AFMT_S16_LE		16
 
-// Waveout types.
+// Guest waveout structures mirrored by the HLE audio bridge.
 typedef struct {
 	uint32_t sample_rate;
 	uint16_t format;
@@ -21,7 +20,7 @@ typedef struct {
 
 typedef void waveout_inst;
 
-// The following come from joyrider and from disassembly.
+// Host-side implementations of the guest waveout API.
 extern uint32_t waveout_open(waveout_args* args);
 extern uint32_t waveout_write(uint32_t inst, char* buffer, int count);
 extern uint32_t waveout_close(uint32_t inst);

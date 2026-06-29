@@ -6,6 +6,7 @@
 bool appPathHasAppExtension(const std::string& path);
 std::string appNormalizePath(const char* appPath);
 std::string appFileNameFromPath(const std::string& path);
+std::string appCheatFileNameFromPath(const std::string& path);
 std::string appGuestMainPathFromPath(const std::string& path);
 
 #endif

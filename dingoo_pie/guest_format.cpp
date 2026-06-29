@@ -10,7 +10,6 @@
 
 #include <float.h>
 
-
 typedef char* my_va_list;
 
 // internal flag definitions
@@ -27,7 +26,6 @@ typedef char* my_va_list;
 #define FLAGS_PRECISION (1U << 10U)
 #define FLAGS_ADAPT_EXP (1U << 11U)
 
-
 #define PRINTF_NTOA_BUFFER_SIZE    32U
 #define PRINTF_FTOA_BUFFER_SIZE    32U
 #define PRINTF_MAX_FLOAT  1e9
@@ -35,8 +33,6 @@ typedef char* my_va_list;
 #define PRINTF_SUPPORT_FLOAT
 #define PRINTF_SUPPORT_LONG_LONG
 #define PRINTF_SUPPORT_PTRDIFF_T
-
-
 
 // internal secure strlen
 // \return The length of the string (excluding the terminating 0) limited by 'maxsize'
@@ -47,14 +43,12 @@ static inline unsigned int _strnlen_s(const char* str, uint32_t maxsize)
     return (unsigned int)(s - str);
 }
 
-
 // internal test if char is a digit (0-9)
 // \return true if char is a digit
 static inline bool _is_digit(char ch)
 {
     return (ch >= '0') && (ch <= '9');
 }
-
 
 // internal ASCII string to unsigned int conversion
 static unsigned int _atoi(const char** str)
@@ -66,8 +60,6 @@ static unsigned int _atoi(const char** str)
     return i;
 }
 
-
-
 // internal buffer output
 static void _out_buffer(char character, void* buffer, uint32_t idx, uint32_t maxlen)
 {
@@ -78,7 +70,6 @@ static void _out_buffer(char character, void* buffer, uint32_t idx, uint32_t max
 
 // output function type
 typedef void (*out_fct_type)(char character, void* buffer, uint32_t idx, uint32_t maxlen);
-
 
 // output the specified string in reverse, taking care of any zero-padding
 static int32_t _out_rev(out_fct_type out, char* buffer, int32_t idx, int32_t maxlen, const char* buf, int32_t len, unsigned int width, unsigned int flags)
@@ -161,7 +152,6 @@ static int32_t _ntoa_format(out_fct_type out, char* buffer, int32_t idx, int32_t
     return _out_rev(out, buffer, idx, maxlen, buf, len, width, flags);
 }
 
-
 // internal itoa for 'long' type
 static int32_t _ntoa_long(out_fct_type out, char* buffer, int32_t idx, int32_t maxlen, unsigned long value, bool negative, unsigned long base, unsigned int prec, unsigned int width, unsigned int flags)
 {
@@ -206,7 +196,6 @@ static int32_t _ntoa_long_long(out_fct_type out, char* buffer, int32_t idx, int3
 
     return _ntoa_format(out, buffer, idx, maxlen, buf, len, negative, (unsigned int)base, prec, width, flags);
 }
-
 
 // internal ftoa for fixed decimal floating point
 static int32_t _ftoa(out_fct_type out, char* buffer, int32_t idx, int32_t maxlen, double value, unsigned int prec, unsigned int width, unsigned int flags)
@@ -530,7 +519,7 @@ static int my_vsnprintf(NativeRuntime* runtime, out_fct_type out, char* buffer, 
                 }
                 else {
                     unsigned int value = 0;
-                    
+
                     if (flags & FLAGS_CHAR)
                     {
                         unsigned int v = *((unsigned int*)va); va += sizeof(unsigned int);
@@ -547,7 +536,7 @@ static int my_vsnprintf(NativeRuntime* runtime, out_fct_type out, char* buffer, 
                         {
                             value = *((unsigned int*)va); va += sizeof(unsigned int);
                         }
-                    } 
+                    }
                     idx = _ntoa_long(out, buffer, idx, maxlen, value, false, base, precision, width, flags);
                 }
             }
@@ -692,13 +681,10 @@ void my_sprintf(NativeRuntime* runtime)
     *((uint32_t*)toHostPtr((sp + 52))) = a3;
     my_va_list va = (my_va_list)toHostPtr((sp + 48));
 
-    uint32_t ret;
-    ret = my_vsnprintf(runtime, _out_buffer, buffer, (uint32_t)-1, format, va);
+    uint32_t ret = my_vsnprintf(runtime, _out_buffer, buffer, (uint32_t)-1, format, va);
 
     *((uint32_t*)toHostPtr((sp + 48))) = s1;
     *((uint32_t*)toHostPtr((sp + 52))) = s2;
-
-    //printf("my_vsnprintf: buffer %s, format %s\n", buffer, format);
 
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ret);
 
@@ -728,8 +714,7 @@ void dingoo_debug(NativeRuntime* runtime)
 
     my_va_list va = (my_va_list)toHostPtr((sp + 4));
 
-    uint32_t ret;
-    ret = my_vsnprintf(runtime, _out_buffer, buffer, (uint32_t)-1, format, va);
+    my_vsnprintf(runtime, _out_buffer, buffer, (uint32_t)-1, format, va);
 
     printf("guest_debug: %s", buffer);
 

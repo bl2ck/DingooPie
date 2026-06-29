@@ -556,12 +556,13 @@ static bool shouldTraceHle(void)
     return envTraceEnabled("DINGOO_PIE_TRACE_HLE");
 }
 
+// Prototype comments in this section name the guest SDK/libc imports handled
+// by each bridge entry point.
 //void* malloc(size_t len);
 static void br_malloc(NativeRuntime* runtime)
 {
     uint32_t len;
     uint32_t ra;
-    //dumpREG(runtime);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &len);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_RA, &ra);
     uint32_t p = vm_malloc(len);
@@ -696,7 +697,6 @@ static void br__to_locale_ansi(NativeRuntime* runtime)
     br_common(runtime);
 }
 
-
 static uint64_t s_tempTicks = 0;
 // time ms
 uint32_t OSTimeGet(void)
@@ -712,18 +712,27 @@ uint32_t OSTimeGet(void)
     {
         tempTicks = (uint64_t)((double)tempTicks * speedScale);
     }
-    //printf("%lld\n", tempTicks);
-    //static uint64_t ticks = 0;
-    //printf("%lld\n", tempTicks - ticks);
-    //ticks = tempTicks;
 
-    
     tempTicks *= OS_TICKS_PER_SEC;
     tempTicks /= 1000;
-    
+
     return (uint32_t)tempTicks;
 }
 
+uint32_t bridge_capture_os_ticks(void)
+{
+    return OSTimeGet();
+}
+
+void bridge_restore_os_ticks(uint32_t ticks)
+{
+    double speedScale = runtimeSpeedScale();
+    double effectiveScale = (speedScale > 0.0 && speedScale < 1.0) ? speedScale : 1.0;
+    uint64_t elapsedMs = ((uint64_t)ticks * 1000ull) / OS_TICKS_PER_SEC;
+    uint64_t hostElapsedMs = (uint64_t)((double)elapsedMs / effectiveScale);
+    uint64_t now = SDL_GetTicks64();
+    s_tempTicks = now > hostElapsedMs ? now - hostElapsedMs : 1;
+}
 
 static void br_GetTickCount(NativeRuntime* runtime)
 {
@@ -737,6 +746,7 @@ static void br_GetTickCount(NativeRuntime* runtime)
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_RA, &pc);
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &pc);
 }
+
 static void br_OSTimeGet(NativeRuntime* runtime)
 {
     s_hleProfile.osTimeGet++;
@@ -749,8 +759,6 @@ static void br_OSTimeGet(NativeRuntime* runtime)
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_RA, &pc);
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &pc);
 }
-
-
 
 static void br__kbd_get_status(NativeRuntime* runtime)
 {
@@ -989,15 +997,6 @@ static void br_OSTaskCreate(NativeRuntime* runtime)
 {
     s_hleProfile.taskCreate++;
 
-    /*
-    dumpREG(runtime);
-    dumpStackCall(runtime);
-    dumpAsm(runtime);
-    exit(0);
-    */
-
-
-    RuntimeError err;
     uint32_t taskFuncAddr;
     uint32_t dataPtr;
     uint32_t stackPtr;
@@ -1019,7 +1018,7 @@ static void br_OSTaskCreate(NativeRuntime* runtime)
     uint32_t ret = OSTaskCreate(taskFuncAddr, dataPtr, stackPtr, priority);
 
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ret);
-    
+
     uint32_t pc;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_RA, &pc);
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &pc);
@@ -1171,8 +1170,6 @@ static void br_waveout_set_volume(NativeRuntime* runtime)
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &pc);
 }
 
-
-
 //void* _lcd_get_frame()
 static void br__lcd_get_frame(NativeRuntime* runtime)
 {
@@ -1285,20 +1282,17 @@ static void br_udelay(NativeRuntime* runtime)
     returnToRa(runtime);
 }
 
-
-
 //int fread(void* ptr, size_t size, size_t count, FILE* stream);
 static void br_fread(NativeRuntime* runtime)
 {
-    RuntimeError err;
     uint32_t ptr;
     uint32_t size;
     uint32_t count;
     uint32_t stream;
     uint32_t read_size;
     uint32_t read_ret = -1;
-    nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &ptr); 
-    nativeRuntimeReadRegister(runtime, RUNTIME_REG_A1, &size);   
+    nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &ptr);
+    nativeRuntimeReadRegister(runtime, RUNTIME_REG_A1, &size);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A2, &count);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A3, &stream);
 
@@ -1355,18 +1349,6 @@ static void br_fread(NativeRuntime* runtime)
             if (buff)
             {
                 read_ret = vm_fread(buff, size, count, _file->data);
-                static int debug_fread = 0;
-                if (debug_fread)
-                {
-                    char* out = (char *)malloc(read_size*3 + 1);
-                    if (out)
-                    {
-                        memset(out, 0x00, read_size);
-                        toHexString(buff, read_size, out);
-                        printf("vm_fread(buff = %s, size = %d, count = %d, stream = %d) = %d\n", out, size, count, _file->data, read_ret);
-                        free(out);
-                    }
-                }
             }
             else
             {
@@ -1388,12 +1370,12 @@ static void br_fread(NativeRuntime* runtime)
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &pc);
 }
 
-//int sprintf(char* buff, const char* fmt, char * va_list);
-uint32_t vm_sprintf(NativeRuntime* runtime, uint32_t buffPtr, uint32_t fmtPtr, uint32_t val1Ptr, uint32_t val2Ptr )
+//int sprintf(char* buff, const char* fmt, char* va_list);
+uint32_t vm_sprintf(NativeRuntime* runtime, uint32_t buffPtr, uint32_t fmtPtr, uint32_t val1Ptr, uint32_t val2Ptr)
 {
     char* buff = (char*)toHostPtr(buffPtr);
     char* fmt = (char*)toHostPtr(fmtPtr);
-    char* val1 = (char *)toHostPtr(val1Ptr);
+    char* val1 = (char*)toHostPtr(val1Ptr);
     char* val2 = (char*)toHostPtr(val2Ptr);
 
     if (NULL == val1 && NULL != val2)
@@ -1410,39 +1392,7 @@ uint32_t vm_sprintf(NativeRuntime* runtime, uint32_t buffPtr, uint32_t fmtPtr, u
 
 static void br_sprintf(NativeRuntime* runtime)
 {
-    /*
-    RuntimeError err;
-    uint32_t buffPtr;
-    uint32_t fmtPtr;
-    uint32_t var1Ptr;
-    uint32_t var2Ptr;
-    uint32_t sp;
-
-    nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &buffPtr);
-    nativeRuntimeReadRegister(runtime, RUNTIME_REG_A1, &fmtPtr);
-    nativeRuntimeReadRegister(runtime, RUNTIME_REG_A2, &var1Ptr);
-    nativeRuntimeReadRegister(runtime, RUNTIME_REG_A3, &var2Ptr);
-    nativeRuntimeReadRegister(runtime, RUNTIME_REG_SP, &sp);
-
-
-    char va_list_buff[128];
-    char* buff = (char*)toHostPtr(buffPtr);
-    char* fmt = (char*)toHostPtr(fmtPtr);
-    char* var1 = (char*)toHostPtr(var1Ptr);
-    char* var2 = (char*)toHostPtr(var2Ptr);
-    dumpMem(toHostPtr(sp-128), 128);
-    */
-
     my_sprintf(runtime);
-
-    /*
-    uint32_t ret = 0;
-    nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ret);
-
-    uint32_t pc;
-    nativeRuntimeReadRegister(runtime, RUNTIME_REG_RA, &pc);
-    nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &pc);
-    */
 }
 
 //typedef void FSYS_FILE;
@@ -1463,7 +1413,6 @@ static void br_fsys_fopen(NativeRuntime* runtime)
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_RA, &pc);
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &pc);
 }
-
 
 //typedef void FSYS_FILE;
 //extern int fsys_fclose(FSYS_FILE*);
@@ -1491,7 +1440,6 @@ static void br_fsys_fseek(NativeRuntime* runtime)
 
     uint32_t ret = fsys_fseek(file, offset, origin);
 
-    //printf("fsys_fseek(%08x, %d,  %d,) = %d\n", file, offset, origin, ret);
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ret);
 
     uint32_t pc;
@@ -1506,7 +1454,6 @@ static void br_fsys_ftell(NativeRuntime* runtime)
 
     uint32_t ret = fsys_ftell(file);
 
-    //printf("fsys_ftell(%d) = %08x\n", file,ret);
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ret);
 
     uint32_t pc;
@@ -1517,9 +1464,8 @@ static void br_fsys_ftell(NativeRuntime* runtime)
 //uint32_t fsys_fwrite(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
 static void br_fsys_fwrite(NativeRuntime* runtime)
 {
-    RuntimeError err;
-    uint32_t ret = (uint32_t) - 1;
-    uint32_t ptr,size,count,stream;
+    uint32_t ret = (uint32_t)-1;
+    uint32_t ptr, size, count, stream;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &ptr);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A1, &size);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A2, &count);
@@ -1529,18 +1475,8 @@ static void br_fsys_fwrite(NativeRuntime* runtime)
     if (buff)
     {
         ret = fsys_fwrite(buff, size, count, stream);
-        static int debug_fwrite = 0;
-        if (debug_fwrite)
-        {
-            uint32_t read_size = size * count;
-            char* out = (char*)malloc((size_t)(read_size * 3 + 1));
-            memset(out, 0x00, read_size);
-            toHexString(buff, read_size, out);
-            printf("fsys_fwrite(buff = %s, size = %d, count = %d, stream = %d) = %d\n", out, size, count, stream, ret);
-            free(out);
-        }
     }
-    
+
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ret);
 
     uint32_t pc;
@@ -1551,7 +1487,6 @@ static void br_fsys_fwrite(NativeRuntime* runtime)
 //uint32_t fsys_fread(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
 static void br_fsys_fread(NativeRuntime* runtime)
 {
-    RuntimeError err;
     uint32_t read_ret = -1;
     uint32_t ptr, size, count, stream;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &ptr);
@@ -1563,16 +1498,6 @@ static void br_fsys_fread(NativeRuntime* runtime)
     if (buff)
     {
         read_ret = vm_fread(buff, size, count, stream);
-        static int debug_fread = 0;
-        if (debug_fread)
-        {
-            int read_size = size * count;
-            char* out = (char*)malloc(read_size * 3 + 1);
-            memset(out, 0x00, read_size);
-            toHexString(buff, read_size, out);
-            printf("vm_fread(buff = %s, size = %d, count = %d, stream = %d) = %d\n", out, size, count, stream, read_ret);
-            free(out);
-        }
     }
     else
     {
@@ -1588,7 +1513,6 @@ static void br_fsys_fread(NativeRuntime* runtime)
 
 static void br_fsys_feof(NativeRuntime* runtime)
 {
-    RuntimeError err;
     uint32_t file;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &file);
 
@@ -1601,18 +1525,14 @@ static void br_fsys_feof(NativeRuntime* runtime)
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &pc);
 }
 
-
-
 // Reports whether there is a pending input/system event.
 static void br__sys_judge_event(NativeRuntime* runtime)
 {
     s_hleProfile.sysJudgeEvent++;
 
-    RuntimeError err;
     uint32_t inPtr;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &inPtr);
 
-    (void)err;
     (void)inPtr;
 
     uint32_t ret = inputHasPendingEvent();
@@ -1628,11 +1548,9 @@ static void br_sys_judge_event(NativeRuntime* runtime)
     br__sys_judge_event(runtime);
 }
 
-
 // extern void OSTimeDly(uint16_t ticks);
 static void br_OSTimeDly(NativeRuntime* runtime)
 {
-    RuntimeError err;
     uint32_t ticks;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &ticks);
     s_hleProfile.osTimeDly++;
@@ -1646,11 +1564,10 @@ static void br_OSTimeDly(NativeRuntime* runtime)
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &pc);
 }
 
-//extern void *memset(void *outDest, int inValue, size_t inLength);
+//extern void* memset(void* outDest, int inValue, size_t inLength);
 static void br_memset(NativeRuntime* runtime)
 {
     uint32_t ret = 0;
-    RuntimeError err;
     uint32_t outDestPtr;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &outDestPtr);
     uint32_t inValue;
@@ -1691,7 +1608,6 @@ static void br_memset(NativeRuntime* runtime)
 static void br_memcpy(NativeRuntime* runtime)
 {
     uint32_t ret = 0;
-    RuntimeError err;
     uint32_t outDestPtr;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &outDestPtr);
     uint32_t inSrcPtr;
@@ -1754,12 +1670,9 @@ static void br_strlen(NativeRuntime* runtime)
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &pc);
 }
 
-
-
 //extern int fseek(FILE* stream, long int offset, int origin);
 static void br_fseek(NativeRuntime* runtime)
 {
-    RuntimeError err;
     uint32_t origin;
     uint32_t offset;
     uint32_t stream;
@@ -1817,11 +1730,6 @@ static void br_fseek(NativeRuntime* runtime)
         else if (_file->type == _file_type_file)
         {
             read_ret = fsys_fseek(_file->data, offset, origin);
-            static int debug_fseek = 0;
-            if (debug_fseek)
-            {
-                printf("fsys_fseek(stream = %d, offset = %d , origin = %d) = %d\n", _file->type, offset, origin, read_ret);
-            }
         }
         else
         {
@@ -1848,9 +1756,6 @@ static void br_get_current_language(NativeRuntime* runtime)
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A1, &val1);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A2, &val2);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A3, &val3);
-
-    //char* _val0 = (char*)toHostPtr(val0);
-    //char* _val1 = (char*)toHostPtr(val1);
 
     uint32_t ret = 0;
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ret);
@@ -1898,10 +1803,8 @@ static void br__to_unicode_le(NativeRuntime* runtime)
     br_common(runtime);
 }
 
-
 static void br_fsys_fopenW(NativeRuntime* runtime)
 {
-    RuntimeError err;
     uint32_t namePtr;
     uint32_t modePtr;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &namePtr);
@@ -2111,8 +2014,6 @@ static void br_dl_res_close(NativeRuntime* runtime)
     returnToRa(runtime);
 }
 
-
-
 #define br_none br_return_zero
 
 typedef void (*br_func)(NativeRuntime* runtime);
@@ -2317,7 +2218,12 @@ bool bridge_try_fast_return_hook(uint32_t address, uint32_t* returnValue)
     {
         if (_hook_code_func_map[i].fast_return_enabled && _hook_code_func_map[i].offset == address)
         {
-            pauseGateWaitForResume();
+            uint32_t restoreGeneration = pauseGateRestoreGeneration();
+            if (pauseGateWaitForResume() &&
+                restoreGeneration != pauseGateRestoreGeneration())
+            {
+                return false;
+            }
             _hook_code_func_map[i].trigger_times++;
             _hook_code_func_map[i].profile_times++;
             if (returnValue)
@@ -2392,14 +2298,6 @@ static bool installFastReturnStub(NativeRuntime* runtime, uint32_t address, uint
         storeGuestLe32(runtime, address + 12, 0x00000000u);
     }
     return true;
-}
-
-static void  debugCallFunc(NativeRuntime* runtime,const char* name, uint32_t address)
-{
-    uint32_t ra;
-    nativeRuntimeReadRegister(runtime, RUNTIME_REG_RA, &ra);
-    uint32_t tid = pthread_self();
-    printf("T:%x, %lld\t%08x %s\n", tid,  SDL_GetTicks64(), ra, name);
 }
 
 static void profilePrintHookTopAndReset(void)
@@ -2480,7 +2378,17 @@ static void hook_code(NativeRuntime* runtime, uint64_t address, uint32_t size, v
     // Some games keep running through audio/input/timer SDK calls without
     // submitting a new frame. Gate every resolved HLE hook so pause is not
     // limited to LCD frame boundaries.
-    pauseGateWaitForResume();
+    uint32_t restoreGeneration = pauseGateRestoreGeneration();
+    if (pauseGateWaitForResume() &&
+        restoreGeneration != pauseGateRestoreGeneration())
+    {
+        uint32_t currentPc = address;
+        nativeRuntimeReadRegister(runtime, RUNTIME_REG_PC, &currentPc);
+        if (currentPc != address)
+        {
+            return;
+        }
+    }
 
     if (hookFunc->name)
     {
@@ -2569,13 +2477,6 @@ static void hook_code(NativeRuntime* runtime, uint64_t address, uint32_t size, v
         {
             pthread_mutex_unlock(&hook_code_mutex);
         }
-
-        static int debugger = 0;
-        if (debugger)
-        {
-            debugCallFunc(runtime, hookFunc->name, (uint32_t)address);
-            //dumpREG(runtime);
-        }
     }
     else
     {
@@ -2593,13 +2494,6 @@ void nativeRuntimeInterruptHook(NativeRuntime* runtime, uint32_t intno, void* us
     (void)runtime;
     (void)intno;
     (void)user_data;
-}
-
-static void hook_block(NativeRuntime* runtime, uint64_t address, uint32_t size,
-    void* user_data)
-{
-    printf(">>> Tracing basic block at 0x%" PRIx64 ", block size = 0x%x\n",
-        address, size);
 }
 
 static void hooks_init(NativeRuntime* runtime, app* _app)
@@ -2630,7 +2524,8 @@ static void hooks_init(NativeRuntime* runtime, app* _app)
                 }
                 err = nativeRuntimeAddHook(runtime, &trace, RUNTIME_HOOK_CODE, (void*)hook_code,
                     (void*)&_hook_code_func_map[j], entry->offset, entry->offset, 0);
-                if (err != RUNTIME_OK) {
+                if (err != RUNTIME_OK)
+                {
                     printf("add hook err %u (%s)\n", err, nativeRuntimeErrorString(err));
                     return;
                 }
@@ -2659,6 +2554,10 @@ RuntimeError bridge_init(NativeRuntime* runtime, app* _app)
 RuntimeError bridge_init_task(NativeRuntime* runtime, app* _app, bool isMainRuntime)
 {
     s_bridgeApp = _app;
+    if (isMainRuntime)
+    {
+        s_tempTicks = 0;
+    }
     fsys_set_app(_app);
     registerRuntimeContext(runtime, isMainRuntime);
 	hooks_init(runtime, _app);

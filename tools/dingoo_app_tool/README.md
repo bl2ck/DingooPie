@@ -42,7 +42,7 @@ Windows 构建产物：
 `w64devkit` 的仓库下面，显式传入 DingooPie 根目录：
 
 ```powershell
-.\build_win64.ps1 -DingooPieRoot D:\Project\C++\dingoo-pie
+.\build_win64.ps1 -DingooPieRoot D:\Project\C++\dingoo-emu
 ```
 
 ### 常用流程
@@ -189,7 +189,7 @@ script directory. If the tool directory is not under a repository that contains
 `w64devkit`, pass the DingooPie root explicitly:
 
 ```powershell
-.\build_win64.ps1 -DingooPieRoot D:\Project\C++\dingoo-pie
+.\build_win64.ps1 -DingooPieRoot D:\Project\C++\dingoo-emu
 ```
 
 ### Common Workflow

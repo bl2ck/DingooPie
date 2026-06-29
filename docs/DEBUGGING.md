@@ -11,7 +11,7 @@ The Windows frontend also writes `DingooPie.ini` next to `DingooPie.exe`.
 The INI reader accepts UTF-16LE with BOM, UTF-8 with or without BOM, and a
 system ANSI fallback, so manually edited Chinese app paths remain loadable.
 The executable is named `DingooPie.exe`; its Windows version resource reports
-`Dingoo Game Emulator`, file/product version `1.1`, product
+`Dingoo Game Emulator`, file/product version `1.2`, product
 name `DingooPie`, and `Copyright (c) BL2CK 2026`.
 Starting without command-line arguments does not show a file picker. Empty
 `recent.last_app` opens the frontend only; an existing `recent.last_app` is
@@ -32,15 +32,16 @@ color effect, brightness, contrast, saturation, minimized behavior, portrait
 mode, FPS overlay, emulator master volume, audio buffer size,
 audio disable mode, IME disable mode, virtual controls, UI language, CPU
 backend, CPU clock, runtime speed, delay scale presets, debug console, and
-profile logging. File > Pause Game/Resume Game freezes game execution and audio
-at frame boundaries, but it is runtime-only and is not written to `DingooPie.ini`.
+performance logging. The Debug menu also opens Cheat Finder and Debugger tool
+windows. File > Pause Game/Resume Game freezes game execution and audio at
+frame boundaries, but it is runtime-only and is not written to `DingooPie.ini`.
 `DingooPie.ini` is rewritten in the same practical order:
 `recent`, `video`, `audio`, `input`, `runtime`, `ui`, then `debug`.
 The `recent` section writes `last_app` first, followed by the ordered
 `app1`...`app10` recent-game list.
 Runtime-affecting values are saved immediately. Changes to window scale,
 windowed fullscreen, minimized behavior, portrait mode, FPS overlay, CPU clock, runtime speed, delay scale,
-audio disable, profile logging, anti-aliasing/effect, brightness, contrast,
+audio disable, performance logging, anti-aliasing/effect, brightness, contrast,
 saturation, IME disable mode, virtual controls, language, master volume, audio
 buffer size, and debug console visibility apply without relaunching the guest.
 Changing the CPU backend still relaunches the emulator because the execution
@@ -49,9 +50,8 @@ the active CPU backend.
 `audio.volume_percent` stores the emulator-side master volume. It is applied
 after the guest `waveout` volume so game-internal volume changes remain active.
 `audio.buffer_samples` controls the SDL output buffer request. The default is
-`2048`, matching the previous fixed value; larger values reduce underruns at
-the cost of more audio latency, while smaller values reduce latency but can
-make weak hosts crackle.
+`2048`; larger values reduce underruns at the cost of more audio latency, while
+smaller values reduce latency but can make weak hosts crackle.
 `video.minimized_behavior` accepts `normal`, `throttle`, or `pause`. The
 default `throttle` lowers frontend presentation and loop cadence while the
 window is minimized. `pause` automatically pauses game execution and audio on
@@ -67,6 +67,21 @@ Auto pace.
 `runtime.ostimedly_scale=` means `Auto`, which maps host SDK delay waits to
 the global 1.0 SDK delay default while explicit values preserve manual
 accuracy/performance choices.
+`runtime.cheats_enabled=1` enables runtime cheat-code application. Cheat files
+are loaded from a `cheats` directory next to `DingooPie.exe` by app base name:
+`GameName.app` loads `cheats\GameName.cht`. The optional
+`app_sha256=` field inside the `.cht` file is validation only. The global cheat
+switch is disabled by default; the menu item is `Settings -> Enable Cheats`.
+Individual cheat features start unchecked until the user selects them under
+`Settings -> Cheat Features`. Selected features are saved per game and restored
+when the same game loads again. The same global switch can be forced with
+`DINGOO_PIE_CHEATS=1`.
+Cheat feature rows are shown under `Settings -> Cheat Features`. The menu groups
+multiple low-level rows by the text before `:` or `：`, so names such as
+`解锁所有赛车/Unlock All Cars：patch 1` and
+`解锁所有赛车/Unlock All Cars：patch 2` appear as one localized feature.
+Use `中文/English` before the group separator when a feature needs both Chinese
+and English menu labels.
 Startup does not create `DingooPie.ini`; the file is written only after the user
 changes or resets settings.
 `input.disable_ime=1` is the default and disables the Windows IME for the SDL
@@ -87,8 +102,18 @@ and `None`.
 The executable is built as a Windows GUI app by default, so no console is
 shown unless `Debug -> Show Debug Console` or `debug.show_console=1` is enabled.
 `Debug -> Open Debug Log` checks the executable directory first and
-shows a localized message if the log file has not been created yet. Profile
+shows a localized message if the log file has not been created yet. Performance
 logging and `DINGOO_PIE_LOG_FILE=1` create that file next to `DingooPie.exe`.
+`Debug -> Cheat Finder` searches u8/u16/u32 values, narrows candidates with
+equal, increased, decreased, and unchanged filters, writes a selected address,
+and copies a selected result as a `.cht` record for the matching cheat file.
+It is enabled only while a game is running.
+`Debug -> Debugger` opens a live inspection panel for the active runtime. It
+shows PC-based MIPS disassembly, all GPR/HI/LO registers, a hex memory viewer,
+breakpoint hit counters, and write watches. Use write watches on candidate
+addresses from Cheat Finder to identify the PC that changes health, score, or
+other values. Breakpoints and write watches record hits but do not pause or
+single-step the CPU. It is enabled only while a game is running.
 Current video effects are frontend-side only: SDL provides nearest/linear
 texture scaling. Anti-aliasing uses nearest sampling for off, linear scaling
 for low strength, and linear scaling plus a light CPU RGB565 clarity pass for
@@ -164,6 +189,9 @@ some games compare that string directly.
 | `DINGOO_PIE_LCD_FRAME_PACING` | `0`, `1` | Enables adaptive pacing at Dingoo LCD frame submission boundaries. The default is enabled; set `0` to diagnose raw guest frame production. |
 | `DINGOO_PIE_RUNTIME_SPEED_SCALE` | `0.0..1.0` | Scales runtime pacing used by HLE and the PPSSPP shim. The menu `Auto` preset leaves it unset and maps to the global 65% runtime pace. Explicit Runtime Speed menu values apply immediately and persist to the INI. |
 | `DINGOO_PIE_OSTIMEDLY_SCALE` | `0.0..1.0` | Scales host sleep time for `OSTimeDly`, `delay_ms`, and `udelay` calls while preserving guest tick accounting. Auto uses the global 1.0 delay scale unless a content-hash compatibility entry overrides it. Use this to override sample-specific delay behavior. |
+| `DINGOO_PIE_CHEATS` | `1` | Enables loaded cheat files without changing `DingooPie.ini`. Cheat files use `status|name|width|address|value` or `status|name|width|address|value|compare` pipe records; see "Cheat File Format" below. |
+| `DINGOO_PIE_CHEAT_DIR` | path | Overrides the directory used for `.cht` files. |
+| `DINGOO_PIE_CHEAT_TRACE` | `1` | Prints cheat loading and apply counters. |
 | `DINGOO_PIE_IRJIT_SLICE` | `10000..10000000` | Overrides the PPSSPP shim slice length. Useful for timing experiments only. |
 | `DINGOO_PIE_INPUT_TRACE` | `1` | Prints SDL key events and Dingoo key state reads. |
 | `DINGOO_PIE_AUTOPRESS_KEYS` | `KEY:DELAY_MS:COUNT:PERIOD_MS:HOLD_MS` | Injects deterministic synthetic controls from inside the frontend for automated sample tests. Example: `A:6000:8:900:300`. Keys: `A`, `B`, `X`, `Y`, `U`, `D`, `L`, `R`, `SELECT`, `START`. |
@@ -177,7 +205,54 @@ some games compare that string directly.
 | `DINGOO_PIE_TRACE_COPY` | `1` | Traces memory copies. Pair with `DINGOO_PIE_TRACE_MEM_START` and `DINGOO_PIE_TRACE_MEM_END`. |
 | `DINGOO_PIE_TRACE_PC_START` / `DINGOO_PIE_TRACE_PC_END` | hex addresses | Traces interpreter PCs in a range. |
 
+## Cheat File Format
+
+`.cht` files are UTF-8 text files. They are loaded by app base name and may
+include one optional SHA256 guard:
+
+```text
+app_sha256=<optional 64-hex SHA256>
+status|name|width|address|value
+status|name|width|address|value|compare
+```
+
+Fields:
+
+- `status`: `on`, `off`, or `once`. Feature rows remain unchecked until the
+  user enables them; after that the enabled feature names are saved per game.
+  `once` applies after its optional compare check passes, then stops applying
+  until the game is reloaded.
+- `name`: menu text. Use `Chinese/English` before the feature separator to
+  provide localized labels.
+- `width`: `u8`, `u16`, or `u32`; values are written little-endian.
+- `address`: guest VM address.
+- `value`: value to write.
+- `compare`: optional current value required before writing.
+
+Use compare values for code patches whenever possible. They prevent a patch
+from silently changing a different game version. One visible menu feature can
+use multiple low-level writes by sharing the same prefix:
+
+```text
+once|解锁所有赛车/Unlock All Cars：隐藏锁图标|u32|0x80A9B190|0x1000000F|0x1040000F
+once|解锁所有赛车/Unlock All Cars：允许选择|u32|0x80A9C3E8|0x10000005|0x10400005
+```
+
+The menu shows one item: `解锁所有赛车` in Chinese or `Unlock All Cars` in
+English.
+
 ## Repeatable Smoke Tests
+
+Use `scripts\debug_output_regression.ps1` after changing debug console, logging,
+SDL startup, or stdout/stderr handling. It launches isolated no-game runs and
+checks environment-forced debug logs, INI performance logs, debug console plus
+log output, console-only startup, stdout redirection, and empty stderr.
+
+```powershell
+.\scripts\debug_output_regression.ps1 `
+  -BuildDir '.\release' `
+  -Seconds 2
+```
 
 Use `scripts\smoke_test.ps1` after compatibility or structure changes. It runs
 an app for a fixed duration, captures stdout/stderr beside the executable, and
@@ -189,7 +264,7 @@ terminates any existing emulator instance before launching its sample.
 .\scripts\smoke_test.ps1 `
   -Name smoke-7days-noconfig `
   -AppPath 'D:\Games\Dingoo\7Days.app' `
-  -BuildDir 'C:\path\to\build-dingoo-pie' `
+  -BuildDir 'C:\path\to\build-dingoo-emu' `
   -Seconds 8 `
   -NoConfig
 ```
@@ -205,7 +280,7 @@ exceeds thresholds:
 .\scripts\profile_sample.ps1 `
   -Name dicke-snake-title `
   -AppPath 'D:\Games\Dingoo\Dicke Snake.app' `
-  -BuildDir 'C:\path\to\build-dingoo-pie' `
+  -BuildDir 'C:\path\to\build-dingoo-emu' `
   -Seconds 12 `
   -DisplayFps 60 `
   -SkipProfileSamples 2 `
@@ -232,7 +307,7 @@ both process exit and no-op input.
 .\scripts\quit_sample.ps1 `
   -Name quit-sample `
   -AppPath 'D:\Games\Dingoo\Sample.app' `
-  -BuildDir 'D:\Project\C++\dingoo-pie\build\win64' `
+  -BuildDir 'D:\Project\C++\dingoo-emu\build\win64' `
   -AutoPressSequence 'START@1500:150,MENU@3500:150,A@5000:150' `
   -DumpFramePattern 'quit-sample-frame-%u.bmp' `
   -DumpFrameStart 120 `
@@ -247,7 +322,7 @@ performance without changing the user's persisted INI:
 .\scripts\profile_sample.ps1 `
   -Name dicke-snake-interpreter `
   -AppPath 'D:\Games\Dingoo\Dicke Snake.app' `
-  -BuildDir 'C:\path\to\build-dingoo-pie' `
+  -BuildDir 'C:\path\to\build-dingoo-emu' `
   -Seconds 12 `
   -Backend interpreter `
   -DisplayFps 60 `
@@ -272,7 +347,7 @@ per-run artifact directories, and writes CSV/JSON/Markdown summaries:
 ```powershell
 .\scripts\profile_samples.ps1 `
   -SampleDir 'C:\Users\bl2ck\Desktop\丁果A320或歌美X760+样本' `
-  -BuildDir 'C:\path\to\build-dingoo-pie' `
+  -BuildDir 'C:\path\to\build-dingoo-emu' `
   -OutputDir 'C:\path\to\artifacts\a320-x760plus-3d-baseline' `
   -Seconds 10 `
   -SkipProfileSamples 2 `
