@@ -26,23 +26,22 @@ path is missing, does not end in `.app`, or fails during app open/parse.
 Command-line startup failures are diagnostic-only and do not modify
 `DingooPie.ini`.
 The menu is ordered as File, Options, Settings, Debug, and Help. Options
-contains Video, Audio, and Input submenus. Video > Scale contains 1x, 2x, 3x,
-and windowed fullscreen. The menu can also change anti-aliasing strength,
-color effect, brightness, contrast, saturation, minimized behavior, portrait
-mode, FPS overlay, emulator master volume, audio buffer size,
-audio disable mode, IME disable mode, virtual controls, UI language, CPU
-backend, CPU clock, runtime speed, delay scale presets, debug console, and
-performance logging. The Debug menu also opens Cheat Finder and Debugger tool
-windows. File > Pause Game/Resume Game freezes game execution and audio at
-frame boundaries, but it is runtime-only and is not written to `DingooPie.ini`.
+contains Video, Audio, and Input submenus. Video settings are scale, fullscreen,
+anti-aliasing, effect, brightness, contrast, gamma, saturation, minimized
+behavior, portrait mode, and FPS overlay. Audio and input settings follow, then
+runtime settings, cheats, UI language, and debug options. File > Pause
+Game/Resume Game freezes game execution and audio at frame boundaries, but it is
+runtime-only and is not written to `DingooPie.ini`.
 `DingooPie.ini` is rewritten in the same practical order:
-`recent`, `video`, `audio`, `input`, `runtime`, `ui`, then `debug`.
+`recent`, `video`, `audio`, `input`, `runtime`, optional `cheats`, `ui`, then
+`debug`. `settings-trace` prints the same section order when debug output is
+enabled.
 The `recent` section writes `last_app` first, followed by the ordered
 `app1`...`app10` recent-game list.
 Runtime-affecting values are saved immediately. Changes to window scale,
 windowed fullscreen, minimized behavior, portrait mode, FPS overlay, CPU clock, runtime speed, delay scale,
 audio disable, performance logging, anti-aliasing/effect, brightness, contrast,
-saturation, IME disable mode, virtual controls, language, master volume, audio
+gamma, saturation, IME disable mode, virtual controls, language, master volume, audio
 buffer size, and debug console visibility apply without relaunching the guest.
 Changing the CPU backend still relaunches the emulator because the execution
 backend is selected at startup. Restored defaults relaunch only when they change
@@ -76,6 +75,8 @@ Individual cheat features start unchecked until the user selects them under
 `Settings -> Cheat Features`. Selected features are saved per game and restored
 when the same game loads again. The same global switch can be forced with
 `DINGOO_PIE_CHEATS=1`.
+Saved feature selections are written in the optional `[cheats]` section between
+`[runtime]` and `[ui]`.
 Cheat feature rows are shown under `Settings -> Cheat Features`. The menu groups
 multiple low-level rows by the text before `:` or `：`, so names such as
 `解锁所有赛车/Unlock All Cars：patch 1` and

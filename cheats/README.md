@@ -15,7 +15,7 @@
 游戏名.app -> cheats\游戏名.cht
 ```
 
-没有同名 `.cht` 文件时，游戏会正常运行，也不会自动创建 `cheats` 目录。
+没有同名 `.cht` 文件时，游戏会正常运行。
 如果 `.cht` 文件声明的 SHA256 与当前游戏不一致，DingooPie 会提示警告并停用
 该金手指文件。
 
@@ -38,10 +38,9 @@ must use the same base name as the game:
 GameName.app -> cheats\GameName.cht
 ```
 
-If no same-name `.cht` file exists, the game runs normally and no `cheats`
-folder is created automatically. If a `.cht` file declares a SHA256 that does
-not match the current game, DingooPie shows a warning and disables that cheat
-file.
+If no same-name `.cht` file exists, the game runs normally. If a `.cht` file
+declares a SHA256 that does not match the current game, DingooPie shows a
+warning and disables that cheat file.
 
 The global `Settings > Enable Cheats` switch is saved to `DingooPie.ini`.
 Each feature starts unchecked until it is selected from

@@ -28,45 +28,45 @@ DingooPie.exe "D:\Games\Dingoo\Your Game.app"
 
 | 项目 | 默认值 |
 | --- | --- |
-| 界面语言 | 中文 |
 | 窗口缩放 | 2x |
 | 全屏 | 关闭 |
 | 抗锯齿 | 关闭 |
 | 滤镜 | 正常 |
-| 亮度 / 对比度 / 饱和度 | 100% / 100% / 100% |
+| 亮度 / 对比度 / 伽马 / 饱和度 | 100% / 100% / 100% / 100% |
 | 竖屏模式 | 关闭 |
 | FPS 显示 | 关闭 |
-| 虚拟按键 | 关闭 |
-| 禁用输入法 | 开启 |
 | 主音量 | 100% |
 | 音频缓冲 | 2048 samples |
 | 禁用音频 | 关闭 |
+| 禁用输入法 | 开启 |
+| 虚拟按键 | 关闭 |
 | CPU 后端 | 自动，默认使用 PPSSPP IR JIT |
 | CPU 时钟 | 自动，默认 336 MHz |
 | 运行速度 | 自动，默认 65% |
 | 延迟比例 | 自动，默认 1.0 |
 | 金手指 | 关闭 |
+| 界面语言 | 中文 |
 | 调试控制台 | 关闭 |
 | 性能日志 | 关闭 |
 
 ## 菜单与配置
 
 - `文件`：打开游戏、最近游戏/清除最近游戏、重启游戏、暂停/恢复游戏、保存截图、即时存档/读取存档、退出。
-- `选项 > 视频`：缩放、全屏、抗锯齿、滤镜、亮度、对比度、饱和度、最小化时、竖屏模式、FPS 显示。
+- `选项 > 视频`：缩放、全屏、抗锯齿、滤镜、亮度、对比度、伽马、饱和度、最小化时、竖屏模式、FPS 显示。
 - `选项 > 音频`：主音量、音频缓冲、禁用音频。
 - `选项 > 输入`：禁用输入法、显示虚拟按键、按键映射。
 - `设置`：CPU 后端、CPU 时钟、运行速度、延迟比例、启用金手指、金手指功能、语言、恢复默认设置。
 - `调试`：调试控制台、性能日志、打开调试日志、内存搜索器、调试器。
 - `帮助`：关于 DingooPie。
 
-设置会保存到 `DingooPie.ini`。视频、音频、输入、CPU 时钟、运行速度、
-延迟比例、语言、金手指总开关和调试选项会立即生效。修改 CPU 后端会保存设置
+设置会保存到 `DingooPie.ini`，写出顺序为 `recent`、`video`、`audio`、
+`input`、`runtime`、可选 `cheats`、`ui`、`debug`。视频、音频、输入、
+CPU 时钟、运行速度、延迟比例、金手指总开关、语言和调试选项会立即生效。修改 CPU 后端会保存设置
 并重启模拟器，因为执行后端在启动时选择。暂停/恢复游戏只影响当前运行状态，
 不写入 INI。即时存档提供 10 个档位，存档文件名使用游戏名，格式为
 `游戏名.slot1.dps`，保存到游戏所在目录旁的 `savestates` 文件夹。菜单会显示
-已有档位的保存时间，精确到秒。存档会自动压缩，从菜单手动保存和读取时会显示
-压缩/解压进度，进度窗体仅用于显示状态；保存和读取前都会询问确认。读取时会
-校验游戏和运行状态格式；如果当前还在标题、选择等不同阶段，请先进入与存档相同的场景再读取。
+已有档位的保存时间，精确到秒。保存和读取前都会询问确认；读取时会校验游戏
+和运行状态格式。如果当前还在标题、选择等不同阶段，请先进入与存档相同的场景再读取。
 
 ## 按键
 
@@ -166,49 +166,48 @@ DingooPie.exe "D:\Games\Dingoo\Your Game.app"
 
 | Item | Default |
 | --- | --- |
-| UI language | Chinese |
 | Window scale | 2x |
 | Fullscreen | Off |
 | Anti-aliasing | Off |
 | Effect | Normal |
-| Brightness / contrast / saturation | 100% / 100% / 100% |
+| Brightness / contrast / gamma / saturation | 100% / 100% / 100% / 100% |
 | Portrait mode | Off |
 | FPS overlay | Off |
-| Virtual controls | Off |
-| Disable IME | On |
 | Master volume | 100% |
 | Audio buffer | 2048 samples |
 | Disable audio | Off |
+| Disable IME | On |
+| Virtual controls | Off |
 | CPU backend | Auto, defaults to PPSSPP IR JIT |
 | CPU clock | Auto, defaults to 336 MHz |
 | Runtime speed | Auto, defaults to 65% |
 | Delay scale | Auto, defaults to 1.0 |
 | Cheats | Off |
+| UI language | Chinese |
 | Debug console | Off |
 | Performance log | Off |
 
 ## Menus And Configuration
 
 - `File`: Open Game, Recent Games/Clear Recent Games, Restart Game, Pause/Resume Game, Save Screenshot, Save/Load State, and Exit.
-- `Options > Video`: scale, fullscreen, anti-aliasing, effects, brightness, contrast, saturation, minimized behavior, portrait mode, and FPS overlay.
+- `Options > Video`: scale, fullscreen, anti-aliasing, effects, brightness, contrast, gamma, saturation, minimized behavior, portrait mode, and FPS overlay.
 - `Options > Audio`: master volume, audio buffer, and disable audio.
 - `Options > Input`: disable IME, show virtual controls, and input mapping.
 - `Settings`: CPU Backend, CPU Clock, Runtime Speed, Delay Scale, Enable Cheats, Cheat Features, Language, and Restore Default Settings.
 - `Debug`: Debug Console, Performance Log, Open Debug Log, Cheat Finder, and Debugger.
 - `Help`: About DingooPie.
 
-Settings are saved to `DingooPie.ini`. Video, audio, input, CPU clock, runtime
-speed, delay scale, language, the global cheat switch, and debug options apply
-immediately. Changing the CPU backend saves settings and restarts the emulator
-because the execution backend is selected at startup. Pause/Resume only affects
-the current runtime state and is not written to INI.
+Settings are saved to `DingooPie.ini` in this order: `recent`, `video`, `audio`,
+`input`, `runtime`, optional `cheats`, `ui`, and `debug`. Video, audio, input,
+CPU clock, runtime speed, delay scale, the global cheat switch, language, and
+debug options apply immediately. Changing the CPU backend saves settings and
+restarts the emulator because the execution backend is selected at startup.
+Pause/Resume only affects the current runtime state and is not written to INI.
 Save states provide 10 slots per game, use file names like `GameName.slot1.dps`,
 and are stored in a `savestates` folder next to the game file. The menu shows
-saved slot times down to seconds. Save files are compressed automatically, and
-manual menu save/load shows compression or decompression progress. The progress
-window is status-only. Saving and loading ask for confirmation first. Loading
-validates the game and runtime-state layout. If the game is still at a title or
-selection stage, enter the same scene as the saved state before loading.
+saved slot times down to seconds. Saving and loading ask for confirmation first.
+Loading validates the game and runtime-state layout. If the game is still at a
+title or selection stage, enter the same scene as the saved state before loading.
 
 ## Keys
 

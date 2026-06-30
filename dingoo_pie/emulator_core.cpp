@@ -276,6 +276,7 @@ static EmulatorRuntimeDebugEntry exportDebugEntry(const RuntimeDebugHookEntry& e
 
 static void clearMainRuntimeIfCurrent(NativeRuntime* runtime)
 {
+    bool shouldUnbindCheats = false;
     pthread_mutex_lock(&g_runtimeThreadMutex);
     if (g_mainRuntime == runtime)
     {
@@ -283,9 +284,15 @@ static void clearMainRuntimeIfCurrent(NativeRuntime* runtime)
         uninstallDebuggerHooksLocked(runtime);
         pthread_mutex_unlock(&g_debuggerMutex);
         g_mainRuntime = NULL;
-        cheatRuntimeUnbind(runtime);
+        shouldUnbindCheats = true;
     }
     pthread_mutex_unlock(&g_runtimeThreadMutex);
+    if (shouldUnbindCheats)
+    {
+        // Cheat runtime has its own mutex and can flush JIT state; keep it
+        // outside g_runtimeThreadMutex to avoid frontend/runtime lock inversion.
+        cheatRuntimeUnbind(runtime);
+    }
 }
 
 static void destroyMainRuntime(NativeRuntime* runtime)

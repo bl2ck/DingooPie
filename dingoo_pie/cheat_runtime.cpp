@@ -30,6 +30,7 @@ static NativeRuntime* g_cheatRuntime = NULL;
 static uint32_t g_lastFrameApplyCount = 0;
 static uint32_t g_cheatRevision = 0;
 static std::string g_currentAppSha256;
+static bool g_manualApplyPending = false;
 
 static bool runtimeReadCallback(void* userData, uint32_t address, void* out, size_t size)
 {
@@ -364,9 +365,38 @@ static bool cheatCanApplyLocked(NativeRuntime* runtime)
     return runtime && g_cheatEnabled && cheatAvailableLocked();
 }
 
+static void clearManualApplyLocked(void)
+{
+    g_manualApplyPending = false;
+}
+
+static void requestManualApplyLocked(void)
+{
+    g_manualApplyPending = true;
+}
+
+static bool consumeManualApplyLocked(void)
+{
+    bool pending = g_manualApplyPending;
+    g_manualApplyPending = false;
+    return pending;
+}
+
 static void refreshEffectiveEnabledLocked(void)
 {
     g_cheatEnabled = g_cheatRequestedEnabled && cheatAvailableLocked();
+}
+
+static void finishApplyLocked(NativeRuntime* runtime, const CheatApplyStats& stats)
+{
+    if (stats.appliedOnce > 0)
+    {
+        g_cheatRevision++;
+    }
+    if (stats.applied > 0)
+    {
+        nativeRuntimeFlushCodeCache(runtime);
+    }
 }
 
 static void applyLocked(NativeRuntime* runtime, CheatApplyPhase phase, const char* reason)
@@ -379,14 +409,7 @@ static void applyLocked(NativeRuntime* runtime, CheatApplyPhase phase, const cha
     CheatApplyStats stats = cheatApply(&g_cheatSet, runtimeReadCallback, runtimeWriteCallback,
         runtime, phase);
     logApplyStats(reason, stats);
-    if (stats.appliedOnce > 0)
-    {
-        g_cheatRevision++;
-    }
-    if (stats.applied > 0)
-    {
-        nativeRuntimeFlushCodeCache(runtime);
-    }
+    finishApplyLocked(runtime, stats);
 }
 
 void cheatRuntimeSetEnabled(bool enabled)
@@ -423,6 +446,7 @@ void cheatRuntimeLoadForApp(
     g_cheatLoaded = false;
     g_cheatShaMismatch = false;
     g_lastFrameApplyCount = 0;
+    clearManualApplyLocked();
     g_currentAppSha256 = normalizeSha(appSha256);
     g_cheatRevision++;
 
@@ -539,7 +563,16 @@ void cheatRuntimeApplyStartup(NativeRuntime* runtime)
 void cheatRuntimeApplyNow(void)
 {
     std::lock_guard<std::mutex> lock(g_cheatMutex);
-    applyLocked(g_cheatRuntime, CHEAT_APPLY_FRAME, "menu");
+    if (!cheatCanApplyLocked(g_cheatRuntime))
+    {
+        return;
+    }
+
+    // Menu commands run on the frontend thread while the IR JIT may still own
+    // its block cache. Defer the actual memory writes to the runtime frame
+    // boundary, which is the same place periodic cheat application already
+    // runs and the save-state restore gate is observed.
+    requestManualApplyLocked();
 }
 
 void cheatRuntimeApplyFrame(void)
@@ -551,18 +584,16 @@ void cheatRuntimeApplyFrame(void)
         return;
     }
 
+    bool manualApply = consumeManualApplyLocked();
     CheatApplyStats stats = cheatApply(&g_cheatSet, runtimeReadCallback, runtimeWriteCallback,
         runtime, CHEAT_APPLY_FRAME);
     g_lastFrameApplyCount += stats.applied;
-    if (stats.appliedOnce > 0)
+    finishApplyLocked(runtime, stats);
+    if (manualApply)
     {
-        g_cheatRevision++;
+        logApplyStats("menu", stats);
     }
-    if (stats.applied > 0)
-    {
-        nativeRuntimeFlushCodeCache(runtime);
-    }
-    if (envEnabled("DINGOO_PIE_CHEAT_TRACE") && g_lastFrameApplyCount >= 60)
+    else if (envEnabled("DINGOO_PIE_CHEAT_TRACE") && g_lastFrameApplyCount >= 60)
     {
         logApplyStats("frame", stats);
         g_lastFrameApplyCount = 0;

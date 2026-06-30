@@ -1356,6 +1356,17 @@ void emulatorTraceSettings(const char* reason, const EmulatorSettings& settings)
         settings.runtimeSpeedScale.empty() ? "auto" : settings.runtimeSpeedScale.c_str(),
         settings.ostimeDlyScale.empty() ? "auto" : settings.ostimeDlyScale.c_str(),
         settings.cheatsEnabled ? 1u : 0u);
+    for (size_t i = 0; i < settings.cheatSelections.size(); ++i)
+    {
+        const EmulatorCheatSelection& selection = settings.cheatSelections[i];
+        if (!selection.cheatFileName.empty() && !selection.enabledFeatureKeys.empty())
+        {
+            printf("settings-trace: %s cheats.%s=\"%s\"\n",
+                label,
+                selection.cheatFileName.c_str(),
+                encodeCheatFeatureKeys(selection.enabledFeatureKeys).c_str());
+        }
+    }
     printf("settings-trace: %s ui.language=%s\n",
         label,
         emulatorUiLanguageName(settings.uiLanguage));

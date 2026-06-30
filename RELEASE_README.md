@@ -43,8 +43,8 @@ DingooPie.exe "D:\Games\Dingoo\Your Game.app"
 - `调试`：调试控制台、性能日志、内存搜索器、调试器和日志文件。
 - `帮助`：版本信息。
 
-设置会自动保存到 `DingooPie.ini`。大多数设置会立即生效；修改 CPU 后端时，
-模拟器会自动重启当前游戏。即时存档有 10 个档位，存档文件名格式为
+设置会自动保存到 `DingooPie.ini`，顺序与菜单设置顺序一致。大多数设置会立即生效；
+修改 CPU 后端时，模拟器会自动重启当前游戏。即时存档有 10 个档位，存档文件名格式为
 `游戏名.slot1.dps`，保存到游戏所在目录旁的 `savestates` 文件夹。菜单会显示
 已有档位的保存时间；保存和读取前都会询问确认。
 
@@ -61,8 +61,7 @@ DingooPie.exe "D:\Games\Dingoo\Your Game.app"
 
 没有同名 `.cht` 文件时，游戏会正常运行，不需要额外处理。如果金手指文件和
 当前游戏不匹配，模拟器会提示警告并停用该金手指文件。
-具体功能默认不勾选；勾选状态会按游戏保存，下次启动同一游戏会自动恢复。
-勾选后会立即尝试应用。
+具体功能默认不勾选；勾选状态会按游戏保存，下次启动同一游戏会自动恢复，并在勾选后立即尝试应用。
 
 `调试 > 内存搜索器` 可在游戏运行中搜索 u8/u16/u32 数值，用数值变化缩小候选，
 并把选中地址加入下方锁定地址列表后刷新查看当前值、写入一次或复制为 `.cht` 行。
@@ -113,8 +112,8 @@ SDL GameController-compatible pads are supported. Use
 - `Debug`: debug console, performance log, open debug log, Cheat Finder, and Debugger.
 - `Help`: version information.
 
-Settings are saved automatically to `DingooPie.ini`. Most settings apply
-immediately. Changing the CPU backend automatically restarts the current game.
+Settings are saved automatically to `DingooPie.ini` in menu settings order. Most
+settings apply immediately. Changing the CPU backend automatically restarts the current game.
 Save states have 10 slots per game, use file names like `GameName.slot1.dps`, and
 are stored in a `savestates` folder next to the game file. The menu shows saved
 slot times; saving and loading ask for confirmation first.
@@ -134,9 +133,8 @@ Use cheats:
 If no same-name `.cht` file exists, the game runs normally. If a cheat file does
 not match the current game, DingooPie shows a warning and disables that cheat
 file.
-Individual features start unchecked. Selections are saved per game and restored
-when the same game starts again.
-Selection immediately tries to apply the feature.
+Individual features start unchecked. Selections are saved per game, restored
+when the same game starts again, and applied immediately when selected.
 `Debug > Cheat Finder` is available while a game is running. It can search
 u8/u16/u32 memory values, narrow candidates by change, add addresses to the
 lower locked list and refresh current values, write one once, and copy it as a

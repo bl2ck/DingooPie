@@ -63,7 +63,7 @@ or About text.
 Current user-facing controls are grouped as File, Options, Settings, Debug, and
 Help. Options contains the Video, Audio, and Input submenus. The menus include
 app opening, game pause/resume, screenshot export, video scale/anti-aliasing/effect adjustment, windowed
-fullscreen, brightness, contrast, saturation, FPS overlay, virtual controls,
+fullscreen, brightness, contrast, gamma, saturation, FPS overlay, virtual controls,
 SDL GameController input, IME disable mode, language, backend/runtime timing
 options, master volume, audio disable, debug console/performance log controls, log
 opening, settings save/reset, and About.
@@ -134,7 +134,8 @@ selection remains startup-bound.
 The INI reader accepts UTF-16LE with BOM, UTF-8 with or without BOM, and a
 system ANSI fallback so manually edited Chinese paths remain loadable.
 Saves rewrite `DingooPie.ini` in frontend order so existing files are normalized
-to `recent`, `video`, `audio`, `input`, `runtime`, `ui`, then `debug`.
+to `recent`, `video`, `audio`, `input`, `runtime`, optional `cheats`, `ui`, then
+`debug`.
 The `recent` section keeps `last_app` for startup compatibility and writes
 `app1` through `app10` as the ordered recent-game menu source.
 `video.scale` is limited to 1, 2, or 3. `video.fullscreen=1` uses a maximized
@@ -180,9 +181,8 @@ cheat switch and the selected cheat feature names per game. Individual cheat
 features remain unchecked until selected by the user, then restore when the same
 game is loaded again. Cheat lookup uses the app base name, such as
 `GameName.app` -> `cheats\GameName.cht`. The optional `app_sha256` field is
-validation only and never a lookup key. Missing cheat files are silent and do
-not create a `cheats` directory; SHA mismatches disable the loaded file and show
-the user a warning.
+validation only and never a lookup key. Missing cheat files are silent; SHA
+mismatches disable the loaded file and show the user a warning.
 `audio.buffer_samples` controls only the SDL output device buffer request; the
 guest SDK still supplies waveout sample rate, sample format, and channel count.
 
