@@ -10,4 +10,3 @@
 RuntimeError runtimeCompatInstallHooks(NativeRuntime* runtime, app* appInfo, const EmulatorOptions& options);
 
 #endif
-

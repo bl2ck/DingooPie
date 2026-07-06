@@ -30,10 +30,19 @@ enum ColorEffectMode
     COLOR_EFFECT_LIGHT_CRT = 9
 };
 
+enum AudioEffectMode
+{
+    AUDIO_EFFECT_OFF = 0,
+    AUDIO_EFFECT_SOFT = 1,
+    AUDIO_EFFECT_CLEAR = 2,
+    AUDIO_EFFECT_BASS_BOOST = 3,
+    AUDIO_EFFECT_MONO = 4
+};
+
 enum UiLanguage
 {
-    UI_LANGUAGE_ENGLISH = 0,
-    UI_LANGUAGE_CHINESE = 1
+    UI_LANGUAGE_CHINESE = 0,
+    UI_LANGUAGE_ENGLISH = 1
 };
 
 enum MinimizedBehavior
@@ -70,7 +79,8 @@ struct EmulatorSettings
 
     int audioVolumePercent;
     int audioBufferSamples;
-    bool dropAudio;
+    AudioEffectMode audioEffect;
+    bool audioDisabled;
 
     bool disableIme;
     bool showVirtualControls;
@@ -88,6 +98,7 @@ struct EmulatorSettings
 
     bool showDebugConsole;
     bool debugProfile;
+    bool resourceMonitorAutoOpen;
 };
 
 EmulatorSettings emulatorDefaultSettings(void);
@@ -110,6 +121,7 @@ void emulatorApplySettingsToEnvironment(const EmulatorSettings& settings);
 void emulatorApplyRuntimeSettings(const EmulatorSettings& settings);
 const char* emulatorAntiAliasingName(AntiAliasingMode mode);
 const char* emulatorColorEffectName(ColorEffectMode mode);
+const char* emulatorAudioEffectName(AudioEffectMode mode);
 const char* emulatorUiLanguageName(UiLanguage language);
 const char* emulatorMinimizedBehaviorName(MinimizedBehavior behavior);
 

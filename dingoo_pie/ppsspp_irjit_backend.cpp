@@ -194,7 +194,14 @@ RuntimeError ppssppIrJitStart(NativeRuntime* runtime, uint64_t begin, uint64_t u
         {
             printf("ppsspp-irjit: entering dispatcher at 0x%08x\n", state.pc);
         }
-        jit.RunLoopUntil(maxTicks ? beginTicks + maxTicks : 0);
+        for (;;)
+        {
+            jit.RunLoopUntil(maxTicks ? beginTicks + maxTicks : 0);
+            if (!ppssppShimWaitForPauseResume(runtime))
+            {
+                break;
+            }
+        }
         copyPpssppStateToRuntime(runtime, &state);
 
         // The PPSSPP IR block cache restores emuhack markers during cleanup.

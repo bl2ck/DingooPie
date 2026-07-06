@@ -31,7 +31,7 @@ Technology; game files are external test inputs, not project assets.
    compatibility hooks, and jumps to the guest entry point.
 3. `native_runtime.cpp` owns the MIPS execution contract. It selects either the
    PPSSPP IR JIT adapter or the in-tree interpreter and dispatches hooks for
-   mapped SDK imports and compatibility breakpoints.
+   mapped SDK imports and compatibility hooks.
 4. `sdk_hle.cpp` implements Dingoo SDK calls such as framebuffer submission,
    timers, input, task APIs, resources, audio, and formatted output.
 5. `sdl_frontend.cpp`, `framebuffer.cpp`, and `sdl_audio.cpp` present video,
@@ -45,6 +45,9 @@ Technology; game files are external test inputs, not project assets.
 The Windows frontend is a normal menu-driven SDL window. It does not show a
 file picker on process startup. Empty `recent.last_app` opens the frontend only;
 an existing `recent.last_app` is auto-loaded; command-line paths take priority.
+The no-game state presents an idle background in the SDL window. Menu tracking
+and modal dialogs pause that idle presentation, and gameplay startup releases
+idle resources before the runtime owns frame presentation.
 `File/Open Game`, `File/Recent Games`, and SDL file drops validate the
 selected path, save it to `recent.last_app`, promote it in the recent-game list,
 and launch the selected app in a fresh emulator process.
@@ -65,8 +68,9 @@ Help. Options contains the Video, Audio, and Input submenus. The menus include
 app opening, game pause/resume, screenshot export, video scale/anti-aliasing/effect adjustment, windowed
 fullscreen, brightness, contrast, gamma, saturation, FPS overlay, virtual controls,
 SDL GameController input, IME disable mode, language, backend/runtime timing
-options, master volume, audio disable, debug console/performance log controls, log
-opening, settings save/reset, and About.
+options, master volume, audio effect, audio disable, debug console/performance log controls, log
+opening, Resource Monitor, Memory Searcher, Debugger, settings save/reset, and
+About.
 
 ## Source Boundaries
 
@@ -93,6 +97,8 @@ opening, settings save/reset, and About.
   Dingoo A320 and Gemei X760+ button state.
 - `framebuffer.*`, `sdl_frontend.*`: framebuffer snapshots, SDL presentation,
   menus, overlays, filters, and screenshots.
+- `resource_monitor_ui.*`, `runtime_resource_monitor.*`: Resource Monitor UI,
+  runtime resource-load snapshots, and transient list highlight state.
 - `sdl_audio.*`, `guest_audio.*`: SDL audio output and waveout-compatible HLE.
 - `runtime_debug.*`, `debug_console.*`: register dumps, disassembly diagnostics,
   and optional Win32 debug console.
@@ -165,6 +171,13 @@ non-empty values store only custom differences as comma-separated
 `Physical=Control` pairs. The frontend/input layer rebuilds the runtime maps
 from defaults plus these overrides and releases active synthetic controls
 before applying a new map.
+The persisted Debug menu settings follow menu order: `debug.show_console`
+for Debug > Debug Console, `debug.profile` for Debug > Performance Log, and
+`debug.resource_monitor_auto_open` for Debug > Resource Monitor auto-open.
+`debug.resource_monitor_auto_open=1` keeps Debug > Resource Monitor checked.
+The frontend opens the Resource Monitor once when a game becomes active, or
+immediately if the user enables it while a game is already running. Resource
+parsing and capture stay idle until that window path is entered.
 
 `runtime.speed_scale=` means `Auto` in the INI and menu. Auto does not set
 `DINGOO_PIE_RUNTIME_SPEED_SCALE`; the runtime maps that unset state to the
@@ -185,6 +198,8 @@ validation only and never a lookup key. Missing cheat files are silent; SHA
 mismatches disable the loaded file and show the user a warning.
 `audio.buffer_samples` controls only the SDL output device buffer request; the
 guest SDK still supplies waveout sample rate, sample format, and channel count.
+`audio.effect` applies optional lightweight PCM effects in `sdl_audio.cpp`
+before master volume scaling and SDL queue submission.
 
 ## Resource And Package Policy
 
@@ -220,12 +235,19 @@ release generation rather than being silently skipped.
 Use low-frequency profile counters first, then enable targeted trace variables
 only for the subsystem being investigated. The most useful starting switches are:
 
-- `DINGOO_PIE_PROFILE=1` for frontend, HLE, file-system, and JIT counters.
+- `DINGOO_PIE_PROFILE=1` for Debug > Performance Log counters.
+- `DINGOO_PIE_LOG_FILE=1` when Debug > Open Debug Log must have a file to open.
+- `DINGOO_PIE_RESOURCE_MONITOR_AUTOTEST=1` for Resource Monitor capture in automation.
+- `DINGOO_PIE_MEMORY_SEARCHER_AUTOTEST=1` for Memory Searcher automation hooks.
+- `DINGOO_PIE_DEBUGGER_AUTOTEST=1` for Debugger automation hooks.
 - `DINGOO_PIE_INPUT_TRACE=1` for keyboard and virtual-control input.
 - `DINGOO_PIE_TRACE_HLE=1` for selected HLE calls.
 - `DINGOO_PIE_TRACE_TASKS=1` for guest task stop paths.
 - `DINGOO_PIE_TRACE_FS=1` or `DINGOO_PIE_TRACE_FS_OPEN=1` for file activity.
 - `DINGOO_PIE_IRJIT_TRACE=1` for noisy PPSSPP shim diagnostics.
+
+Profile counters use the `profile:<area>` prefix and should avoid empty-window
+output unless a diagnostic switch explicitly asks for it.
 
 `scripts/smoke_test.ps1` is the preferred repeatable check after structural
 changes. It can run a sample for a fixed duration, capture stdout/stderr logs,

@@ -90,9 +90,9 @@ try {
         saw_compat_profile = [bool]($lines | Select-String -Pattern "DingooPie: compat profile:" -Quiet)
         saw_video_settings = [bool]($lines | Select-String -Pattern "frontend: video settings" -Quiet)
         saw_runtime_speed = [bool]($lines | Select-String -Pattern "runtime speed scale|speed_scale=0\\.500" -Quiet)
-        saw_hle_profile = [bool]($lines | Select-String -Pattern "profile hle:" -Quiet)
-        saw_fsys_profile = [bool]($lines | Select-String -Pattern "profile fsys:" -Quiet)
-        saw_irjit_profile = [bool]($lines | Select-String -Pattern "profile irjit:" -Quiet)
+        saw_hle_profile = [bool]($lines | Select-String -Pattern "^profile:hle " -Quiet)
+        saw_fsys_profile = [bool]($lines | Select-String -Pattern "^profile:fsys " -Quiet)
+        saw_irjit_profile = [bool]($lines | Select-String -Pattern "^profile:irjit " -Quiet)
         stderr_nonempty = [bool]($errLines.Count -gt 0)
     }
 

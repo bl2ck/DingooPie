@@ -153,7 +153,6 @@ if (!(Test-Path -LiteralPath $AppPath -PathType Leaf)) {
 }
 
 $safeName = $Name -replace '[^A-Za-z0-9_.-]', '_'
-$rawLog = Join-Path $BuildDir "DingooPie-debug.log"
 $savedLog = Join-Path $BuildDir "$safeName.quit.log"
 $resultJson = Join-Path $BuildDir "$safeName.quit.json"
 $resolvedDumpFramePattern = $DumpFramePattern
@@ -183,7 +182,9 @@ do {
 
 Get-Process DingooPie,dingoo-pie -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 250
-Remove-Item -LiteralPath $rawLog, $savedLog, $resultJson -ErrorAction SilentlyContinue
+Get-ChildItem -LiteralPath $BuildDir -Filter "DingooPie-debug-*.log" -File -ErrorAction SilentlyContinue |
+    Remove-Item -Force
+Remove-Item -LiteralPath $savedLog, $resultJson -ErrorAction SilentlyContinue
 
 $hadConfig = Test-Path -LiteralPath $ini
 Remove-Item -LiteralPath $backup -ErrorAction SilentlyContinue
@@ -195,6 +196,7 @@ if ($hadConfig) {
 [debug]
 show_console=0
 profile=1
+resource_monitor_auto_open=0
 
 [video]
 show_fps=0
@@ -277,8 +279,11 @@ try {
         $endedAt = Get-Date
     }
 
-    if (Test-Path -LiteralPath $rawLog -PathType Leaf) {
-        Copy-Item -LiteralPath $rawLog -Destination $savedLog -Force
+    $rawLog = Get-ChildItem -LiteralPath $BuildDir -Filter "DingooPie-debug-*.log" -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($rawLog) {
+        Copy-Item -LiteralPath $rawLog.FullName -Destination $savedLog -Force
     }
 
     $lines = if (Test-Path -LiteralPath $savedLog -PathType Leaf) { Get-Content -LiteralPath $savedLog } else { @() }

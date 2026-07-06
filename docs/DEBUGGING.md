@@ -11,8 +11,8 @@ The Windows frontend also writes `DingooPie.ini` next to `DingooPie.exe`.
 The INI reader accepts UTF-16LE with BOM, UTF-8 with or without BOM, and a
 system ANSI fallback, so manually edited Chinese app paths remain loadable.
 The executable is named `DingooPie.exe`; its Windows version resource reports
-`Dingoo Game Emulator`, file/product version `1.2`, product
-name `DingooPie`, and `Copyright (c) BL2CK 2026`.
+`Dingoo Game Emulator`, file/product version `1.5`, product
+name `DingooPie`, and `Copyright (c) 2026 BL2CK`.
 Starting without command-line arguments does not show a file picker. Empty
 `recent.last_app` opens the frontend only; an existing `recent.last_app` is
 auto-loaded; a command-line `.app` path takes priority.
@@ -29,9 +29,12 @@ The menu is ordered as File, Options, Settings, Debug, and Help. Options
 contains Video, Audio, and Input submenus. Video settings are scale, fullscreen,
 anti-aliasing, effect, brightness, contrast, gamma, saturation, minimized
 behavior, portrait mode, and FPS overlay. Audio and input settings follow, then
-runtime settings, cheats, UI language, and debug options. File > Pause
-Game/Resume Game freezes game execution and audio at frame boundaries, but it is
-runtime-only and is not written to `DingooPie.ini`.
+runtime settings, the Cheats submenu, UI language, and Debug menu items in this
+order:
+Show Debug Console, Performance Log, Open Debug Log, Resource Monitor, Memory
+Searcher, and Debugger. File > Pause Game/Resume Game freezes game execution and
+audio at frame boundaries, but it is runtime-only and is not written to
+`DingooPie.ini`.
 `DingooPie.ini` is rewritten in the same practical order:
 `recent`, `video`, `audio`, `input`, `runtime`, optional `cheats`, `ui`, then
 `debug`. `settings-trace` prints the same section order when debug output is
@@ -40,9 +43,10 @@ The `recent` section writes `last_app` first, followed by the ordered
 `app1`...`app10` recent-game list.
 Runtime-affecting values are saved immediately. Changes to window scale,
 windowed fullscreen, minimized behavior, portrait mode, FPS overlay, CPU clock, runtime speed, delay scale,
-audio disable, performance logging, anti-aliasing/effect, brightness, contrast,
+audio disable, performance logging, Resource Monitor auto-open,
+anti-aliasing/effect, brightness, contrast,
 gamma, saturation, IME disable mode, virtual controls, language, master volume, audio
-buffer size, and debug console visibility apply without relaunching the guest.
+buffer size, audio effect, and debug console visibility apply without relaunching the guest.
 Changing the CPU backend still relaunches the emulator because the execution
 backend is selected at startup. Restored defaults relaunch only when they change
 the active CPU backend.
@@ -51,6 +55,9 @@ after the guest `waveout` volume so game-internal volume changes remain active.
 `audio.buffer_samples` controls the SDL output buffer request. The default is
 `2048`; larger values reduce underruns at the cost of more audio latency, while
 smaller values reduce latency but can make weak hosts crackle.
+`audio.effect` controls lightweight PCM processing after guest audio is written
+and before master volume is applied. Valid values are `off`, `soft`, `clear`,
+`bass_boost`, and `mono`; the default is `off`.
 `video.minimized_behavior` accepts `normal`, `throttle`, or `pause`. The
 default `throttle` lowers frontend presentation and loop cadence while the
 window is minimized. `pause` automatically pauses game execution and audio on
@@ -70,14 +77,14 @@ accuracy/performance choices.
 are loaded from a `cheats` directory next to `DingooPie.exe` by app base name:
 `GameName.app` loads `cheats\GameName.cht`. The optional
 `app_sha256=` field inside the `.cht` file is validation only. The global cheat
-switch is disabled by default; the menu item is `Settings -> Enable Cheats`.
+switch is disabled by default; the menu item is `Settings -> Cheats -> Enable Cheats`.
 Individual cheat features start unchecked until the user selects them under
-`Settings -> Cheat Features`. Selected features are saved per game and restored
+`Settings -> Cheats`. Selected features are saved per game and restored
 when the same game loads again. The same global switch can be forced with
 `DINGOO_PIE_CHEATS=1`.
 Saved feature selections are written in the optional `[cheats]` section between
 `[runtime]` and `[ui]`.
-Cheat feature rows are shown under `Settings -> Cheat Features`. The menu groups
+Cheat feature rows are shown under `Settings -> Cheats`. The menu groups
 multiple low-level rows by the text before `:` or `：`, so names such as
 `解锁所有赛车/Unlock All Cars：patch 1` and
 `解锁所有赛车/Unlock All Cars：patch 2` appear as one localized feature.
@@ -105,16 +112,42 @@ shown unless `Debug -> Show Debug Console` or `debug.show_console=1` is enabled.
 `Debug -> Open Debug Log` checks the executable directory first and
 shows a localized message if the log file has not been created yet. Performance
 logging and `DINGOO_PIE_LOG_FILE=1` create that file next to `DingooPie.exe`.
-`Debug -> Cheat Finder` searches u8/u16/u32 values, narrows candidates with
+The default file is `DingooPie-debug.log`; concurrent instances in the same
+directory fall back to `DingooPie-debug-<pid>.log`, and the menu opens the
+current instance's file.
+Guest runtime failures also write a separate `DingooPie-crash-<timestamp>-<pid>.log`
+next to the executable. The regular debug log keeps only the failure summary and
+the crash-log file name.
+Structured log lines use compact prefixes and fields, such as
+`profile:frontend loops=60/s` and `debug-log:opened file=DingooPie-debug.log`.
+`Debug -> Resource Monitor` opens the live resource list. It is enabled while a
+game is running, or can be checked before launch to auto-open once the next game
+starts. The persisted setting is `debug.resource_monitor_auto_open`.
+The list shows internal resources and external files in newest-load order.
+First/new loads highlight light green, repeated loads highlight light yellow,
+and closed resources highlight light red before leaving the list.
+`Debug -> Memory Searcher` searches u8/u16/u32 values, narrows candidates with
 equal, increased, decreased, and unchanged filters, writes a selected address,
 and copies a selected result as a `.cht` record for the matching cheat file.
 It is enabled only while a game is running.
 `Debug -> Debugger` opens a live inspection panel for the active runtime. It
 shows PC-based MIPS disassembly, all GPR/HI/LO registers, a hex memory viewer,
-breakpoint hit counters, and write watches. Use write watches on candidate
-addresses from Cheat Finder to identify the PC that changes health, score, or
-other values. Breakpoints and write watches record hits but do not pause or
+PC hit counters, and write hits. Use write hits on candidate
+addresses from Memory Searcher to identify the PC that changes health, score, or
+other values. PC hits and write hits record hits but do not pause or
 single-step the CPU. It is enabled only while a game is running.
+
+Debug-related INI keys and environment variables use the same order as the
+Debug menu:
+
+| Debug menu item | INI / environment variable | Purpose |
+| --- | --- | --- |
+| Show Debug Console | `debug.show_console=1` | Shows the Win32 debug console for the current run. |
+| Performance Log | `debug.profile=1`, `DINGOO_PIE_PROFILE=1`, `DINGOO_PIE_PROFILE_EMPTY=1`, `DINGOO_PIE_PROFILE_INTERVAL_MS=<ms>` | Enables low-frequency performance counters and optional empty-window output. |
+| Open Debug Log | `DINGOO_PIE_LOG_FILE=1` | Forces creation of `DingooPie-debug-*.log` so the menu has a file to open. |
+| Resource Monitor | `debug.resource_monitor_auto_open=1`, `DINGOO_PIE_RESOURCE_MONITOR_AUTOTEST=1` | Persists Resource Monitor auto-open or captures resource events for automated tests. |
+| Memory Searcher | `DINGOO_PIE_MEMORY_SEARCHER_AUTOTEST=1` | Enables Memory Searcher automation hooks. |
+| Debugger | `DINGOO_PIE_DEBUGGER_AUTOTEST=1` | Enables Debugger automation hooks. |
 Current video effects are frontend-side only: SDL provides nearest/linear
 texture scaling. Anti-aliasing uses nearest sampling for off, linear scaling
 for low strength, and linear scaling plus a light CPU RGB565 clarity pass for
@@ -177,7 +210,13 @@ some games compare that string directly.
 | --- | --- | --- |
 | `DINGOO_PIE_BACKEND` | `ppsspp_irjit`, `irjit`, `interpreter` | Selects the main CPU backend. The default is `ppsspp_irjit`. |
 | `DINGOO_PIE_SUBTASK_BACKEND` | `interpreter`, `ppsspp_irjit` | Selects the backend for host pthread-backed Dingoo tasks. Keep the default `interpreter` until PPSSPP global state is made thread-local. |
-| `DINGOO_PIE_PROFILE` | `1` | Enables one-second frontend, HLE, compatibility, and IR JIT counters. |
+| `DINGOO_PIE_PROFILE` | `1` | Enables the Debug > Performance Log counters without changing `DingooPie.ini`. |
+| `DINGOO_PIE_PROFILE_EMPTY` | `1` | Prints empty profile windows; by default profile logs skip no-activity windows. |
+| `DINGOO_PIE_PROFILE_INTERVAL_MS` | milliseconds | Sets the Performance Log sample interval. |
+| `DINGOO_PIE_LOG_FILE` | `1` | Forces debug-log file creation for Debug > Open Debug Log without enabling the debug console. |
+| `DINGOO_PIE_RESOURCE_MONITOR_AUTOTEST` | `1` | Captures Resource Monitor data during automation without opening the UI. |
+| `DINGOO_PIE_MEMORY_SEARCHER_AUTOTEST` | `1` | Enables Memory Searcher automation hooks. |
+| `DINGOO_PIE_DEBUGGER_AUTOTEST` | `1` | Enables Debugger automation hooks. |
 | `DINGOO_PIE_COMPAT_TRACE` | `1` | Prints unique compatibility hook addresses for Dingoo break/cache instructions. |
 | `DINGOO_PIE_IRJIT_TRACE` | `1` | Prints detailed PPSSPP shim diagnostics. This is noisy. |
 | `DINGOO_PIE_IRJIT_FASTMEM` | `0` | Disables direct fast-memory pages for diagnostics. |
@@ -199,6 +238,7 @@ some games compare that string directly.
 | `DINGOO_PIE_INPUT_TRACE` | `1` | Prints SDL key events and Dingoo key state reads. |
 | `DINGOO_PIE_AUTOPRESS_KEYS` | `KEY:DELAY_MS:COUNT:PERIOD_MS:HOLD_MS` | Injects deterministic synthetic controls from inside the frontend for automated sample tests. Example: `A:6000:8:900:300`. Keys: `A`, `B`, `X`, `Y`, `U`, `D`, `L`, `R`, `SELECT`, `START`. |
 | `DINGOO_PIE_AUTOPRESS_SEQUENCE` | `KEY@DELAY_MS:HOLD_MS,...` | Injects a deterministic multi-key sequence for multi-screen startup flows. Example: `A@6000:250,A@9000:250,D@12000:300`. The key names are SDK controls, not host keyboard letters. Raw SDK key aliases are also accepted for compatibility diagnostics: `ENTER`, `AB`, `EQ`, `CAMERA`, and `MENU`. |
+| `DINGOO_PIE_FORCE_GUEST_CRASH` | `1` | Forces the guest-runtime failure path after initialization so crash-log output can be validated with a known sample. |
 | `DINGOO_PIE_TASK_PROFILE` | `1` | Adds a per-subtask instruction hook profile. This can slow execution. |
 | `DINGOO_PIE_TRACE_HLE` | `1` | Prints selected resource and HLE calls. |
 | `DINGOO_PIE_TRACE_TASKS` | `1` | Prints guest task stop details. Use this before adding a return-address keyed exit promotion. |
@@ -246,15 +286,16 @@ English.
 
 ## Repeatable Smoke Tests
 
-Use `scripts\debug_output_regression.ps1` after changing debug console, logging,
+Use `scripts\debug_output_regression.ps1` after changing Debug Console, logging,
 SDL startup, or stdout/stderr handling. It launches isolated no-game runs and
-checks environment-forced debug logs, INI performance logs, debug console plus
-log output, console-only startup, stdout redirection, and empty stderr.
+checks Open Debug Log file creation through `DINGOO_PIE_LOG_FILE`, INI
+Performance Log, Debug Console plus Open Debug Log, Debug Console-only startup,
+stdout redirection, and empty stderr.
 
 ```powershell
 .\scripts\debug_output_regression.ps1 `
   -BuildDir '.\release' `
-  -Seconds 2
+  -Seconds 5
 ```
 
 Use `scripts\smoke_test.ps1` after compatibility or structure changes. It runs
@@ -375,14 +416,14 @@ as a broken build environment even if CMake can still compile the emulator.
 
 ## Profile Counters
 
-`profile frontend` reports:
+`profile:frontend` reports low-frequency frontend counters:
 
 - `draws`: SDL presentations per second. This is now driven by game frame submissions, not by a 60 Hz window timer.
 - `presented_fps`: successful frontend presentations per second. The on-screen FPS overlay uses this same value.
 - `submitted_fps`: compatibility alias for `presented_fps` in current logs.
 - `content_fps`: submitted frames whose snapshot hash changed.
 
-`profile hle` reports:
+`profile:hle` reports:
 
 - `lcd_set`: calls to `_lcd_set_frame`, `lcd_set_frame`, or `ap_lcd_set_frame`.
 - `time`, `gettick`, `ostimedly`: timer usage. High `ostimedly` totals usually mean the game is throttling itself through the SDK timer.
@@ -390,7 +431,7 @@ as a broken build environment even if CMake can still compile the emulator.
 - `wave_write`, `sem`: audio task activity and synchronization.
 - `sys_event`, `kbd`: input polling cadence.
 
-`profile irjit` reports:
+`profile:irjit` reports:
 
 - `hooks`: transitions from generated PPSSPP code into the native hook bridge.
 - `fast_lcd`: LCD frame submissions handled by the PPSSPP fast-HLE path.
@@ -404,14 +445,14 @@ as a broken build environment even if CMake can still compile the emulator.
 - `throttle_ahead_ms` / `clock_hz`: active wall-time throttle parameters.
 - `pc` / `ra`: current MIPS PC and return address at the sample point.
 
-`profile interpreter` reports:
+`profile:interpreter` reports:
 
 - `ips`: interpreted MIPS instructions per second. Low values are not always a
   regression after HLE loop promotion because host-side hooks can replace large
   guest loops.
 - `hooks`: interpreter code-hook callbacks per second.
 - `fb_submit`, `fb_copy_us`, `fb_interval_us`, `over25`, `over33`: the same
-  framebuffer pacing counters used by `profile irjit`.
+  framebuffer pacing counters used by `profile:irjit`.
 - `pc` / `ra`: current MIPS PC and return address at the sample point.
 - `DINGOO_PIE_INTERPRETER_PC_PROFILE=1` adds a low-frequency hot-PC histogram
   for diagnosing remaining interpreter-only bottlenecks.
@@ -438,4 +479,3 @@ user samples.
 - Add CPU instruction support to `dingoo_pie/native_runtime.cpp` for interpreter checks.
 - Add PPSSPP shim or fast-memory work in `dingoo_pie/ppsspp_shim.cpp` and the patch files under `patches/`.
 - Keep subtask JIT disabled by default until PPSSPP globals such as `currentMIPS`, `coreState`, and `MIPSComp::jit` are isolated per runtime or per thread.
-

@@ -25,7 +25,7 @@ extern uint32_t waveout_open(waveout_args* args);
 extern uint32_t waveout_write(uint32_t inst, char* buffer, int count);
 extern uint32_t waveout_close(uint32_t inst);
 extern uint32_t waveout_can_write();
-extern bool waveout_drops_audio();
+extern bool waveout_skips_audio_output();
 extern uint32_t waveout_set_volume(uint32_t vol);
 extern uint32_t waveout_mute(uint32_t muted);
 

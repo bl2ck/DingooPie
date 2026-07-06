@@ -16,4 +16,3 @@ bool emulatorEnvDisabled(const char* name);
 EmulatorOptions loadEmulatorOptions(void);
 
 #endif
-

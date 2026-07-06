@@ -3,7 +3,7 @@
 # E4E23B19515716445EEE4A79BF6F081B77F5C0911D43456205902475653373F9
 #
 # Notes:
-# - Unlocks locked cars and tracks by patching menu lock and selection checks.
+# - Unlocks cars and tracks.
 
 app_sha256=E4E23B19515716445EEE4A79BF6F081B77F5C0911D43456205902475653373F9
 

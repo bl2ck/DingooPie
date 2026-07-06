@@ -84,6 +84,21 @@ std::wstring platformUtf8ToWide(const std::string& text)
 #endif
 }
 
+unsigned long platformWin32NormalizeChildStyle(const wchar_t* className, unsigned long style)
+{
+#ifdef _WIN32
+    if (className && lstrcmpW(className, L"STATIC") == 0 &&
+        (style & SS_ELLIPSISMASK) == 0 &&
+        (style & SS_TYPEMASK) == SS_LEFT)
+    {
+        return (style & ~SS_TYPEMASK) | SS_LEFTNOWORDWRAP;
+    }
+#else
+    (void)className;
+#endif
+    return style;
+}
+
 std::string platformSelectAppPathLocalized(const wchar_t* title, const wchar_t* filter)
 {
 #ifdef _WIN32
@@ -217,4 +232,3 @@ void platformEndHighResolutionTiming(void)
     }
 #endif
 }
-

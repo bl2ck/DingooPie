@@ -25,6 +25,7 @@
 
 void inputClearControls(void);
 void inputClearSyntheticControls(void);
+void inputResetTransientControls(void);
 void inputSetSyntheticControl(uint32_t controlBit, bool pressed);
 void inputHandleHostScancode(SDL_Scancode scancode, bool pressed);
 void inputHandleHostVirtualKey(int virtualKey, bool pressed);

@@ -110,6 +110,7 @@ RuntimeError nativeRuntimeStart(NativeRuntime* runtime, uint64_t begin, uint64_t
 RuntimeError nativeRuntimeRequestStop(NativeRuntime* runtime);
 RuntimeError nativeRuntimeSetBackend(NativeRuntime* runtime, ExecutionBackend backend);
 ExecutionBackend nativeRuntimeGetBackend(NativeRuntime* runtime);
+void nativeRuntimeApplyProfileSettings(NativeRuntime* runtime);
 RuntimeError nativeRuntimeReadRegister(NativeRuntime* runtime, int regid, void* value);
 RuntimeError nativeRuntimeWriteRegister(NativeRuntime* runtime, int regid, const void* value);
 RuntimeError nativeRuntimeMapMemory(NativeRuntime* runtime, uint64_t address, size_t size, uint32_t perms, void* ptr);

@@ -722,4 +722,3 @@ void dingoo_debug(NativeRuntime* runtime)
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_RA, &pc);
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &pc);
 }
-

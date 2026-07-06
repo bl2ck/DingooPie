@@ -20,6 +20,7 @@ void* getPresentedFramebuffPtr(void);
 void copyPresentedFramebuff(void* dst, uint32_t size);
 
 void requestFbUpdate(void);
+void framebufferPresentRestoredFrame(void);
 int consumeFbUpdateRequest(void);
 uint64_t consumeFramebufferSubmittedCount(void);
 uint64_t consumeFramebufferCopyMicros(void);

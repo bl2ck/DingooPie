@@ -5,7 +5,7 @@
 
 #include <string>
 
-static const int kSaveStateSlotCount = 10;
+static const int kSaveStateSlotCount = 15;
 
 enum SaveStateProgressPhase
 {
@@ -33,6 +33,7 @@ struct SaveStateSlotInfo
 
 std::string saveStateAppIdForPath(const std::string& appPath);
 std::string saveStatePathForSlot(const std::string& appPath, int slot);
+std::string saveStateThumbnailPathForSlot(const std::string& appPath, int slot);
 SaveStateSlotInfo saveStateSlotInfo(const std::string& appPath, int slot);
 bool saveStateWriteSlot(const std::string& appPath, int slot,
     const EmulatorRuntimeState& state, std::string* error,

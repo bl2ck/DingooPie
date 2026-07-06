@@ -10,4 +10,3 @@ std::string appCheatFileNameFromPath(const std::string& path);
 std::string appGuestMainPathFromPath(const std::string& path);
 
 #endif
-

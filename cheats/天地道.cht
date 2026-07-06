@@ -3,9 +3,8 @@
 # 6FA335AD49FE2FE68E6ECE552D72C2DEC352E715B7255FDCE9AED88248FB2C23
 #
 # Notes:
-# - Skips player hurt and player-only HP loss paths.
-# - Redirects player-facing HP reads to max HP.
-# - Generic entity HP paths are intentionally not patched, so enemies remain killable.
+# - Skips player hurt/HP loss.
+# - Shows player HP as max; enemies remain killable.
 
 app_sha256=6FA335AD49FE2FE68E6ECE552D72C2DEC352E715B7255FDCE9AED88248FB2C23
 

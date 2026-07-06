@@ -5,6 +5,7 @@
 #include "guest_filesystem.h"
 #include "platform_win32.h"
 #include "ppsspp_irjit_backend.h"
+#include "runtime_log.h"
 #include "sdk_hle.h"
 
 #include <stdio.h>
@@ -265,6 +266,60 @@ static ColorEffectMode parseColorEffectMode(const std::string& value, ColorEffec
     if (_stricmp(value.c_str(), "light_crt") == 0)
     {
         return COLOR_EFFECT_LIGHT_CRT;
+    }
+    return fallback;
+}
+
+static bool audioEffectModeKnown(AudioEffectMode value)
+{
+    switch (value)
+    {
+    case AUDIO_EFFECT_OFF:
+    case AUDIO_EFFECT_SOFT:
+    case AUDIO_EFFECT_CLEAR:
+    case AUDIO_EFFECT_BASS_BOOST:
+    case AUDIO_EFFECT_MONO:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static AudioEffectMode normalizeAudioEffectMode(AudioEffectMode value, AudioEffectMode fallback)
+{
+    if (audioEffectModeKnown(value))
+    {
+        return value;
+    }
+    return audioEffectModeKnown(fallback) ? fallback : AUDIO_EFFECT_OFF;
+}
+
+static AudioEffectMode parseAudioEffectMode(const std::string& value, AudioEffectMode fallback)
+{
+    fallback = normalizeAudioEffectMode(fallback, AUDIO_EFFECT_OFF);
+    if (value.empty())
+    {
+        return fallback;
+    }
+    if (_stricmp(value.c_str(), "off") == 0)
+    {
+        return AUDIO_EFFECT_OFF;
+    }
+    if (_stricmp(value.c_str(), "soft") == 0)
+    {
+        return AUDIO_EFFECT_SOFT;
+    }
+    if (_stricmp(value.c_str(), "clear") == 0)
+    {
+        return AUDIO_EFFECT_CLEAR;
+    }
+    if (_stricmp(value.c_str(), "bass_boost") == 0)
+    {
+        return AUDIO_EFFECT_BASS_BOOST;
+    }
+    if (_stricmp(value.c_str(), "mono") == 0)
+    {
+        return AUDIO_EFFECT_MONO;
     }
     return fallback;
 }
@@ -628,9 +683,12 @@ static bool writeOrderedSettingsFile(const EmulatorSettings& settings, const std
     appendIniValue(&text, L"show_fps", settings.showFps);
 
     appendIniSection(&text, L"audio");
+    const AudioEffectMode audioEffect =
+        normalizeAudioEffectMode(settings.audioEffect, AUDIO_EFFECT_OFF);
     appendIniValue(&text, L"volume_percent", clampInt(settings.audioVolumePercent, 0, 150));
     appendIniValue(&text, L"buffer_samples", normalizeAudioBufferSamples(settings.audioBufferSamples, 2048));
-    appendIniValue(&text, L"drop_audio", settings.dropAudio);
+    appendIniValue(&text, L"effect", emulatorAudioEffectName(audioEffect));
+    appendIniValue(&text, L"audio_disabled", settings.audioDisabled);
 
     appendIniSection(&text, L"input");
     appendIniValue(&text, L"disable_ime", settings.disableIme);
@@ -665,6 +723,7 @@ static bool writeOrderedSettingsFile(const EmulatorSettings& settings, const std
     appendIniSection(&text, L"debug");
     appendIniValue(&text, L"show_console", settings.showDebugConsole);
     appendIniValue(&text, L"profile", settings.debugProfile);
+    appendIniValue(&text, L"resource_monitor_auto_open", settings.resourceMonitorAutoOpen);
 
     return writeUtf16IniFile(path, text);
 }
@@ -990,7 +1049,8 @@ EmulatorSettings emulatorDefaultSettings(void)
 
     settings.audioVolumePercent = 100;
     settings.audioBufferSamples = 2048;
-    settings.dropAudio = false;
+    settings.audioEffect = AUDIO_EFFECT_OFF;
+    settings.audioDisabled = false;
 
     settings.disableIme = true;
     settings.showVirtualControls = false;
@@ -1008,6 +1068,7 @@ EmulatorSettings emulatorDefaultSettings(void)
 
     settings.showDebugConsole = false;
     settings.debugProfile = false;
+    settings.resourceMonitorAutoOpen = false;
     return settings;
 }
 
@@ -1063,11 +1124,26 @@ EmulatorSettings emulatorLoadSettings(void)
     settings.portraitMode = parseBoolText(readIniString("video", "portrait", defaults.portraitMode ? "1" : "0", path).c_str(), defaults.portraitMode);
     settings.showFps = parseBoolText(readIniString("video", "show_fps", defaults.showFps ? "1" : "0", path).c_str(), defaults.showFps);
 
-    settings.audioVolumePercent = clampInt(readIniInt("audio", "volume_percent", defaults.audioVolumePercent, path), 0, 150);
+    settings.audioVolumePercent = clampInt(
+        readIniInt("audio", "volume_percent", defaults.audioVolumePercent, path),
+        0,
+        150);
     settings.audioBufferSamples = normalizeAudioBufferSamples(
         readIniInt("audio", "buffer_samples", defaults.audioBufferSamples, path),
         defaults.audioBufferSamples);
-    settings.dropAudio = parseBoolText(readIniString("audio", "drop_audio", defaults.dropAudio ? "1" : "0", path).c_str(), defaults.dropAudio);
+    std::string audioEffect = readIniString(
+        "audio",
+        "effect",
+        emulatorAudioEffectName(defaults.audioEffect),
+        path);
+    settings.audioEffect = parseAudioEffectMode(audioEffect, defaults.audioEffect);
+    settings.audioDisabled = parseBoolText(
+        readIniString(
+            "audio",
+            "audio_disabled",
+            defaults.audioDisabled ? "1" : "0",
+            path).c_str(),
+        defaults.audioDisabled);
 
     settings.disableIme = parseBoolText(readIniString("input", "disable_ime", defaults.disableIme ? "1" : "0", path).c_str(), defaults.disableIme);
     settings.showVirtualControls = parseBoolText(readIniString("input", "show_virtual_controls", defaults.showVirtualControls ? "1" : "0", path).c_str(), defaults.showVirtualControls);
@@ -1108,6 +1184,7 @@ EmulatorSettings emulatorLoadSettings(void)
 
     settings.showDebugConsole = parseBoolText(readIniString("debug", "show_console", defaults.showDebugConsole ? "1" : "0", path).c_str(), defaults.showDebugConsole);
     settings.debugProfile = parseBoolText(readIniString("debug", "profile", defaults.debugProfile ? "1" : "0", path).c_str(), defaults.debugProfile);
+    settings.resourceMonitorAutoOpen = parseBoolText(readIniString("debug", "resource_monitor_auto_open", defaults.resourceMonitorAutoOpen ? "1" : "0", path).c_str(), defaults.resourceMonitorAutoOpen);
     return settings;
 }
 
@@ -1140,9 +1217,20 @@ bool emulatorSaveSettings(const EmulatorSettings& settings)
     ok = writeIniString("video", "minimized_behavior", emulatorMinimizedBehaviorName(settings.minimizedBehavior), path) && ok;
     ok = writeIniString("video", "portrait", settings.portraitMode ? "1" : "0", path) && ok;
     ok = writeIniString("video", "show_fps", settings.showFps ? "1" : "0", path) && ok;
-    ok = writeIniString("audio", "volume_percent", std::to_string(clampInt(settings.audioVolumePercent, 0, 150)), path) && ok;
-    ok = writeIniString("audio", "buffer_samples", std::to_string(normalizeAudioBufferSamples(settings.audioBufferSamples, 2048)), path) && ok;
-    ok = writeIniString("audio", "drop_audio", settings.dropAudio ? "1" : "0", path) && ok;
+    const AudioEffectMode audioEffect =
+        normalizeAudioEffectMode(settings.audioEffect, AUDIO_EFFECT_OFF);
+    ok = writeIniString(
+        "audio",
+        "volume_percent",
+        std::to_string(clampInt(settings.audioVolumePercent, 0, 150)),
+        path) && ok;
+    ok = writeIniString(
+        "audio",
+        "buffer_samples",
+        std::to_string(normalizeAudioBufferSamples(settings.audioBufferSamples, 2048)),
+        path) && ok;
+    ok = writeIniString("audio", "effect", emulatorAudioEffectName(audioEffect), path) && ok;
+    ok = writeIniString("audio", "audio_disabled", settings.audioDisabled ? "1" : "0", path) && ok;
     ok = writeIniString("input", "disable_ime", settings.disableIme ? "1" : "0", path) && ok;
     ok = writeIniString("input", "show_virtual_controls", settings.showVirtualControls ? "1" : "0", path) && ok;
     ok = writeIniString("input", "keyboard_mapping", settings.keyboardMapping, path) && ok;
@@ -1164,8 +1252,10 @@ bool emulatorSaveSettings(const EmulatorSettings& settings)
     ok = writeIniString("ui", "language", emulatorUiLanguageName(settings.uiLanguage), path) && ok;
     ok = writeIniString("debug", "show_console", settings.showDebugConsole ? "1" : "0", path) && ok;
     ok = writeIniString("debug", "profile", settings.debugProfile ? "1" : "0", path) && ok;
+    ok = writeIniString("debug", "resource_monitor_auto_open", settings.resourceMonitorAutoOpen ? "1" : "0", path) && ok;
 #endif
-    if (ok && (settings.showDebugConsole || settings.debugProfile || getenv("DINGOO_PIE_LOG_FILE")))
+    if (ok && (settings.showDebugConsole || settings.debugProfile ||
+        getenv("DINGOO_PIE_LOG_FILE")))
     {
         emulatorTraceSettings("saved", settings);
     }
@@ -1313,19 +1403,21 @@ bool emulatorSetCheatFeatureKeysForApp(
 void emulatorTraceSettings(const char* reason, const EmulatorSettings& settings)
 {
     const char* label = (reason && reason[0]) ? reason : "snapshot";
-    printf("settings-trace: %s recent.last_app=\"%s\"\n",
+    const AudioEffectMode audioEffect =
+        normalizeAudioEffectMode(settings.audioEffect, AUDIO_EFFECT_OFF);
+    printf("settings-trace:%s recent.last_app=\"%s\"\n",
         label,
         settings.lastAppPath.empty() ? "(empty)" : settings.lastAppPath.c_str());
     std::vector<std::string> recentApps = buildNormalizedRecentAppList(
         settings.lastAppPath, settings.recentAppPaths);
     for (size_t i = 0; i < recentApps.size(); ++i)
     {
-        printf("settings-trace: %s recent.app%u=\"%s\"\n",
+        printf("settings-trace:%s recent.app%u=\"%s\"\n",
             label,
             (unsigned int)(i + 1),
             recentApps[i].c_str());
     }
-    printf("settings-trace: %s video.scale=%d video.fullscreen=%u video.anti_aliasing=%s video.effect=%s video.brightness=%d video.contrast=%d video.gamma=%d video.saturation=%d video.minimized_behavior=%s video.portrait=%u video.show_fps=%u\n",
+    printf("settings-trace:%s video.scale=%d video.fullscreen=%u video.anti_aliasing=%s video.effect=%s video.brightness=%d video.contrast=%d video.gamma=%d video.saturation=%d video.minimized_behavior=%s video.portrait=%u video.show_fps=%u\n",
         label,
         clampInt(settings.windowScale, 1, 3),
         settings.fullscreen ? 1u : 0u,
@@ -1338,18 +1430,19 @@ void emulatorTraceSettings(const char* reason, const EmulatorSettings& settings)
         emulatorMinimizedBehaviorName(settings.minimizedBehavior),
         settings.portraitMode ? 1u : 0u,
         settings.showFps ? 1u : 0u);
-    printf("settings-trace: %s audio.volume_percent=%d audio.buffer_samples=%d audio.drop_audio=%u\n",
+    printf("settings-trace:%s audio.volume_percent=%d audio.buffer_samples=%d audio.effect=%s audio.audio_disabled=%u\n",
         label,
         clampInt(settings.audioVolumePercent, 0, 150),
         normalizeAudioBufferSamples(settings.audioBufferSamples, 2048),
-        settings.dropAudio ? 1u : 0u);
-    printf("settings-trace: %s input.disable_ime=%u input.show_virtual_controls=%u input.keyboard_mapping=\"%s\" input.controller_mapping=\"%s\"\n",
+        emulatorAudioEffectName(audioEffect),
+        settings.audioDisabled ? 1u : 0u);
+    printf("settings-trace:%s input.disable_ime=%u input.show_virtual_controls=%u input.keyboard_mapping=\"%s\" input.controller_mapping=\"%s\"\n",
         label,
         settings.disableIme ? 1u : 0u,
         settings.showVirtualControls ? 1u : 0u,
         settings.keyboardMapping.empty() ? "(default)" : settings.keyboardMapping.c_str(),
         settings.controllerMapping.empty() ? "(default)" : settings.controllerMapping.c_str());
-    printf("settings-trace: %s runtime.backend=%s runtime.cpu_hz=%s runtime.speed_scale=%s runtime.ostimedly_scale=%s runtime.cheats_enabled=%u\n",
+    printf("settings-trace:%s runtime.backend=%s runtime.cpu_hz=%s runtime.speed_scale=%s runtime.ostimedly_scale=%s runtime.cheats_enabled=%u\n",
         label,
         settings.backendName.empty() ? "auto" : settings.backendName.c_str(),
         settings.cpuClockHz.empty() ? "auto" : settings.cpuClockHz.c_str(),
@@ -1361,19 +1454,20 @@ void emulatorTraceSettings(const char* reason, const EmulatorSettings& settings)
         const EmulatorCheatSelection& selection = settings.cheatSelections[i];
         if (!selection.cheatFileName.empty() && !selection.enabledFeatureKeys.empty())
         {
-            printf("settings-trace: %s cheats.%s=\"%s\"\n",
+            printf("settings-trace:%s cheats.%s=\"%s\"\n",
                 label,
                 selection.cheatFileName.c_str(),
                 encodeCheatFeatureKeys(selection.enabledFeatureKeys).c_str());
         }
     }
-    printf("settings-trace: %s ui.language=%s\n",
+    printf("settings-trace:%s ui.language=%s\n",
         label,
         emulatorUiLanguageName(settings.uiLanguage));
-    printf("settings-trace: %s debug.show_console=%u debug.profile=%u\n",
+    printf("settings-trace:%s debug.show_console=%u debug.profile=%u debug.resource_monitor_auto_open=%u\n",
         label,
         settings.showDebugConsole ? 1u : 0u,
-        settings.debugProfile ? 1u : 0u);
+        settings.debugProfile ? 1u : 0u,
+        settings.resourceMonitorAutoOpen ? 1u : 0u);
 }
 
 bool emulatorResetSettings(void)
@@ -1391,15 +1485,17 @@ void emulatorApplySettingsToEnvironment(const EmulatorSettings& settings)
     // Auto to the chosen global pace while keeping the UI checked on Auto.
     setEnvValue("DINGOO_PIE_RUNTIME_SPEED_SCALE", settings.runtimeSpeedScale);
     setEnvValue("DINGOO_PIE_OSTIMEDLY_SCALE", settings.ostimeDlyScale);
-    setEnvValue("DINGOO_PIE_DROP_AUDIO", settings.dropAudio ? "1" : "");
-    setEnvValue("DINGOO_PIE_PROFILE", settings.debugProfile ? "1" : "");
+    setEnvValue("DINGOO_PIE_AUDIO_DISABLED", settings.audioDisabled ? "1" : "");
+    setEnvValue("DINGOO_PIE_PROFILE", settings.debugProfile || runtimeLogExternalProfileEnabled() ? "1" : "");
+    runtimeLogSetProfileEnabled(settings.debugProfile);
 }
 
 void emulatorApplyRuntimeSettings(const EmulatorSettings& settings)
 {
     emulatorApplySettingsToEnvironment(settings);
-    framebufferSetProfileEnabled(settings.debugProfile);
-    fsys_set_profile_enabled(settings.debugProfile);
+    bool profileEnabled = runtimeLogProfileEnabled();
+    framebufferSetProfileEnabled(profileEnabled);
+    fsys_set_profile_enabled(profileEnabled);
     bridge_apply_runtime_settings();
 #ifdef DINGOO_PIE_ENABLE_PPSSPP_IRJIT
     ppssppShimApplyRuntimeSettings();
@@ -1443,6 +1539,24 @@ const char* emulatorColorEffectName(ColorEffectMode mode)
         return "light_crt";
     default:
         return "normal";
+    }
+}
+
+const char* emulatorAudioEffectName(AudioEffectMode mode)
+{
+    switch (mode)
+    {
+    case AUDIO_EFFECT_SOFT:
+        return "soft";
+    case AUDIO_EFFECT_CLEAR:
+        return "clear";
+    case AUDIO_EFFECT_BASS_BOOST:
+        return "bass_boost";
+    case AUDIO_EFFECT_MONO:
+        return "mono";
+    case AUDIO_EFFECT_OFF:
+    default:
+        return "off";
     }
 }
 

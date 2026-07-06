@@ -8,6 +8,7 @@
 
 #include "emulated_memory.h"
 #include "framebuffer.h"
+#include "runtime_log.h"
 
 extern uint32_t s_AppDataAddr;
 extern uint32_t s_AppDataBuffSize;
@@ -971,9 +972,9 @@ static void patchCacheInstructions(app* appInfo, const EmulatorOptions& options,
         }
     }
 
-    if (options.profile)
+    if (runtimeLogProfileEnabled())
     {
-        printf("profile compat: cache-like words=%u\n", *patchedCache);
+        printf("profile:compat cache_like_words=%u\n", *patchedCache);
     }
 }
 
@@ -991,7 +992,7 @@ static bool readRuntimeInsn(NativeRuntime* runtime, uint64_t address, uint32_t* 
 
 static void profileRuntimeCompat(bool breakInsn, bool cacheInsn)
 {
-    if (!g_options.profile)
+    if (!runtimeLogProfileEnabled())
     {
         return;
     }
@@ -1017,12 +1018,13 @@ static void profileRuntimeCompat(bool breakInsn, bool cacheInsn)
         cacheHits++;
     }
 
-    if (now - lastTicks >= 1000)
+    uint64_t elapsedMs = now - lastTicks;
+    if (elapsedMs >= runtimeLogProfileIntervalMs())
     {
-        printf("profile compat: callbacks=%llu/s break=%llu/s cache=%llu/s\n",
-            (unsigned long long)callbacks,
-            (unsigned long long)breakHits,
-            (unsigned long long)cacheHits);
+        printf("profile:compat callbacks=%llu/s break=%llu/s cache=%llu/s\n",
+            (unsigned long long)runtimeLogRatePerSecond(callbacks, elapsedMs),
+            (unsigned long long)runtimeLogRatePerSecond(breakHits, elapsedMs),
+            (unsigned long long)runtimeLogRatePerSecond(cacheHits, elapsedMs));
         callbacks = 0;
         breakHits = 0;
         cacheHits = 0;
@@ -2172,12 +2174,11 @@ RuntimeError runtimeCompatInstallHooks(NativeRuntime* runtime, app* appInfo, con
         hookCount++;
     }
 
-    if (options.profile)
+    if (runtimeLogProfileEnabled())
     {
-        printf("profile compat: precise hooks=%u blit16_hooks=%u indexed8_hooks=%u indexed_transform_hooks=%u pixel16_hooks=%u mem_hooks=%u rowcopy_hooks=%u tiny_hooks=%u object_predicate_hooks=%u scan_size=0x%x\n",
+        printf("profile:compat precise_hooks=%u blit16_hooks=%u indexed8_hooks=%u indexed_transform_hooks=%u pixel16_hooks=%u mem_hooks=%u rowcopy_hooks=%u tiny_hooks=%u object_predicate_hooks=%u scan_size=0x%x\n",
             hookCount, blitHookCount, indexedBlitHookCount, indexedTransformBlitHookCount, pixelLoopHookCount, memoryRoutineHookCount,
             rowCopyHookCount, tinyPredicateHookCount, objectPredicateAggregateHookCount, scanSize);
     }
     return RUNTIME_OK;
 }
-

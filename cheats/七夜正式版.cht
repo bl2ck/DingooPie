@@ -3,8 +3,9 @@
 # AF681C338A9932C98A3B450D4391C43D13747F1DFD937232AE38BEDB44359BF0
 #
 # Notes:
-# - Sets the runtime sedative count to 99.
-# - Unlocks title-menu hidden costume and weapon checks without changing save data.
+# - Sets sedatives to 99.
+# - Unlocks title-menu costume/weapon checks; save data unchanged.
+# - New Game Day Cycle starts at Day 2, then 3-7, 1.
 
 app_sha256=AF681C338A9932C98A3B450D4391C43D13747F1DFD937232AE38BEDB44359BF0
 
@@ -22,3 +23,30 @@ once|解锁隐藏道具/Unlock Title Hidden Items：隐藏武器锁定检查|u32
 once|解锁隐藏道具/Unlock Title Hidden Items：下一项隐藏武器选择|u32|0x80A2DFE0|0x24020001|0x8C22A218
 once|解锁隐藏道具/Unlock Title Hidden Items：上一项隐藏武器选择|u32|0x80A2E078|0x24020001|0x8C22A218
 once|解锁隐藏道具/Unlock Title Hidden Items：空隐藏武器选择检查|u32|0x80A2E0B8|0x24020001|0x8C42A218
+once|新游戏 Day 轮换/New Game Day Cycle：hook|u32|0x80A17634|0x082CD640|0x02002021
+once|新游戏 Day 轮换/New Game Day Cycle：delay slot|u32|0x80A17638|0x00000000|0x24050001
+once|新游戏 Day 轮换/New Game Day Cycle：stub 01|u32|0x80B35900|0x3C0880B3|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 02|u32|0x80B35904|0x8D095960|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 03|u32|0x80B35908|0x2D2A0008|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 04|u32|0x80B3590C|0x15400002|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 05|u32|0x80B35910|0x00000000|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 06|u32|0x80B35914|0x24090002|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 07|u32|0x80B35918|0x252B0001|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 08|u32|0x80B3591C|0x2D6A0008|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 09|u32|0x80B35920|0x15400002|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 10|u32|0x80B35924|0x00000000|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 11|u32|0x80B35928|0x240B0001|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 12|u32|0x80B3592C|0xAD0B5960|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 13|u32|0x80B35930|0xAFA9000C|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 14|u32|0x80B35934|0x02002021|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 15|u32|0x80B35938|0x01202821|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 16|u32|0x80B3593C|0x24060001|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 17|u32|0x80B35940|0x0C285CD8|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 18|u32|0x80B35944|0x00000000|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 19|u32|0x80B35948|0x8FA5000C|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 20|u32|0x80B3594C|0x8E0400A4|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 21|u32|0x80B35950|0x0C28F4BC|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 22|u32|0x80B35954|0x00000000|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 23|u32|0x80B35958|0x08285D94|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 24|u32|0x80B3595C|0x00000000|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：next day|u32|0x80B35960|0x00000002|0x00000000

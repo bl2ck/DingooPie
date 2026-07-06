@@ -19,6 +19,8 @@
 #include "guest_audio.h"
 #include "guest_format.h"
 #include "compat_profile.h"
+#include "runtime_log.h"
+#include "runtime_resource_monitor.h"
 #include <chrono>
 #include <atomic>
 #include <pthread.h>
@@ -85,6 +87,17 @@ struct HleProfileCounters
 
 static HleProfileCounters s_hleProfile = {};
 
+static bool hleProfileHasActivity(const HleProfileCounters& profile, uint64_t fbWrites, uint64_t fbWriteBytes)
+{
+    return profile.lcdSetFrame || profile.lcdFlip || fbWrites || fbWriteBytes ||
+        profile.osTimeGet || profile.getTickCount || profile.delayMs || profile.delayMsTotal ||
+        profile.udelay || profile.udelayTotal || profile.osTimeDly || profile.osTimeDlyTotal ||
+        profile.waveCanWrite || profile.waveWrite || profile.waveWriteBytes ||
+        profile.semPend || profile.semPost || profile.semCreate || profile.taskCreate ||
+        profile.sysJudgeEvent || profile.kbdStatus || profile.dlResOpen ||
+        profile.dlResRead || profile.dlResReadBytes;
+}
+
 void bridge_set_app_identity(const char* sha256Hex)
 {
     s_bridgeAppSha256 = sha256Hex ? sha256Hex : "";
@@ -109,7 +122,7 @@ const char* bridge_get_last_hle_summary(void)
 bool bridge_try_fast_return_hook(uint32_t address, uint32_t* returnValue);
 void bridge_profile_tick(void)
 {
-    if (s_bridgeProfileEnabled.load())
+    if (runtimeLogProfileEnabled() && s_bridgeProfileEnabled.load())
     {
         uint64_t now = SDL_GetTicks64();
         profilePrintAndReset(now);
@@ -119,7 +132,7 @@ void bridge_profile_tick(void)
 static void profilePrintAndReset(uint64_t now)
 {
     static uint64_t lastTicks = 0;
-    if (!s_bridgeProfileEnabled.load())
+    if (!runtimeLogProfileEnabled() || !s_bridgeProfileEnabled.load())
     {
         return;
     }
@@ -128,15 +141,21 @@ static void profilePrintAndReset(uint64_t now)
         lastTicks = now;
         return;
     }
-    if (now - lastTicks < 1000)
+    if (now - lastTicks < runtimeLogProfileIntervalMs())
     {
         return;
     }
 
     uint64_t fbWrites = consumeFramebufferWriteCount();
     uint64_t fbWriteBytes = consumeFramebufferWriteBytes();
+    if (!hleProfileHasActivity(s_hleProfile, fbWrites, fbWriteBytes) &&
+        !runtimeLogShouldPrintEmptyProfile())
+    {
+        lastTicks = now;
+        return;
+    }
 
-    printf("profile hle: lcd_set=%llu lcd_flip=%llu fb_write=%llu/%llub time=%llu gettick=%llu delay_ms=%llu/%llums udelay=%llu/%lluus ostimedly=%llu/%lluticks wave_can=%llu wave_write=%llu/%llub sem=%llu/%llu/%llu task=%llu sys_event=%llu kbd=%llu dl_res=%llu/%llu/%llub\n",
+    printf("profile:hle lcd_set=%llu lcd_flip=%llu fb_write=%llu/%llub time=%llu gettick=%llu delay_ms=%llu/%llums udelay=%llu/%lluus ostimedly=%llu/%lluticks wave_can=%llu wave_write=%llu/%llub sem=%llu/%llu/%llu task=%llu sys_event=%llu kbd=%llu dl_res=%llu/%llu/%llub\n",
         (unsigned long long)s_hleProfile.lcdSetFrame,
         (unsigned long long)s_hleProfile.lcdFlip,
         (unsigned long long)fbWrites,
@@ -283,10 +302,17 @@ void bridge_apply_runtime_settings(void)
         }
     }
 
-    s_bridgeProfileEnabled.store(getenv("DINGOO_PIE_PROFILE") != NULL);
+    s_bridgeProfileEnabled.store(runtimeLogProfileEnabled());
     s_runtimeSpeedScale.store(runtimeScale);
     s_runtimeSpeedScaleForced.store(runtimeScaleForced);
     s_hostDelayScale.store(delayScale);
+
+    pthread_mutex_lock(&s_runtimeContextsMutex);
+    for (size_t i = 0; i < s_runtimeContexts.size(); ++i)
+    {
+        nativeRuntimeApplyProfileSettings(s_runtimeContexts[i].runtime);
+    }
+    pthread_mutex_unlock(&s_runtimeContextsMutex);
 }
 
 static double runtimeSpeedScale(void)
@@ -671,7 +697,7 @@ static void br__to_locale_ansi(NativeRuntime* runtime)
     RuntimeError err = nativeRuntimeReadMemory(runtime, inInputpPtr, wideBuf, sizeof(wideBuf) - sizeof(uint16_t));
     if (err)
     {
-        printf("Failed on nativeRuntimeReadMemory(__to_locale_ansi) with error returned: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("hle: nativeRuntimeReadMemory(__to_locale_ansi) failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
         br_return_zero(runtime);
         return;
     }
@@ -688,7 +714,7 @@ static void br__to_locale_ansi(NativeRuntime* runtime)
     err = nativeRuntimeWriteMemory(runtime, inInputpPtr, ansiBuf, (uint32_t)(out + 1));
     if (err)
     {
-        printf("Failed on nativeRuntimeWriteMemory(__to_locale_ansi) with error returned: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("hle: nativeRuntimeWriteMemory(__to_locale_ansi) failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
         br_return_zero(runtime);
         return;
     }
@@ -804,11 +830,117 @@ struct DingooSemaphore
 
 static DingooSemaphore* s_semaphore_map[128] = { NULL };
 
-static bool dingooSemaphorePend(DingooSemaphore* sem)
+uint32_t bridge_semaphore_state_count(void)
+{
+    return (uint32_t)(sizeof(s_semaphore_map) / sizeof(s_semaphore_map[0]));
+}
+
+void bridge_capture_semaphore_counts(uint32_t* out, uint32_t count)
+{
+    if (!out || count == 0)
+    {
+        return;
+    }
+
+    uint32_t capacity = bridge_semaphore_state_count();
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        uint32_t value = 0;
+        if (i < capacity)
+        {
+            DingooSemaphore* sem = s_semaphore_map[i];
+            if (sem)
+            {
+                pthread_mutex_lock(&sem->mutex);
+                value = sem->count.load(std::memory_order_acquire);
+                pthread_mutex_unlock(&sem->mutex);
+            }
+        }
+        out[i] = value;
+    }
+}
+
+bool bridge_restore_semaphore_counts(const uint32_t* counts, uint32_t count)
+{
+    if (!counts || count != bridge_semaphore_state_count())
+    {
+        return false;
+    }
+
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        DingooSemaphore* sem = s_semaphore_map[i];
+        if (!sem)
+        {
+            if (counts[i] != 0)
+            {
+                printf("hle: restore semaphore missing index=%u count=%u\n",
+                    (unsigned int)i, (unsigned int)counts[i]);
+                return false;
+            }
+            continue;
+        }
+
+        pthread_mutex_lock(&sem->mutex);
+        sem->count.store(counts[i], std::memory_order_release);
+        pthread_cond_broadcast(&sem->cond);
+        pthread_mutex_unlock(&sem->mutex);
+    }
+    return true;
+}
+
+void bridge_notify_state_restored(void)
+{
+    for (size_t i = 0; i < sizeof(s_semaphore_map) / sizeof(s_semaphore_map[0]); ++i)
+    {
+        DingooSemaphore* sem = s_semaphore_map[i];
+        if (!sem)
+        {
+            continue;
+        }
+        pthread_mutex_lock(&sem->mutex);
+        pthread_cond_broadcast(&sem->cond);
+        pthread_mutex_unlock(&sem->mutex);
+    }
+}
+
+static bool waitHlePauseResume(NativeRuntime* runtime, uint32_t waitRestoreGeneration)
+{
+    (void)runtime;
+    if (waitRestoreGeneration != pauseGateRestoreGeneration())
+    {
+        return false;
+    }
+    if (pauseGateWaitForResume() && waitRestoreGeneration != pauseGateRestoreGeneration())
+    {
+        return false;
+    }
+    return true;
+}
+
+static timespec hostTimespecAfterMillis(uint32_t millis)
+{
+    using namespace std::chrono;
+    system_clock::time_point deadline = system_clock::now() + milliseconds(millis);
+    seconds deadlineSeconds = duration_cast<seconds>(deadline.time_since_epoch());
+    nanoseconds deadlineNanoseconds = duration_cast<nanoseconds>(
+        deadline.time_since_epoch() - deadlineSeconds);
+
+    timespec ts;
+    ts.tv_sec = (time_t)deadlineSeconds.count();
+    ts.tv_nsec = (long)deadlineNanoseconds.count();
+    return ts;
+}
+
+static bool dingooSemaphorePend(DingooSemaphore* sem, NativeRuntime* runtime, bool* interrupted)
 {
     if (!sem)
     {
         return false;
+    }
+    if (interrupted)
+    {
+        *interrupted = false;
     }
 
     uint32_t current = sem->count.load(std::memory_order_acquire);
@@ -823,10 +955,21 @@ static bool dingooSemaphorePend(DingooSemaphore* sem)
         }
     }
 
+    uint32_t waitRestoreGeneration = pauseGateRestoreGeneration();
     pthread_mutex_lock(&sem->mutex);
     while ((current = sem->count.load(std::memory_order_acquire)) == 0)
     {
-        pthread_cond_wait(&sem->cond, &sem->mutex);
+        if (!waitHlePauseResume(runtime, waitRestoreGeneration))
+        {
+            if (interrupted)
+            {
+                *interrupted = true;
+            }
+            pthread_mutex_unlock(&sem->mutex);
+            return false;
+        }
+        timespec deadline = hostTimespecAfterMillis(10);
+        pthread_cond_timedwait(&sem->cond, &sem->mutex, &deadline);
     }
     sem->count.store(current - 1, std::memory_order_release);
     pthread_mutex_unlock(&sem->mutex);
@@ -860,14 +1003,14 @@ static void br_OSSemCreate(NativeRuntime* runtime)
     DingooSemaphore* sem = (DingooSemaphore*)malloc(sizeof(DingooSemaphore));
     if (!sem)
     {
-        printf("Failed malloc for semaphore\n");
+        printf("hle: failed to allocate semaphore\n");
         assert(0);
     }
     int mutexRet = pthread_mutex_init(&sem->mutex, NULL);
     int condRet = pthread_cond_init(&sem->cond, NULL);
     if (mutexRet || condRet)
     {
-        printf("Failed semaphore init mutex=%d cond=%d\n", mutexRet, condRet);
+        printf("hle: semaphore init failed mutex=%d cond=%d\n", mutexRet, condRet);
         assert(0);
     }
     sem->count.store(cnt, std::memory_order_release);
@@ -880,7 +1023,7 @@ static void br_OSSemCreate(NativeRuntime* runtime)
     }
     if (index >= sizeof(s_semaphore_map) / sizeof(s_semaphore_map[0]))
     {
-        printf("Failed sem_init with error : %u, index %d \n", errno, index);
+        printf("hle: semaphore slot allocation failed errno=%u index=%d\n", errno, index);
         assert(0);
     }
     s_semaphore_map[index] = sem;
@@ -911,9 +1054,14 @@ static void br_OSSemPend(NativeRuntime* runtime)
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A2, &errorPtr);
 
     DingooSemaphore* sem = s_semaphore_map[eventVal];
-    if (!dingooSemaphorePend(sem))
+    bool interrupted = false;
+    if (!dingooSemaphorePend(sem, runtime, &interrupted))
     {
-        printf("Failed semaphore pend index=%u timeout=%u\n", eventVal, timeout);
+        if (interrupted)
+        {
+            return;
+        }
+        printf("hle: semaphore pend failed index=%u timeout=%u\n", eventVal, timeout);
         assert(0);
     }
 
@@ -938,7 +1086,7 @@ static void br_OSSemPost(NativeRuntime* runtime)
     DingooSemaphore* sem = s_semaphore_map[eventVal];
     if (!dingooSemaphorePost(sem))
     {
-        printf("Failed semaphore post index=%u\n", eventVal);
+        printf("hle: semaphore post failed index=%u\n", eventVal);
         assert(0);
     }
 
@@ -950,16 +1098,21 @@ static void br_OSSemPost(NativeRuntime* runtime)
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &pc);
 }
 
-bool bridge_fast_os_sem_pend(uint32_t eventVal, uint32_t timeout, uint32_t errorPtr)
+bool bridge_fast_os_sem_pend(uint32_t eventVal, uint32_t timeout, uint32_t errorPtr,
+    NativeRuntime* runtime, bool* interrupted)
 {
     (void)timeout;
+    if (interrupted)
+    {
+        *interrupted = false;
+    }
     if (eventVal >= sizeof(s_semaphore_map) / sizeof(s_semaphore_map[0]) || !s_semaphore_map[eventVal])
     {
         return false;
     }
 
     s_hleProfile.semPend++;
-    if (!dingooSemaphorePend(s_semaphore_map[eventVal]))
+    if (!dingooSemaphorePend(s_semaphore_map[eventVal], runtime, interrupted))
     {
         return false;
     }
@@ -1059,7 +1212,7 @@ static void br_waveout_write(NativeRuntime* runtime)
     s_hleProfile.waveWriteBytes += count;
 
     uint32_t ret = 1;
-    if (!waveout_drops_audio())
+    if (!waveout_skips_audio_output())
     {
         void* src = toHostPtr(bufferPtr);
         if (src && count > 0)
@@ -1125,7 +1278,7 @@ bool bridge_fast_waveout_write(uint32_t instPtr, uint32_t bufferPtr, uint32_t co
     s_hleProfile.waveWriteBytes += count;
 
     uint32_t ret = 1;
-    if (!waveout_drops_audio())
+    if (!waveout_skips_audio_output())
     {
         void* src = toHostPtr(bufferPtr);
         if (!src || count == 0)
@@ -1348,7 +1501,14 @@ static void br_fread(NativeRuntime* runtime)
             void* buff = toHostPtr(ptr);
             if (buff)
             {
+                bool shouldRecordResourceLoad = runtimeResourceMonitorIsCapturing();
+                uint32_t positionBefore = shouldRecordResourceLoad ?
+                    fsys_stream_position(_file->data) : 0;
                 read_ret = vm_fread(buff, size, count, _file->data);
+                if (shouldRecordResourceLoad && read_ret != (uint32_t)-1)
+                {
+                    fsys_record_load_to_guest(_file->data, ptr, buff, positionBefore);
+                }
             }
             else
             {
@@ -1357,7 +1517,7 @@ static void br_fread(NativeRuntime* runtime)
         }
         else
         {
-            printf("Failed br_fread with: %d\n", _file->type);
+            printf("hle: br_fread failed type=%d\n", _file->type);
             assert(0);
         }
     }
@@ -1497,7 +1657,14 @@ static void br_fsys_fread(NativeRuntime* runtime)
     void* buff = toHostPtr(ptr);
     if (buff)
     {
+        bool shouldRecordResourceLoad = runtimeResourceMonitorIsCapturing();
+        uint32_t positionBefore = shouldRecordResourceLoad ?
+            fsys_stream_position(stream) : 0;
         read_ret = vm_fread(buff, size, count, stream);
+        if (shouldRecordResourceLoad && read_ret != (uint32_t)-1)
+        {
+            fsys_record_load_to_guest(stream, ptr, buff, positionBefore);
+        }
     }
     else
     {
@@ -1733,7 +1900,7 @@ static void br_fseek(NativeRuntime* runtime)
         }
         else
         {
-            printf("Failed br_fseek with: %d\n", _file->type);
+            printf("hle: br_fseek failed type=%d\n", _file->type);
             assert(0);
         }
     }
@@ -1880,6 +2047,14 @@ static void br_dl_res_open(NativeRuntime* runtime)
                 s_dl_res_handles[i].dataPtr = 0;
                 s_dl_res_handles[i].offset = 0;
                 ret = i;
+                if (runtimeResourceMonitorIsCapturing())
+                {
+                    runtimeResourceMonitorRecordOpen(
+                        RUNTIME_RESOURCE_MONITOR_SOURCE_DL_RES,
+                        name,
+                        entry,
+                        entry->decoded_data || !entry->xor_key);
+                }
                 break;
             }
         }
@@ -1958,6 +2133,16 @@ static void br_dl_res_get_data(NativeRuntime* runtime)
                 ret = readLen ? (copySize / readLen) : copySize;
                 s_hleProfile.dlResRead++;
                 s_hleProfile.dlResReadBytes += copySize;
+                if (runtimeResourceMonitorIsCapturing())
+                {
+                    runtimeResourceMonitorRecordLoadContent(
+                        RUNTIME_RESOURCE_MONITOR_SOURCE_DL_RES,
+                        h->entry,
+                        bufferPtr,
+                        dst,
+                        copySize,
+                        h->offset);
+                }
                 if (shouldTraceHle() || shouldTraceCopy(bufferPtr, copySize))
                 {
                     printf("trace-hle: dl_res_get_data handle=%u buffer=0x%08x buffLen=%u readLen=%u copy=%u ret=%u offset=0x%08x\n",
@@ -1972,7 +2157,21 @@ static void br_dl_res_get_data(NativeRuntime* runtime)
                 h->dataPtr = vm_malloc(h->entry->size);
                 if (h->dataPtr)
                 {
-                    memcpy(toHostPtr(h->dataPtr), resourceData, h->entry->size);
+                    void* dst = toHostPtr(h->dataPtr);
+                    if (dst)
+                    {
+                        memcpy(dst, resourceData, h->entry->size);
+                        if (runtimeResourceMonitorIsCapturing())
+                        {
+                            runtimeResourceMonitorRecordLoadContent(
+                                RUNTIME_RESOURCE_MONITOR_SOURCE_DL_RES,
+                                h->entry,
+                                h->dataPtr,
+                                dst,
+                                h->entry->size,
+                                h->entry->size);
+                        }
+                    }
                 }
             }
             ret = h->dataPtr;
@@ -1999,6 +2198,15 @@ static void br_dl_res_close(NativeRuntime* runtime)
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &handle);
     if (handle < sizeof(s_dl_res_handles) / sizeof(s_dl_res_handles[0]))
     {
+        if (s_dl_res_handles[handle].entry)
+        {
+            if (runtimeResourceMonitorIsCapturing())
+            {
+                runtimeResourceMonitorRecordClose(
+                    RUNTIME_RESOURCE_MONITOR_SOURCE_DL_RES,
+                    s_dl_res_handles[handle].entry);
+            }
+        }
         if (s_dl_res_handles[handle].dataPtr)
         {
             vm_free(s_dl_res_handles[handle].dataPtr);
@@ -2332,7 +2540,16 @@ static void profilePrintHookTopAndReset(void)
         }
     }
 
-    printf("profile hle top:");
+    if (!top[0].count && !runtimeLogShouldPrintEmptyProfile())
+    {
+        for (int i = 0; i < sizeof(_hook_code_func_map) / sizeof(_hook_code_func_map[0]); ++i)
+        {
+            _hook_code_func_map[i].profile_times = 0;
+        }
+        return;
+    }
+
+    printf("profile:hle-top");
     for (int i = 0; i < 5 && top[i].count; ++i)
     {
         printf(" %s=%u", top[i].name ? top[i].name : "<unnamed>", top[i].count);
@@ -2352,7 +2569,7 @@ static void hook_code(NativeRuntime* runtime, uint64_t address, uint32_t size, v
     (void)size;
     static uint64_t lastTicks = 0;
     static uint64_t bridgeCalls = 0;
-    if (s_bridgeProfileEnabled.load())
+    if (runtimeLogProfileEnabled() && s_bridgeProfileEnabled.load())
     {
         uint64_t now = SDL_GetTicks64();
         if (!lastTicks)
@@ -2360,9 +2577,11 @@ static void hook_code(NativeRuntime* runtime, uint64_t address, uint32_t size, v
             lastTicks = now;
         }
         bridgeCalls++;
-        if (now - lastTicks >= 1000)
+        uint64_t elapsedMs = now - lastTicks;
+        if (elapsedMs >= runtimeLogProfileIntervalMs())
         {
-            printf("profile bridge: calls=%llu/s\n", (unsigned long long)bridgeCalls);
+            printf("profile:bridge calls=%llu/s\n",
+                (unsigned long long)runtimeLogRatePerSecond(bridgeCalls, elapsedMs));
             profilePrintAndReset(now);
             profilePrintHookTopAndReset();
             bridgeCalls = 0;
@@ -2423,11 +2642,16 @@ static void hook_code(NativeRuntime* runtime, uint64_t address, uint32_t size, v
             nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &eventVal);
             nativeRuntimeReadRegister(runtime, RUNTIME_REG_A1, &timeout);
             nativeRuntimeReadRegister(runtime, RUNTIME_REG_A2, &errorPtr);
-            if (bridge_fast_os_sem_pend(eventVal, timeout, errorPtr))
+            bool interrupted = false;
+            if (bridge_fast_os_sem_pend(eventVal, timeout, errorPtr, runtime, &interrupted))
             {
                 uint32_t ret = OS_NO_ERR;
                 nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ret);
                 returnToRa(runtime);
+                return;
+            }
+            if (interrupted)
+            {
                 return;
             }
         }
@@ -2540,9 +2764,9 @@ static void hooks_init(NativeRuntime* runtime, app* _app)
         }
     }
 
-    if (s_bridgeProfileEnabled.load())
+    if (runtimeLogProfileEnabled() && s_bridgeProfileEnabled.load())
     {
-        printf("profile bridge: direct hooks=%u unknown_imports=%u\n", hookCount, unknownCount);
+        printf("profile:bridge direct_hooks=%u unknown_imports=%u\n", hookCount, unknownCount);
     }
 }
 
@@ -2564,4 +2788,3 @@ RuntimeError bridge_init_task(NativeRuntime* runtime, app* _app, bool isMainRunt
 
 	return RUNTIME_OK;
 }
-

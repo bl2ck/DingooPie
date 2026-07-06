@@ -13,6 +13,6 @@ void platformBeginHighResolutionTiming(void);
 void platformEndHighResolutionTiming(void);
 std::string platformWideToUtf8(const std::wstring& text);
 std::wstring platformUtf8ToWide(const std::string& text);
+unsigned long platformWin32NormalizeChildStyle(const wchar_t* className, unsigned long style);
 
 #endif
-

@@ -30,4 +30,3 @@ EmulatorOptions loadEmulatorOptions(void)
     }
     return options;
 }
-

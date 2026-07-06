@@ -88,6 +88,9 @@ static const CompatTaskStopExitRule kTaskStopExitRules[] =
     // TiandiDao.app: quit-confirm path stops a subtask through OSTaskDel at this return address.
     { "6FA335AD49FE2FE68E6ECE552D72C2DEC352E715B7255FDCE9AED88248FB2C23", 0x80a6e578u, COMPAT_TASK_STOP_EXIT_ALWAYS, "TiandiDao task-stop exit" },
 
+    // TiandiDaoII.app: quit-confirm path stops a subtask through OSTaskDel at this return address.
+    { "0739C0D6F6C82EE4333D6B627EFFC7F827EC84150C6859AE1F1572118AFDC897", 0x80a72658u, COMPAT_TASK_STOP_EXIT_ALWAYS, "TiandiDaoII task-stop exit" },
+
     // ZhanshenXingtian.app: quit-confirm path stops a subtask through OSTaskDel at this return address.
     { "71C10376DEDEEB30607D9C332F883FF549962094311A967618C9C323A2C18331", 0x80a3d1c8u, COMPAT_TASK_STOP_EXIT_ALWAYS, "ZhanshenXingtian task-stop exit" },
 

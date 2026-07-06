@@ -52,7 +52,7 @@ static int mapAliasIfNeeded(NativeRuntime* runtime, uint32_t addr, uint32_t size
     RuntimeError err = nativeRuntimeMapMemory(runtime, alias, size, RUNTIME_PROT_ALL, ptr);
     if (err)
     {
-        printf("Failed mem map alias %s: 0x%08x size 0x%08x: %u (%s)\n",
+        printf("memory: failed to map alias %s addr=0x%08x size=0x%08x: %u (%s)\n",
             name, alias, size, err, nativeRuntimeErrorString(err));
         return -1;
     }
@@ -209,7 +209,7 @@ int InitVmMem(NativeRuntime *runtime, app *_app)
 
 	if (VM_APP_BEGIN_ADDRESS != _app->origin)
 	{
-		printf("InitVmMem invalid origin 0x%08x \n", _app->origin);
+		printf("memory: InitVmMem invalid origin 0x%08x\n", _app->origin);
 		return -1;
 	}
 
@@ -224,7 +224,7 @@ int InitVmMem(NativeRuntime *runtime, app *_app)
 	err = nativeRuntimeMapMemory(runtime, s_Heap_Begin_Address, VM_HEAP_SIZE, RUNTIME_PROT_ALL, s_HeapMemPtr);
 	if (err)
 	{
-		printf("Failed mem map s_HeapMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
+		printf("memory: failed to map s_HeapMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
 		return -1;
 	}
 	if (mapAliasIfNeeded(runtime, s_Heap_Begin_Address, VM_HEAP_SIZE, s_HeapMemPtr, "s_HeapMemPtr"))
@@ -236,7 +236,7 @@ int InitVmMem(NativeRuntime *runtime, app *_app)
 	err = nativeRuntimeMapMemory(runtime, VM_STACK_UPPER_ADDRESS - VM_STACK_SIZE, VM_STACK_SIZE, RUNTIME_PROT_ALL, s_StackMemPtr);
 	if (err)
 	{
-		printf("Failed mem map s_StackMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
+		printf("memory: failed to map s_StackMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
 		return -1;
 	}
 	if (mapAliasIfNeeded(runtime, VM_STACK_UPPER_ADDRESS - VM_STACK_SIZE, VM_STACK_SIZE, s_StackMemPtr, "s_StackMemPtr"))
@@ -253,7 +253,7 @@ int InitVmMem(NativeRuntime *runtime, app *_app)
 	err = nativeRuntimeMapMemory(runtime, CPU_REGISTER_BASE_ADDR, CPU_REGISTER_SIZE, RUNTIME_PROT_ALL, s_RegisterMemPtr);
 	if (err)
 	{
-		printf("Failed mem map s_RegisterMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
+		printf("memory: failed to map s_RegisterMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
 		return -1;
 	}
 	if (mapAliasIfNeeded(runtime, CPU_REGISTER_BASE_ADDR, CPU_REGISTER_SIZE, s_RegisterMemPtr, "s_RegisterMemPtr"))
@@ -271,7 +271,7 @@ int InitVmMemSubTask(NativeRuntime* runtime)
     err = nativeRuntimeMapMemory(runtime, s_Heap_Begin_Address, VM_HEAP_SIZE, RUNTIME_PROT_ALL, s_HeapMemPtr);
     if (err)
     {
-        printf("Failed mem map s_HeapMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("memory: failed to map s_HeapMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
         return -1;
     }
     if (mapAliasIfNeeded(runtime, s_Heap_Begin_Address, VM_HEAP_SIZE, s_HeapMemPtr, "s_HeapMemPtr"))
@@ -282,7 +282,7 @@ int InitVmMemSubTask(NativeRuntime* runtime)
     err = nativeRuntimeMapMemory(runtime, VM_STACK_UPPER_ADDRESS - VM_STACK_SIZE, VM_STACK_SIZE, RUNTIME_PROT_ALL, s_StackMemPtr);
     if (err)
     {
-        printf("Failed mem map s_StackMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("memory: failed to map s_StackMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
         return -1;
     }
     if (mapAliasIfNeeded(runtime, VM_STACK_UPPER_ADDRESS - VM_STACK_SIZE, VM_STACK_SIZE, s_StackMemPtr, "s_StackMemPtr"))
@@ -294,7 +294,7 @@ int InitVmMemSubTask(NativeRuntime* runtime)
     err = nativeRuntimeMapMemory(runtime, CPU_REGISTER_BASE_ADDR, CPU_REGISTER_SIZE, RUNTIME_PROT_ALL, s_RegisterMemPtr);
     if (err)
     {
-        printf("Failed mem map s_RegisterMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("memory: failed to map s_RegisterMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
         return -1;
     }
     if (mapAliasIfNeeded(runtime, CPU_REGISTER_BASE_ADDR, CPU_REGISTER_SIZE, s_RegisterMemPtr, "s_RegisterMemPtr"))
@@ -554,4 +554,3 @@ uint32_t toVmPtr(void* ptr)
     printf("ERR: toVmPtr 0x%x\n", ptr);
     return 0;
 }
-

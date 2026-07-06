@@ -11,6 +11,7 @@ void frontendMenuRefresh(void);
 void frontendMenuRefreshCheats(void);
 bool frontendMenuGameRunning(void);
 void frontendMenuSetGameRunning(bool running);
+void frontendMenuProcessDeferredResourceMonitorOpen(void);
 bool frontendMenuRequestOpenApp(const std::string& appPath);
 bool frontendMenuConsumeRelaunchPath(std::string* outPath);
 bool frontendMenuSaveStateSlotForAutomation(int slot);

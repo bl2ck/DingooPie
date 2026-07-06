@@ -15,6 +15,13 @@ static const uint32_t APP_PACKED_SCAN_ALIGNMENT = 0x1000;
 static const uint32_t APP_PACKED_MIN_VALID_RATIO_NUM = 8;
 static const uint32_t APP_PACKED_MIN_VALID_RATIO_DEN = 10;
 static const uint32_t APP_PACKED_MIN_KNOWN_EXTENSIONS = 8;
+static const uint32_t APP_PACKAGE_INDEX_MAX_TABLES = 8;
+static const uint32_t APP_PACKAGE_INDEX_MAX_COUNT = 65535;
+static const uint32_t APP_PACKAGE_INDEX_SAMPLE_COUNT = 256;
+static const uint32_t APP_PACKAGE_INDEX_SCAN_ALIGNMENT = 0x1000;
+static const uint32_t APP_PACKAGE_INDEX_MIN_VALID_RATIO_NUM = 8;
+static const uint32_t APP_PACKAGE_INDEX_MIN_VALID_RATIO_DEN = 10;
+static const uint32_t APP_PACKAGE_INDEX_MAX_NAME_SIZE = 256;
 
 // Dingoo Technology .app containers are fixed-size little-endian chunks
 // followed by raw MIPS code and optional resource tables. Several header words
@@ -160,6 +167,59 @@ static bool app_resource_append(app* inApp, const char* inName, uint32_t inOffse
 	return true;
 }
 
+static bool app_package_resource_exists(app* inApp, uint32_t inOffset, uint32_t inSize)
+{
+	if (!inApp)
+	{
+		return false;
+	}
+
+	for (uint32_t i = 0; i < inApp->package_resource_count; ++i)
+	{
+		if (inApp->package_resource_data[i].offset == inOffset &&
+			inApp->package_resource_data[i].size == inSize)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool app_package_resource_append(app* inApp, const char* inName, uint32_t inOffset, uint32_t inSize)
+{
+	if (!inApp || !inName || !inName[0] || inSize == 0 ||
+		app_package_resource_exists(inApp, inOffset, inSize))
+	{
+		return false;
+	}
+
+	app_package_resource_entry* resized = (app_package_resource_entry*)realloc(
+		inApp->package_resource_data,
+		sizeof(app_package_resource_entry) * (inApp->package_resource_count + 1));
+	if (!resized)
+	{
+		assert(0);
+		return false;
+	}
+	inApp->package_resource_data = resized;
+
+	size_t nameLen = strlen(inName);
+	app_package_resource_entry* entry =
+		&inApp->package_resource_data[inApp->package_resource_count];
+	memset(entry, 0x00, sizeof(*entry));
+	entry->name = (char*)malloc(nameLen + 1);
+	if (!entry->name)
+	{
+		assert(0);
+		return false;
+	}
+	memcpy(entry->name, inName, nameLen + 1);
+	entry->offset = inOffset;
+	entry->size = inSize;
+	inApp->package_resource_count++;
+	return true;
+}
+
 static bool app_trace_resources_enabled(void)
 {
 	const char* value = getenv("DINGOO_PIE_TRACE_RESOURCES");
@@ -168,7 +228,7 @@ static bool app_trace_resources_enabled(void)
 
 static bool app_resource_name_char_ok(uint8_t c)
 {
-	return c >= 0x20 && c <= 0x7e;
+	return c >= 0x20 && c != 0x7f;
 }
 
 static int app_resource_name_len(const uint8_t* data, uint32_t maxLen)
@@ -206,11 +266,56 @@ static bool app_resource_known_extension(const char* name)
 		ext[i] = (char)tolower((unsigned char)dot[i]);
 	}
 
-	return strcmp(ext, ".war") == 0 ||
-		strcmp(ext, ".pcm") == 0 ||
-		strcmp(ext, ".dat") == 0 ||
-		strcmp(ext, ".txt") == 0 ||
-		strcmp(ext, ".log") == 0;
+	static const char* knownExtensions[] = {
+		".ani",
+		".bin",
+		".bmp",
+		".dat",
+		".exe",
+		".fnt",
+		".fon",
+		".fsm",
+		".gif",
+		".jpeg",
+		".jpg",
+		".log",
+		".map",
+		".mid",
+		".midi",
+		".mp3",
+		".pak",
+		".pcm",
+		".png",
+		".res",
+		".s3dbsp",
+		".s3ddat",
+		".s3dpal",
+		".s3dsty",
+		".sai",
+		".sau",
+		".sbn",
+		".sbp",
+		".script",
+		".sdf",
+		".sdt",
+		".sef",
+		".soj",
+		".spl",
+		".spr",
+		".sst",
+		".stx",
+		".txt",
+		".war",
+		".wav",
+	};
+	for (size_t i = 0; i < sizeof(knownExtensions) / sizeof(knownExtensions[0]); ++i)
+	{
+		if (strcmp(ext, knownExtensions[i]) == 0)
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 typedef struct {
@@ -351,6 +456,385 @@ static void app_parse_packed_resources(app* inApp, uint32_t rawEnd, uint32_t inS
 	{
 		printf("app-loader: packed_resource_tables=%u resources=%u\n", tableCount, inApp->resource_count);
 	}
+}
+
+typedef struct {
+	uint32_t base;
+	uint32_t count;
+	uint32_t count_size;
+	uint32_t name_size;
+	uint32_t record_size;
+	uint32_t table_end;
+	int score;
+} package_resource_table;
+
+typedef struct {
+	char* name;
+	uint32_t offset;
+} package_resource_record;
+
+static bool app_resource_name_has_path_signal(const char* name)
+{
+	if (!name)
+	{
+		return false;
+	}
+	return strchr(name, '\\') != NULL ||
+		strchr(name, '/') != NULL ||
+		strchr(name, ':') != NULL;
+}
+
+static int app_package_index_name_len(const uint8_t* data, uint32_t maxLen)
+{
+	for (uint32_t i = 0; i < maxLen; ++i)
+	{
+		if (data[i] == 0)
+		{
+			for (uint32_t j = i + 1; j < maxLen; ++j)
+			{
+				if (data[j] != 0)
+				{
+					return -1;
+				}
+			}
+			return (int)i;
+		}
+		if (!app_resource_name_char_ok(data[i]))
+		{
+			return -1;
+		}
+	}
+	return -1;
+}
+
+static uint32_t app_package_index_read_count(const uint8_t* data, uint32_t base, uint32_t countSize)
+{
+	return countSize == 2 ? app_read_u16(data, base) : app_read_u32(data, base);
+}
+
+static bool app_package_index_probe(
+	app* inApp,
+	uint32_t base,
+	uint32_t inSize,
+	uint32_t countSize,
+	uint32_t nameSize,
+	package_resource_table* out)
+{
+	if (!inApp || !inApp->file_data || !out ||
+		countSize == 0 || nameSize == 0 ||
+		base + countSize + nameSize + 4 > inSize)
+	{
+		return false;
+	}
+
+	uint32_t recordSize = nameSize + 4;
+	uint32_t count = app_package_index_read_count(inApp->file_data, base, countSize);
+	uint64_t tableSize64 = (uint64_t)countSize + (uint64_t)count * recordSize;
+	if (count < 4 || count > APP_PACKAGE_INDEX_MAX_COUNT ||
+		tableSize64 > UINT32_MAX || (uint64_t)base + tableSize64 > inSize)
+	{
+		return false;
+	}
+
+	uint32_t tableSize = (uint32_t)tableSize64;
+	uint32_t sampleCount = count < APP_PACKAGE_INDEX_SAMPLE_COUNT ?
+		count : APP_PACKAGE_INDEX_SAMPLE_COUNT;
+	uint32_t validNames = 0;
+	uint32_t knownNames = 0;
+	uint32_t pathNames = 0;
+	uint32_t validOffsets = 0;
+	uint32_t orderedOffsets = 0;
+	uint32_t lastOffset = tableSize;
+	char nameBuf[APP_PACKAGE_INDEX_MAX_NAME_SIZE + 1];
+
+	for (uint32_t i = 0; i < sampleCount; ++i)
+	{
+		uint32_t rec = base + countSize + i * recordSize;
+		int nameLen = app_package_index_name_len(inApp->file_data + rec, nameSize);
+		uint32_t relOffset = app_read_u32(inApp->file_data, rec + nameSize);
+		if (relOffset >= tableSize && (uint64_t)base + relOffset < inSize)
+		{
+			validOffsets++;
+			if (relOffset >= lastOffset)
+			{
+				orderedOffsets++;
+			}
+			lastOffset = relOffset;
+		}
+
+		if (nameLen <= 0 || (uint32_t)nameLen > APP_PACKAGE_INDEX_MAX_NAME_SIZE)
+		{
+			continue;
+		}
+
+		memset(nameBuf, 0x00, sizeof(nameBuf));
+		memcpy(nameBuf, inApp->file_data + rec, (size_t)nameLen);
+		validNames++;
+		if (app_resource_known_extension(nameBuf))
+		{
+			knownNames++;
+		}
+		if (app_resource_name_has_path_signal(nameBuf))
+		{
+			pathNames++;
+		}
+	}
+
+	uint32_t minValid =
+		sampleCount * APP_PACKAGE_INDEX_MIN_VALID_RATIO_NUM /
+		APP_PACKAGE_INDEX_MIN_VALID_RATIO_DEN;
+	if (minValid == 0)
+	{
+		minValid = 1;
+	}
+	uint32_t minSignals = sampleCount < 8 ? sampleCount : 8;
+	if (validNames < minValid ||
+		validOffsets < minValid ||
+		orderedOffsets < minValid ||
+		(knownNames < minSignals && pathNames < minSignals))
+	{
+		return false;
+	}
+
+	out->base = base;
+	out->count = count;
+	out->count_size = countSize;
+	out->name_size = nameSize;
+	out->record_size = recordSize;
+	out->table_end = base + tableSize;
+	out->score = (int)(validNames * 2 + validOffsets + orderedOffsets +
+		knownNames * 4 + pathNames);
+	return true;
+}
+
+static bool app_package_index_probe_base(app* inApp, uint32_t base, uint32_t inSize, package_resource_table* out)
+{
+	static const uint32_t countSizes[] = { 2, 4 };
+	static const uint32_t nameSizes[] = { 64, 32, 128, 256 };
+	bool found = false;
+	package_resource_table best;
+	memset(&best, 0x00, sizeof(best));
+
+	for (uint32_t i = 0; i < sizeof(countSizes) / sizeof(countSizes[0]); ++i)
+	{
+		for (uint32_t j = 0; j < sizeof(nameSizes) / sizeof(nameSizes[0]); ++j)
+		{
+			package_resource_table candidate;
+			if (app_package_index_probe(inApp, base, inSize, countSizes[i], nameSizes[j], &candidate) &&
+				(!found || candidate.score > best.score))
+			{
+				best = candidate;
+				found = true;
+			}
+		}
+	}
+
+	if (found && out)
+	{
+		*out = best;
+	}
+	return found;
+}
+
+static void app_package_index_add_candidate(
+	package_resource_table* tables,
+	uint32_t* tableCount,
+	const package_resource_table* candidate)
+{
+	if (!tables || !tableCount || !candidate)
+	{
+		return;
+	}
+
+	for (uint32_t i = 0; i < *tableCount; ++i)
+	{
+		if (candidate->base > tables[i].base && candidate->base < tables[i].table_end)
+		{
+			return;
+		}
+		if (tables[i].base == candidate->base)
+		{
+			if (candidate->score > tables[i].score)
+			{
+				tables[i] = *candidate;
+			}
+			return;
+		}
+	}
+
+	if (*tableCount < APP_PACKAGE_INDEX_MAX_TABLES)
+	{
+		tables[(*tableCount)++] = *candidate;
+	}
+}
+
+static int app_package_resource_offset_compare(const void* a, const void* b)
+{
+	const app_package_resource_entry* left = (const app_package_resource_entry*)a;
+	const app_package_resource_entry* right = (const app_package_resource_entry*)b;
+	if (left->offset < right->offset)
+	{
+		return -1;
+	}
+	if (left->offset > right->offset)
+	{
+		return 1;
+	}
+	return 0;
+}
+
+static int app_package_record_offset_compare(const void* a, const void* b)
+{
+	const package_resource_record* left = (const package_resource_record*)a;
+	const package_resource_record* right = (const package_resource_record*)b;
+	if (left->offset < right->offset)
+	{
+		return -1;
+	}
+	if (left->offset > right->offset)
+	{
+		return 1;
+	}
+	return 0;
+}
+
+static void app_parse_package_table(app* inApp, const package_resource_table* table, uint32_t packageEnd)
+{
+	if (!inApp || !table || table->count == 0 || packageEnd <= table->table_end)
+	{
+		return;
+	}
+
+	package_resource_record* records = (package_resource_record*)malloc(
+		sizeof(package_resource_record) * table->count);
+	if (!records)
+	{
+		assert(0);
+		return;
+	}
+	memset(records, 0x00, sizeof(package_resource_record) * table->count);
+
+	uint32_t validCount = 0;
+	char nameBuf[APP_PACKAGE_INDEX_MAX_NAME_SIZE + 1];
+	for (uint32_t i = 0; i < table->count; ++i)
+	{
+		uint32_t rec = table->base + table->count_size + i * table->record_size;
+		int nameLen = app_package_index_name_len(inApp->file_data + rec, table->name_size);
+		uint32_t relOffset = app_read_u32(inApp->file_data, rec + table->name_size);
+		if (nameLen <= 0 ||
+			(uint32_t)nameLen > APP_PACKAGE_INDEX_MAX_NAME_SIZE ||
+			relOffset < table->table_end - table->base ||
+			(uint64_t)table->base + relOffset >= packageEnd)
+		{
+			continue;
+		}
+
+		memset(nameBuf, 0x00, sizeof(nameBuf));
+		memcpy(nameBuf, inApp->file_data + rec, (size_t)nameLen);
+		records[validCount].name = (char*)malloc((size_t)nameLen + 1);
+		if (!records[validCount].name)
+		{
+			assert(0);
+			continue;
+		}
+		memcpy(records[validCount].name, nameBuf, (size_t)nameLen + 1);
+		records[validCount].offset = table->base + relOffset;
+		validCount++;
+	}
+
+	if (validCount > 1)
+	{
+		qsort(records, validCount, sizeof(records[0]), app_package_record_offset_compare);
+	}
+
+	for (uint32_t i = 0; i < validCount; ++i)
+	{
+		uint32_t nextOffset = packageEnd;
+		for (uint32_t j = i + 1; j < validCount; ++j)
+		{
+			if (records[j].offset > records[i].offset)
+			{
+				nextOffset = records[j].offset;
+				break;
+			}
+		}
+		if (nextOffset > records[i].offset)
+		{
+			app_package_resource_append(
+				inApp,
+				records[i].name,
+				records[i].offset,
+				nextOffset - records[i].offset);
+		}
+		free(records[i].name);
+	}
+
+	free(records);
+}
+
+static void app_parse_package_resource_indexes_at(app* inApp, uint32_t rawEnd, uint32_t inSize)
+{
+	package_resource_table tables[APP_PACKAGE_INDEX_MAX_TABLES];
+	uint32_t tableCount = 0;
+	memset(tables, 0x00, sizeof(tables));
+
+	package_resource_table table;
+	if (app_package_index_probe_base(inApp, rawEnd, inSize, &table))
+	{
+		app_package_index_add_candidate(tables, &tableCount, &table);
+	}
+
+	uint32_t scan = ALIGN(rawEnd, APP_PACKAGE_INDEX_SCAN_ALIGNMENT);
+	for (uint32_t base = scan;
+		base + 6 < inSize && tableCount < APP_PACKAGE_INDEX_MAX_TABLES;
+		base += APP_PACKAGE_INDEX_SCAN_ALIGNMENT)
+	{
+		if (base == rawEnd)
+		{
+			continue;
+		}
+		if (app_package_index_probe_base(inApp, base, inSize, &table))
+		{
+			app_package_index_add_candidate(tables, &tableCount, &table);
+		}
+	}
+
+	for (uint32_t i = 0; i < tableCount; ++i)
+	{
+		uint32_t packageEnd = (i + 1 < tableCount) ? tables[i + 1].base : inSize;
+		app_parse_package_table(inApp, &tables[i], packageEnd);
+	}
+
+	if (inApp->package_resource_count > 1)
+	{
+		qsort(inApp->package_resource_data,
+			inApp->package_resource_count,
+			sizeof(inApp->package_resource_data[0]),
+			app_package_resource_offset_compare);
+	}
+	if (tableCount > 0)
+	{
+		printf("app-loader: package_resource_tables=%u package_resources=%u\n",
+			tableCount, inApp->package_resource_count);
+	}
+}
+
+void app_parse_package_resource_indexes(app* inApp)
+{
+	if (!inApp || !inApp->file_data || inApp->package_resource_index_scanned)
+	{
+		return;
+	}
+
+	inApp->package_resource_index_scanned = true;
+	if (inApp->package_resource_scan_start >= inApp->file_size)
+	{
+		return;
+	}
+	app_parse_package_resource_indexes_at(
+		inApp,
+		inApp->package_resource_scan_start,
+		inApp->file_size);
 }
 
 static int app_resource_name_equal(const char* a, const char* b)
@@ -554,6 +1038,7 @@ app* app_create(FILE* tempFile, uint32_t inSize)
 	tempApp->bin_bss = tempRAWD.prog_size - tempRAWD.size;
 	tempApp->origin = tempRAWD.origin;
 	tempApp->prog_size = tempRAWD.prog_size;
+	tempApp->package_resource_scan_start = tempRAWD.offset + tempRAWD.size;
 
 	if (memcmp(tempERPT.ident, "ERPT", 4) == 0 && tempERPT.offset + 4 <= inSize)
 	{
@@ -668,6 +1153,15 @@ void app_delete(app* inApp)
 			free(inApp->resource_data[i].decoded_data);
 		}
 		free(inApp->resource_data);
+	}
+
+	if (inApp->package_resource_data != NULL)
+	{
+		for (i = 0; i < inApp->package_resource_count; i++)
+		{
+			free(inApp->package_resource_data[i].name);
+		}
+		free(inApp->package_resource_data);
 	}
 
 	if (inApp->bin_data != NULL)

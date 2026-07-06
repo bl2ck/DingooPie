@@ -327,7 +327,7 @@ int InitFb(NativeRuntime* runtime)
             sizeof(s_LcdFrameBufferPtr), RUNTIME_PROT_ALL, s_LcdFrameBufferPtr);
         if (err)
         {
-            printf("Failed mem map s_LcdFrameBufferPtr alias 0x%08x: %u (%s)\n",
+            printf("framebuffer: failed to map s_LcdFrameBufferPtr alias 0x%08x: %u (%s)\n",
                 kLcdFramebufferAliases[i], err, nativeRuntimeErrorString(err));
             return -1;
         }
@@ -451,6 +451,19 @@ void requestFbUpdate(void)
     s_FramebufferCopyMicros.fetch_add(framebufferNowMicros() - beginMicros, std::memory_order_relaxed);
 }
 
+void framebufferPresentRestoredFrame(void)
+{
+    resetFramebufferPacing();
+    std::lock_guard<std::mutex> lock(s_presentedFrameMutex);
+    int nextIndex = s_presentedFrameIndex.load(std::memory_order_relaxed) ^ 1;
+    memcpy(s_presentedFrameBuffers[nextIndex], s_LcdFrameBufferPtr, sizeof(s_presentedFrameBuffers[nextIndex]));
+    uint32_t frameNumber = s_SubmittedFrameCount.fetch_add(1, std::memory_order_acq_rel) + 1;
+    s_SubmittedFrameProfileCount.fetch_add(1, std::memory_order_relaxed);
+    maybeDumpPresentedFrame(s_presentedFrameBuffers[nextIndex], frameNumber);
+    s_presentedFrameIndex.store(nextIndex, std::memory_order_release);
+    s_FbUpdateRequested.store(1, std::memory_order_release);
+}
+
 int consumeFbUpdateRequest(void)
 {
     return s_FbUpdateRequested.exchange(0, std::memory_order_acq_rel);
@@ -526,4 +539,3 @@ uint64_t consumeFramebufferWriteBytes(void)
 {
     return s_FbWriteBytes.exchange(0, std::memory_order_acq_rel);
 }
-

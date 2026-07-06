@@ -5,6 +5,7 @@
 #include "emulator_options.h"
 #include "emulator_settings.h"
 #include "frontend_menu.h"
+#include "runtime_log.h"
 #include "sdl_frontend.h"
 #include "platform_win32.h"
 
@@ -88,7 +89,8 @@ static void applyStartupDebugSettings(EmulatorSettings* settings, bool externalD
         if (!debugLogOpen() && settings->debugProfile)
         {
             settings->debugProfile = false;
-            printf("main: performance log disabled for this run because DingooPie-debug.log could not be opened\n");
+            runtimeLogSetProfileEnabled(false);
+            printf("main: performance log disabled for this run because the debug log could not be opened\n");
         }
     }
     if (settings->showDebugConsole && !debugConsoleOpen())
@@ -110,6 +112,7 @@ int main(int argc, char* argv[])
     setvbuf(stderr, NULL, _IONBF, 0);
 
     EmulatorSettings settings = emulatorLoadSettings();
+    runtimeLogInitialize(settings.debugProfile, runtimeLogEnvEnabled("DINGOO_PIE_PROFILE"));
     applyStartupDebugSettings(&settings, externalDebugLog);
     printf("main: settings loaded last_app=%s debug.show_console=%u debug.profile=%u external_log=%u\n",
         settings.lastAppPath.empty() ? "(empty)" : settings.lastAppPath.c_str(),
@@ -204,4 +207,3 @@ int main(int argc, char* argv[])
     platformEndHighResolutionTiming();
     return 0;
 }
-

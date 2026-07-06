@@ -1,5 +1,7 @@
 #include "guest_filesystem.h"
 #include "compat_profile.h"
+#include "runtime_log.h"
+#include "runtime_resource_monitor.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -21,6 +23,8 @@ typedef struct {
     const uint8_t* data;
     uint8_t* ownedData;
     app_resource_entry* resource;
+    bool isAppPackage;
+    char requestName[1024];
     uint32_t size;
     uint32_t offset;
     uint8_t xor_key;
@@ -90,12 +94,29 @@ static void fsysProfileTick(void)
         lastTicks = now;
         return;
     }
-    if (now - lastTicks < 1000)
+    if (now - lastTicks < runtimeLogProfileIntervalMs())
     {
         return;
     }
 
-    printf("profile fsys: fopen=%llu host=%llu resource=%llu cached=%llu fread=%llu/%llub fseek=%llu fast=%llu/%llub/%llu slow=%llu/%llub/%llu host_io=%llu/%llub/%llu resource_io=%llu/%llub/%llu ftell=%llu feof=%llu fclose=%llu\n",
+    if (!s_fsys_profile.fopenCalls && !s_fsys_profile.hostOpens &&
+        !s_fsys_profile.resourceOpens && !s_fsys_profile.resourceCachedOpens &&
+        !s_fsys_profile.freadCalls && !s_fsys_profile.freadBytes &&
+        !s_fsys_profile.fseekCalls && !s_fsys_profile.fastFreadCalls &&
+        !s_fsys_profile.fastFreadBytes && !s_fsys_profile.fastFseekCalls &&
+        !s_fsys_profile.slowFreadCalls && !s_fsys_profile.slowFreadBytes &&
+        !s_fsys_profile.slowFseekCalls && !s_fsys_profile.hostReadCalls &&
+        !s_fsys_profile.hostReadBytes && !s_fsys_profile.hostSeekCalls &&
+        !s_fsys_profile.resourceReadCalls && !s_fsys_profile.resourceReadBytes &&
+        !s_fsys_profile.resourceSeekCalls && !s_fsys_profile.ftellCalls &&
+        !s_fsys_profile.feofCalls && !s_fsys_profile.fcloseCalls &&
+        !runtimeLogShouldPrintEmptyProfile())
+    {
+        lastTicks = now;
+        return;
+    }
+
+    printf("profile:fsys fopen=%llu host=%llu resource=%llu cached=%llu fread=%llu/%llub fseek=%llu fast=%llu/%llub/%llu slow=%llu/%llub/%llu host_io=%llu/%llub/%llu resource_io=%llu/%llub/%llu ftell=%llu feof=%llu fclose=%llu\n",
         (unsigned long long)s_fsys_profile.fopenCalls,
         (unsigned long long)s_fsys_profile.hostOpens,
         (unsigned long long)s_fsys_profile.resourceOpens,
@@ -276,7 +297,7 @@ static uint32_t alloc_file_slot(void)
         }
     }
 
-    printf("Failed s_FILE_Map with error : %u\n", errno);
+    printf("fsys: s_FILE_Map allocation failed errno=%u\n", errno);
     assert(0);
     return 0;
 }
@@ -476,6 +497,35 @@ static bool shouldCacheHostFile(const char* name, const char* mode)
         _stricmp(dot, ".bin") == 0;
 }
 
+static void setVfileRequestName(vfile_entry_t* entry, const char* name)
+{
+    if (!entry)
+    {
+        return;
+    }
+
+    entry->requestName[0] = 0;
+    if (!name)
+    {
+        return;
+    }
+
+    size_t length = strlen(name);
+    if (length >= sizeof(entry->requestName))
+    {
+        length = sizeof(entry->requestName) - 1;
+    }
+    memcpy(entry->requestName, name, length);
+    entry->requestName[length] = 0;
+}
+
+static bool hostFileMatchesCurrentApp(const uint8_t* data, uint32_t size)
+{
+    return s_fsys_app && data &&
+        size == s_fsys_app->file_size &&
+        memcmp(data, s_fsys_app->file_data, size) == 0;
+}
+
 static uint8_t* readWholeHostFile(FILE* fp, uint32_t* outSize)
 {
     if (!fp || !outSize)
@@ -605,11 +655,19 @@ uint32_t fsys_fopen(const char* name, const char* mode)
             {
                 s_fsys_profile.resourceCachedOpens++;
             }
-        if (traceFsEnabled() || traceFsOpenEnabled())
-        {
-            printf("trace-fs: fopen name=%s mode=%s -> %u resource=%s offset=0x%08x size=0x%08x xor=0x%02x\n",
-                name, mode, index, res->name, res->offset, res->size, res->xor_key);
-            app_trace_resource_candidates(s_fsys_app, name);
+            if (runtimeResourceMonitorIsCapturing())
+            {
+                runtimeResourceMonitorRecordOpen(
+                    RUNTIME_RESOURCE_MONITOR_SOURCE_FSYS,
+                    name,
+                    res,
+                    res->decoded_data || !res->xor_key);
+            }
+            if (traceFsEnabled() || traceFsOpenEnabled())
+            {
+                printf("trace-fs: fopen name=%s mode=%s -> %u resource=%s offset=0x%08x size=0x%08x xor=0x%02x\n",
+                    name, mode, index, res->name, res->offset, res->size, res->xor_key);
+                app_trace_resource_candidates(s_fsys_app, name);
             }
             return index;
         }
@@ -620,6 +678,7 @@ uint32_t fsys_fopen(const char* name, const char* mode)
     {
         uint32_t index = alloc_file_slot();
         s_FILE_Map[index].type = vfile_type_host;
+        setVfileRequestName(&s_FILE_Map[index], name);
         if (shouldCacheHostFile(name, mode))
         {
             uint32_t fileSize = 0;
@@ -630,6 +689,8 @@ uint32_t fsys_fopen(const char* name, const char* mode)
                 s_FILE_Map[index].ownedData = fileData;
                 s_FILE_Map[index].size = fileSize;
                 s_FILE_Map[index].offset = 0;
+                s_FILE_Map[index].isAppPackage =
+                    hostFileMatchesCurrentApp(fileData, fileSize);
                 fclose(fp);
                 fp = NULL;
             }
@@ -651,6 +712,118 @@ uint32_t fsys_fopen(const char* name, const char* mode)
     }
     recordOpenFailure(name, mode);
     return 0;
+}
+
+app_resource_entry* fsys_stream_resource(uint32_t stream)
+{
+    if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
+    {
+        return NULL;
+    }
+
+    vfile_entry_t* entry = &s_FILE_Map[stream];
+    return entry->type == vfile_type_resource ? entry->resource : NULL;
+}
+
+bool fsys_stream_is_app_package(uint32_t stream)
+{
+    if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
+    {
+        return false;
+    }
+
+    vfile_entry_t* entry = &s_FILE_Map[stream];
+    return entry->type == vfile_type_host && entry->isAppPackage;
+}
+
+bool fsys_stream_is_external_file(uint32_t stream)
+{
+    if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
+    {
+        return false;
+    }
+
+    vfile_entry_t* entry = &s_FILE_Map[stream];
+    return entry->type == vfile_type_host && !entry->isAppPackage;
+}
+
+uint32_t fsys_stream_position(uint32_t stream)
+{
+    if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
+    {
+        return 0;
+    }
+
+    vfile_entry_t* entry = &s_FILE_Map[stream];
+    if (entry->type == vfile_type_host && !entry->ownedData && entry->fp)
+    {
+        long pos = ftell(entry->fp);
+        return pos >= 0 ? (uint32_t)pos : 0;
+    }
+    return entry->offset;
+}
+
+const char* fsys_stream_request_name(uint32_t stream)
+{
+    if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
+    {
+        return "";
+    }
+
+    return s_FILE_Map[stream].requestName;
+}
+
+void fsys_record_load_to_guest(
+    uint32_t stream,
+    uint32_t guestAddress,
+    const void* hostData,
+    uint32_t positionBefore)
+{
+    // Resource monitor rows represent bytes that have actually entered guest memory.
+    if (!runtimeResourceMonitorIsCapturing() || !hostData)
+    {
+        return;
+    }
+
+    uint32_t positionAfter = fsys_stream_position(stream);
+    uint32_t bytesLoaded = positionAfter >= positionBefore ?
+        positionAfter - positionBefore : 0;
+    if (bytesLoaded == 0)
+    {
+        return;
+    }
+
+    app_resource_entry* resource = fsys_stream_resource(stream);
+    if (resource)
+    {
+        runtimeResourceMonitorRecordLoadContent(
+            RUNTIME_RESOURCE_MONITOR_SOURCE_FSYS,
+            resource,
+            guestAddress,
+            hostData,
+            bytesLoaded,
+            positionAfter);
+    }
+    else if (fsys_stream_is_app_package(stream))
+    {
+        runtimeResourceMonitorRecordPackageLoadContent(
+            fsys_stream_request_name(stream),
+            positionBefore,
+            guestAddress,
+            hostData,
+            bytesLoaded,
+            positionAfter);
+    }
+    else if (fsys_stream_is_external_file(stream))
+    {
+        runtimeResourceMonitorRecordExternalLoadContent(
+            fsys_stream_request_name(stream),
+            positionBefore,
+            guestAddress,
+            hostData,
+            bytesLoaded,
+            positionAfter);
+    }
 }
 
 uint32_t vm_fread(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
@@ -771,6 +944,27 @@ uint32_t fsys_fclose(uint32_t stream)
         free(entry->ownedData);
         entry->ownedData = NULL;
     }
+    bool shouldRecordResourceEvent = runtimeResourceMonitorIsCapturing();
+    if (entry->type == vfile_type_resource)
+    {
+        if (shouldRecordResourceEvent)
+        {
+            runtimeResourceMonitorRecordClose(
+                RUNTIME_RESOURCE_MONITOR_SOURCE_FSYS,
+                entry->resource);
+        }
+    }
+    else if (entry->type == vfile_type_host)
+    {
+        if (shouldRecordResourceEvent && entry->isAppPackage)
+        {
+            runtimeResourceMonitorRecordPackageClose(entry->requestName);
+        }
+        else if (shouldRecordResourceEvent)
+        {
+            runtimeResourceMonitorRecordExternalClose(entry->requestName);
+        }
+    }
     if (entry->type == vfile_type_host && entry->fp)
     {
         ret = fclose(entry->fp);
@@ -884,6 +1078,13 @@ uint32_t fsys_fseek(uint32_t stream, uint32_t offset, uint32_t origin)
         }
         entry->offset = (uint32_t)next;
         s_fsys_profile.resourceSeekCalls++;
+        if (runtimeResourceMonitorIsCapturing())
+        {
+            runtimeResourceMonitorRecordSeek(
+                RUNTIME_RESOURCE_MONITOR_SOURCE_FSYS,
+                entry->resource,
+                entry->offset);
+        }
         if (fsysInFastHleCall())
         {
             s_fsys_profile.fastFseekCalls++;
@@ -959,6 +1160,13 @@ bool fsys_seek_cached(uint32_t stream, uint32_t offset, uint32_t origin, uint32_
             if (entry->type == vfile_type_resource)
             {
                 s_fsys_profile.resourceSeekCalls++;
+                if (runtimeResourceMonitorIsCapturing())
+                {
+                    runtimeResourceMonitorRecordSeek(
+                        RUNTIME_RESOURCE_MONITOR_SOURCE_FSYS,
+                        entry->resource,
+                        entry->offset);
+                }
             }
             else
             {
@@ -1110,4 +1318,3 @@ uint32_t fsys_feof(uint32_t stream)
     }
     return 0;
 }
-

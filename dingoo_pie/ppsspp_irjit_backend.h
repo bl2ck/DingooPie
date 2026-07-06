@@ -16,6 +16,8 @@ void ppssppShimAttachRuntime(NativeRuntime* runtime);
 void ppssppShimDetachRuntime(NativeRuntime* runtime);
 void ppssppShimSetRuntimeLimit(uint64_t beginTicks, uint64_t maxTicks);
 void ppssppShimRequestStop(void);
+void ppssppShimRequestPause(NativeRuntime* runtime);
+bool ppssppShimWaitForPauseResume(NativeRuntime* runtime);
 void ppssppShimSyncStateToRuntime(NativeRuntime* runtime);
 void ppssppShimSyncStateFromRuntime(NativeRuntime* runtime);
 bool ppssppShimResolveEmuHack(uint32_t address, uint32_t value, uint32_t* original);

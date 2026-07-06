@@ -14,6 +14,8 @@ DingooPie
 2. 通过 `文件 > 打开游戏` 选择 `.app`，或把 `.app` 拖到窗口中。
 3. 最近打开的游戏会显示在 `文件 > 最近游戏`，可在该菜单中清除。
 
+未打开游戏时，窗口会显示 DingooPie 动态背景；打开游戏后会自动切换到游戏画面。
+
 也可以从命令行直接传入游戏路径：
 
 ```bat
@@ -37,16 +39,17 @@ DingooPie.exe "D:\Games\Dingoo\Your Game.app"
 
 ## 菜单
 
-- `文件`：打开游戏、最近游戏、重启、暂停/恢复、保存截图、即时存档/读取存档、退出。
+- `文件`：打开游戏、最近游戏、重启、暂停/恢复、保存截图、保存存档/读取存档、存档管理器、退出。
 - `选项`：视频、音频和输入设置。
-- `设置`：CPU、速度、延迟、金手指功能、语言和恢复默认设置。
-- `调试`：调试控制台、性能日志、内存搜索器、调试器和日志文件。
+- `设置`：CPU、速度、延迟、金手指、语言和恢复默认设置。
+- `调试`：调试控制台、性能日志、打开调试日志、资源监视器、内存搜索器和调试器。
 - `帮助`：版本信息。
 
-设置会自动保存到 `DingooPie.ini`，顺序与菜单设置顺序一致。大多数设置会立即生效；
-修改 CPU 后端时，模拟器会自动重启当前游戏。即时存档有 10 个档位，存档文件名格式为
+设置会自动保存。大多数设置会立即生效；
+修改 CPU 后端时，模拟器会自动重启当前游戏。即时存档有 15 个档位，存档文件名格式为
 `游戏名.slot1.dps`，保存到游戏所在目录旁的 `savestates` 文件夹。菜单会显示
-已有档位的保存时间；保存和读取前都会询问确认。
+已有档位的保存时间；可在 `文件 > 存档管理器` 中查看档位和缩略图，也可保存、读取、删除或打开存档目录。保存和读取前都会询问确认。
+`调试 > 打开调试日志` 会打开当前实例的调试日志。运行时崩溃会额外生成诊断日志。
 
 ## 金手指
 
@@ -56,19 +59,22 @@ DingooPie.exe "D:\Games\Dingoo\Your Game.app"
 使用步骤：
 
 1. 打开对应游戏。
-2. 勾选 `设置 > 启用金手指`。
-3. 在 `设置 > 金手指功能` 中勾选需要的功能。
+2. 勾选 `设置 > 金手指 > 启用金手指`。
+3. 在 `设置 > 金手指` 中勾选需要的功能；也可以打开
+   `设置 > 金手指 > 金手指管理器` 使用列表视图管理。
 
 没有同名 `.cht` 文件时，游戏会正常运行，不需要额外处理。如果金手指文件和
 当前游戏不匹配，模拟器会提示警告并停用该金手指文件。
 具体功能默认不勾选；勾选状态会按游戏保存，下次启动同一游戏会自动恢复，并在勾选后立即尝试应用。
 
-`调试 > 内存搜索器` 可在游戏运行中搜索 u8/u16/u32 数值，用数值变化缩小候选，
-并把选中地址加入下方锁定地址列表后刷新查看当前值、写入一次或复制为 `.cht` 行。
-u8 为 0~255，u16 为 0~65535，u32 为 0~4294967295。
+## 调试工具
 
-`调试 > 调试器` 可在游戏运行中显示反汇编、寄存器、内存、断点命中次数和写入
-监视。断点和写入监视只记录命中 PC/写入值，不会暂停 CPU。
+- `调试 > 调试控制台`：显示调试输出窗口。
+- `调试 > 性能日志`：记录运行时性能统计。
+- `调试 > 打开调试日志`：打开当前实例的调试日志文件。
+- `调试 > 资源监视器`：查看游戏运行中加载的内部资源和外部文件；勾选后会立即打开，之后启动游戏时也会自动打开。
+- `调试 > 内存搜索器`：搜索 u8/u16/u32 数值，用变化条件缩小候选；选中地址可刷新当前值、写入一次或复制为 `.cht` 金手指行。
+- `调试 > 调试器`：显示反汇编、寄存器、内存、断点命中次数和写入监视。断点和写入监视只记录命中，不会暂停 CPU。
 
 English
 -------
@@ -82,6 +88,9 @@ legally obtained `.app` files.
 1. Run `DingooPie.exe`.
 2. Open an `.app` from `File > Open Game`, or drop an `.app` onto the window.
 3. Recent games appear under `File > Recent Games` and can be cleared there.
+
+When no game is open, the window shows the DingooPie animated background; opening
+a game switches to gameplay automatically.
 
 You can also pass a game path on the command line:
 
@@ -106,17 +115,20 @@ SDL GameController-compatible pads are supported. Use
 
 ## Menus
 
-- `File`: open games, recent games, restart, pause/resume, screenshot, save/load state, exit.
+- `File`: open games, recent games, restart, pause/resume, screenshot, Save Slot/Load Slot, Save Manager, exit.
 - `Options`: video, audio, and input settings.
-- `Settings`: CPU, speed, delay, cheats, language, and restore defaults.
-- `Debug`: debug console, performance log, open debug log, Cheat Finder, and Debugger.
+- `Settings`: CPU, speed, delay, Cheats, language, and restore defaults.
+- `Debug`: Debug Console, Performance Log, Open Debug Log, Resource Monitor, Memory Searcher, and Debugger.
 - `Help`: version information.
 
-Settings are saved automatically to `DingooPie.ini` in menu settings order. Most
+Settings are saved automatically. Most
 settings apply immediately. Changing the CPU backend automatically restarts the current game.
-Save states have 10 slots per game, use file names like `GameName.slot1.dps`, and
+Save states have 15 slots per game, use file names like `GameName.slot1.dps`, and
 are stored in a `savestates` folder next to the game file. The menu shows saved
-slot times; saving and loading ask for confirmation first.
+slot times; `File > Save Manager` can view slots and thumbnails, save, load, delete, or open the save-state folder.
+Saving and loading ask for confirmation first.
+`Debug > Open Debug Log` opens the current debug log. Runtime crashes also write
+an additional diagnostic log.
 
 ## Cheats
 
@@ -127,22 +139,24 @@ each `.cht` file named after its game: `GameName.app` uses
 Use cheats:
 
 1. Open the matching game.
-2. Check `Settings > Enable Cheats`.
-3. Select features from `Settings > Cheat Features`.
+2. Check `Settings > Cheats > Enable Cheats`.
+3. Select features from `Settings > Cheats`; use
+   `Settings > Cheats > Cheat Manager` when you want a list view.
 
 If no same-name `.cht` file exists, the game runs normally. If a cheat file does
 not match the current game, DingooPie shows a warning and disables that cheat
 file.
 Individual features start unchecked. Selections are saved per game, restored
 when the same game starts again, and applied immediately when selected.
-`Debug > Cheat Finder` is available while a game is running. It can search
-u8/u16/u32 memory values, narrow candidates by change, add addresses to the
-lower locked list and refresh current values, write one once, and copy it as a
-`.cht` line. u8 is 0-255, u16 is 0-65535, and u32 is 0-4294967295.
-`Debug > Debugger` is available while a game is running. It shows live
-disassembly, registers, memory bytes, breakpoint hit counters, and write
-watches. Breakpoints and write watches record hit PC/value information without
-pausing the CPU.
 
-Version: 1.2
+## Debug Tools
+
+- `Debug > Debug Console`: shows the debug output window.
+- `Debug > Performance Log`: records runtime performance counters.
+- `Debug > Open Debug Log`: opens the current debug log file.
+- `Debug > Resource Monitor`: shows internal resources and external files while a game is running; when checked, it opens immediately and automatically for later games.
+- `Debug > Memory Searcher`: searches u8/u16/u32 memory values and narrows candidates by value changes; selected addresses can be refreshed, written once, or copied as `.cht` cheat lines.
+- `Debug > Debugger`: shows live disassembly, registers, memory bytes, PC hit counters, and write hits. PC hits and write hits only record hits and do not pause the CPU.
+
+Version: 1.5
 Powered by BL2CK Software

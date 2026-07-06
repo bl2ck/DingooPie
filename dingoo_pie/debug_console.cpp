@@ -1,8 +1,10 @@
 #include "debug_console.h"
 
 #include <mutex>
+#include <stdint.h>
 #include <stdio.h>
 #include <string>
+#include <time.h>
 #include <wchar.h>
 
 #ifdef _WIN32
@@ -13,10 +15,59 @@
 #include <io.h>
 #include <process.h>
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 
 static bool g_debugConsoleOpen = false;
 static FILE* g_debugLogFile = NULL;
+static char g_debugLogFileName[64] = "DingooPie-debug-*.log";
+#ifdef _WIN32
+static wchar_t g_debugLogFileNameW[64] = L"DingooPie-debug-*.log";
+#endif
+
+static void debugLogTimestamp(char* out, size_t outSize)
+{
+    if (!out || outSize == 0)
+    {
+        return;
+    }
+
+    time_t raw = time(NULL);
+    struct tm localTime;
+#ifdef _WIN32
+    localtime_s(&localTime, &raw);
+#else
+    localtime_r(&raw, &localTime);
+#endif
+
+    strftime(out, outSize, "%Y%m%d-%H%M%S", &localTime);
+    out[outSize - 1] = '\0';
+}
+
+static unsigned long debugLogProcessId(void)
+{
+#ifdef _WIN32
+    return (unsigned long)GetCurrentProcessId();
+#else
+    return (unsigned long)getpid();
+#endif
+}
+
+static void debugLogTimestampWide(const char* timestamp, wchar_t* out, size_t outSize)
+{
+    if (!timestamp || !out || outSize == 0)
+    {
+        return;
+    }
+
+    size_t i = 0;
+    for (; i + 1 < outSize && timestamp[i]; ++i)
+    {
+        out[i] = (wchar_t)(unsigned char)timestamp[i];
+    }
+    out[i] = L'\0';
+}
 
 #ifdef _WIN32
 static std::mutex g_debugOutputMutex;
@@ -25,6 +76,8 @@ static bool g_debugOutputRouting = false;
 static int g_debugOutputReadFd = -1;
 static HANDLE g_debugConsoleOutput = INVALID_HANDLE_VALUE;
 static bool g_debugConsoleOutputOwned = false;
+static HANDLE g_debugLogMutex = NULL;
+static bool g_debugLogMutexOwned = false;
 
 static std::wstring pathNearExe(const wchar_t* fileName)
 {
@@ -38,6 +91,76 @@ static std::wstring pathNearExe(const wchar_t* fileName)
     }
     path += fileName;
     return path;
+}
+
+static uint64_t hashDebugLogPath(const std::wstring& path)
+{
+    uint64_t hash = 1469598103934665603ull;
+    for (size_t i = 0; i < path.size(); ++i)
+    {
+        wchar_t ch = path[i];
+        if (ch >= L'A' && ch <= L'Z')
+        {
+            ch = (wchar_t)(ch - L'A' + L'a');
+        }
+        hash ^= (uint64_t)ch;
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+static bool tryAcquireDebugLogMutex(const std::wstring& primaryLogPath)
+{
+    if (g_debugLogMutexOwned)
+    {
+        return true;
+    }
+    if (!g_debugLogMutex)
+    {
+        wchar_t mutexName[96] = {};
+        swprintf(mutexName, sizeof(mutexName) / sizeof(mutexName[0]),
+            L"Local\\DingooPieDebugLog-%016llx",
+            (unsigned long long)hashDebugLogPath(primaryLogPath));
+        g_debugLogMutex = CreateMutexW(NULL, FALSE, mutexName);
+        if (!g_debugLogMutex)
+        {
+            return false;
+        }
+    }
+    DWORD wait = WaitForSingleObject(g_debugLogMutex, 0);
+    if (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED)
+    {
+        g_debugLogMutexOwned = true;
+        return true;
+    }
+    return false;
+}
+
+static void buildDebugLogFileName(char* out, size_t outSize, const char* timestamp)
+{
+    if (!out || outSize == 0 || !timestamp)
+    {
+        return;
+    }
+    snprintf(out, outSize, "DingooPie-debug-%s-%lu.log",
+        timestamp, debugLogProcessId());
+    out[outSize - 1] = '\0';
+}
+
+static void buildDebugLogFileNameWide(wchar_t* out, size_t outSize,
+    const char* timestamp)
+{
+    if (!out || outSize == 0 || !timestamp)
+    {
+        return;
+    }
+
+    wchar_t timestampWide[32] = {};
+    debugLogTimestampWide(timestamp, timestampWide,
+        sizeof(timestampWide) / sizeof(timestampWide[0]));
+    swprintf(out, outSize, L"DingooPie-debug-%ls-%lu.log",
+        timestampWide, debugLogProcessId());
+    out[outSize - 1] = L'\0';
 }
 
 static bool setDebugConsoleFont(HANDLE output, const wchar_t* faceName)
@@ -62,6 +185,18 @@ static void configureDebugConsoleEncoding(HANDLE output)
     // switching to _O_U8TEXT would make narrow printf calls unstable on MinGW.
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
+
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    if (input != INVALID_HANDLE_VALUE && input != NULL)
+    {
+        DWORD inputMode = 0;
+        if (GetConsoleMode(input, &inputMode))
+        {
+            inputMode |= ENABLE_EXTENDED_FLAGS;
+            inputMode &= ~(ENABLE_QUICK_EDIT_MODE | ENABLE_INSERT_MODE);
+            SetConsoleMode(input, inputMode);
+        }
+    }
 
     if (output != INVALID_HANDLE_VALUE)
     {
@@ -112,6 +247,22 @@ static bool ensureDebugStreamOpen(FILE* stream, const char* mode)
     return fd >= 0 && _get_osfhandle(fd) != -1;
 }
 
+static HANDLE duplicateDebugOutputHandle(HANDLE output)
+{
+    if (output == INVALID_HANDLE_VALUE || output == NULL)
+    {
+        return INVALID_HANDLE_VALUE;
+    }
+
+    HANDLE duplicate = INVALID_HANDLE_VALUE;
+    if (!DuplicateHandle(GetCurrentProcess(), output, GetCurrentProcess(),
+        &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS))
+    {
+        return INVALID_HANDLE_VALUE;
+    }
+    return duplicate;
+}
+
 static unsigned __stdcall debugOutputPump(void*)
 {
     char buffer[4096];
@@ -123,16 +274,24 @@ static unsigned __stdcall debugOutputPump(void*)
             break;
         }
 
-        std::lock_guard<std::mutex> lock(g_debugOutputMutex);
-        if (g_debugLogFile)
+        HANDLE consoleOutput = INVALID_HANDLE_VALUE;
         {
-            fwrite(buffer, 1, (size_t)got, g_debugLogFile);
-            fflush(g_debugLogFile);
+            std::lock_guard<std::mutex> lock(g_debugOutputMutex);
+            if (g_debugLogFile)
+            {
+                fwrite(buffer, 1, (size_t)got, g_debugLogFile);
+                fflush(g_debugLogFile);
+            }
+            if (g_debugConsoleOpen && g_debugConsoleOutput != INVALID_HANDLE_VALUE)
+            {
+                consoleOutput = duplicateDebugOutputHandle(g_debugConsoleOutput);
+            }
         }
-        if (g_debugConsoleOpen && g_debugConsoleOutput != INVALID_HANDLE_VALUE)
+        if (consoleOutput != INVALID_HANDLE_VALUE)
         {
             DWORD written = 0;
-            WriteFile(g_debugConsoleOutput, buffer, (DWORD)got, &written, NULL);
+            WriteFile(consoleOutput, buffer, (DWORD)got, &written, NULL);
+            CloseHandle(consoleOutput);
         }
     }
     return 0;
@@ -217,6 +376,19 @@ static bool ensureDebugOutputRouting(void)
 }
 #endif
 
+#ifndef _WIN32
+static void buildDebugLogFileName(char* out, size_t outSize, const char* timestamp)
+{
+    if (!out || outSize == 0 || !timestamp)
+    {
+        return;
+    }
+    snprintf(out, outSize, "DingooPie-debug-%s-%lu.log",
+        timestamp, debugLogProcessId());
+    out[outSize - 1] = '\0';
+}
+#endif
+
 bool debugLogOpen(void)
 {
 #ifdef _WIN32
@@ -225,7 +397,16 @@ bool debugLogOpen(void)
         return true;
     }
 
-    std::wstring logPath = pathNearExe(L"DingooPie-debug.log");
+    char timestamp[32] = {};
+    wchar_t logFileNameW[64] = {};
+    debugLogTimestamp(timestamp, sizeof(timestamp));
+    buildDebugLogFileName(g_debugLogFileName, sizeof(g_debugLogFileName), timestamp);
+    buildDebugLogFileNameWide(logFileNameW, sizeof(logFileNameW) / sizeof(logFileNameW[0]),
+        timestamp);
+    wcscpy_s(g_debugLogFileNameW, logFileNameW);
+    std::wstring logPath = pathNearExe(logFileNameW);
+    bool logMutexAcquired = tryAcquireDebugLogMutex(logPath);
+
     FILE* out = _wfopen(logPath.c_str(), L"w");
     if (out)
     {
@@ -236,7 +417,7 @@ bool debugLogOpen(void)
         }
         if (!ensureDebugOutputRouting())
         {
-            fprintf(out, "debug-log: failed to route stdout/stderr\n");
+            fprintf(out, "debug-log:route-failed stream=stdout/stderr\n");
             fclose(out);
             std::lock_guard<std::mutex> lock(g_debugOutputMutex);
             g_debugLogFile = NULL;
@@ -244,17 +425,23 @@ bool debugLogOpen(void)
         }
         setvbuf(stdout, NULL, _IONBF, 0);
         setvbuf(stderr, NULL, _IONBF, 0);
-        printf("debug-log: opened path=DingooPie-debug.log routing=pipe\n");
+        // Structured diagnostics use prefix:event followed by compact key=value fields.
+        printf("debug-log:opened file=%s routing=pipe mutex=%s\n",
+            g_debugLogFileName,
+            logMutexAcquired ? "primary" : "unavailable");
     }
     else
     {
-        printf("debug-log: failed to open path=DingooPie-debug.log\n");
+        printf("debug-log:open-failed file=%s\n", g_debugLogFileName);
     }
     return g_debugLogFile != NULL;
 #else
     if (!g_debugLogFile)
     {
-        g_debugLogFile = fopen("DingooPie-debug.log", "w");
+        char timestamp[32] = {};
+        debugLogTimestamp(timestamp, sizeof(timestamp));
+        buildDebugLogFileName(g_debugLogFileName, sizeof(g_debugLogFileName), timestamp);
+        g_debugLogFile = fopen(g_debugLogFileName, "w");
         if (g_debugLogFile)
         {
             setvbuf(g_debugLogFile, NULL, _IONBF, 0);
@@ -272,6 +459,18 @@ FILE* debugLogFile(void)
     }
     return g_debugLogFile ? g_debugLogFile : stdout;
 }
+
+const char* debugLogFileName(void)
+{
+    return g_debugLogFileName;
+}
+
+#ifdef _WIN32
+const wchar_t* debugLogFileNameWide(void)
+{
+    return g_debugLogFileNameW;
+}
+#endif
 
 bool debugConsoleOpen(void)
 {
@@ -303,7 +502,7 @@ bool debugConsoleOpen(void)
         FILE* fp = NULL;
         freopen_s(&fp, "CONIN$", "r", stdin);
         configureDebugConsoleEncoding(output);
-        SetConsoleTitleW(L"DingooPie debug console");
+        SetConsoleTitleW(L"DingooPie Debug Console");
         {
             std::lock_guard<std::mutex> lock(g_debugOutputMutex);
             g_debugConsoleOutput = output;
@@ -322,7 +521,7 @@ bool debugConsoleOpen(void)
 #endif
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
-    printf("debug-console: opened encoding=utf-8 log=%u\n", g_debugLogFile ? 1u : 0u);
+    printf("debug-console:opened encoding=UTF-8 log=%u\n", g_debugLogFile ? 1u : 0u);
     return true;
 }
 
@@ -331,7 +530,7 @@ void debugConsoleClose(void)
 #ifdef _WIN32
     if (g_debugConsoleOpen)
     {
-        printf("debug-console: closing\n");
+        printf("debug-console:closing\n");
         std::lock_guard<std::mutex> lock(g_debugOutputMutex);
         closeDebugConsoleOutputLocked();
         g_debugConsoleOpen = false;

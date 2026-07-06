@@ -31,7 +31,7 @@ BEGIN
             VALUE "OriginalFilename", DINGOO_PIE_ORIGINAL_FILENAME "\0"
             VALUE "ProductName", DINGOO_PIE_PRODUCT_NAME "\0"
             VALUE "ProductVersion", DINGOO_PIE_VERSION_TEXT "\0"
-            VALUE "LegalCopyright", "Copyright © BL2CK 2026\0"
+            VALUE "LegalCopyright", "Copyright © 2026 BL2CK\0"
         END
     END
     BLOCK "VarFileInfo"

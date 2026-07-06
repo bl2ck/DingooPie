@@ -69,4 +69,3 @@ std::string appGuestMainPathFromPath(const std::string& path)
 
     return appNormalizePath(name.c_str());
 }
-

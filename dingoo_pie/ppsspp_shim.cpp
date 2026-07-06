@@ -19,6 +19,8 @@
 #include "sdk_hle.h"
 #include "input_state.h"
 #include "guest_filesystem.h"
+#include "runtime_log.h"
+#include "runtime_resource_monitor.h"
 #include "Common/CPUDetect.h"
 #include "Common/File/FileUtil.h"
 #include "Common/File/VFS/VFS.h"
@@ -60,6 +62,7 @@ static bool g_fastPageDirectEnabled = true;
 static int g_fastPageDirectOverride = -1;
 static bool g_fastFramebufferDirectEnabled = true;
 static std::atomic<bool> g_irjitThrottleEnabled(false);
+static std::atomic<bool> g_runtimePauseRequested(false);
 static std::atomic<double> g_runtimeSpeedScale(0.0);
 static std::atomic<uint32_t> g_irjitThrottleAheadLimitUs(1000000);
 static std::atomic<uint32_t> g_irjitThrottleMaxLagUs(100000);
@@ -467,7 +470,7 @@ void ppssppShimApplyRuntimeSettings(void)
 {
     ppssppShimApplyCpuClockSettings();
     double speedScale = ppssppShimParseSpeedScaleEnv("DINGOO_PIE_RUNTIME_SPEED_SCALE");
-    bool profileEnabled = getenv("DINGOO_PIE_PROFILE") != NULL;
+    bool profileEnabled = runtimeLogProfileEnabled();
 
     // Dingoo SDK timers and delays are handled by HLE by default. Runtime speed
     // scaling opts into wall-clock throttling for animation-sensitive samples.
@@ -666,7 +669,7 @@ static void ppssppShimProfileTick()
         g_ppssppLastProfileTicks = now;
         return;
     }
-    if (now - g_ppssppLastProfileTicks < 1000)
+    if (now - g_ppssppLastProfileTicks < runtimeLogProfileIntervalMs())
     {
         return;
     }
@@ -691,15 +694,28 @@ static void ppssppShimProfileTick()
     bool throttleEnabled = g_irjitThrottleEnabled.load();
     uint32_t aheadLimitUs = g_irjitThrottleAheadLimitUs.load();
 
-    printf("profile irjit: hooks=%llu/s fast_hle=%llu/s fast_lcd=%llu/s fast_audio=%llu/s fast_sem=%llu/s advances=%llu/s reads=%llu/s writes=%llu/s fast_fread=%llu/%llub fast_fseek=%llu guest_mhz=%u throttle=%u throttle_sleep_ms=%llu throttle_ahead_ms=%u clock_hz=%d fb_submit=%llu fb_copy_us=%llu fb_interval_us=%llu/%llu over25=%llu over33=%llu core_ticks=%llu downcount=%d pc=0x%08x ra=0x%08x core=%s\n",
-        (unsigned long long)g_ppssppHookCalls,
-        (unsigned long long)g_ppssppFastHleCalls,
-        (unsigned long long)g_ppssppFastLcdCalls,
-        (unsigned long long)g_ppssppFastAudioCalls,
-        (unsigned long long)g_ppssppFastSemCalls,
-        (unsigned long long)g_ppssppAdvanceCalls,
-        (unsigned long long)g_ppssppReads,
-        (unsigned long long)g_ppssppWrites,
+    if (!g_ppssppHookCalls && !g_ppssppFastHleCalls && !g_ppssppFastLcdCalls &&
+        !g_ppssppFastAudioCalls && !g_ppssppFastSemCalls && !g_ppssppAdvanceCalls &&
+        !g_ppssppReads && !g_ppssppWrites && !g_ppssppFastFreadCalls &&
+        !g_ppssppFastFreadBytes && !g_ppssppFastFseekCalls && !g_ppssppThrottleSleepMs &&
+        !submittedFrames && !framebufferCopyMicros && !avgFrameIntervalMicros &&
+        !maxFrameIntervalMicros && !frameIntervalsOver25ms && !frameIntervalsOver33ms &&
+        !runtimeLogShouldPrintEmptyProfile())
+    {
+        g_ppssppLastProfileCoreTicks = coreTicks;
+        g_ppssppLastProfileTicks = now;
+        return;
+    }
+
+    printf("profile:irjit hooks=%llu/s fast_hle=%llu/s fast_lcd=%llu/s fast_audio=%llu/s fast_sem=%llu/s advances=%llu/s reads=%llu/s writes=%llu/s fast_fread=%llu/%llub fast_fseek=%llu guest_mhz=%u throttle=%u throttle_sleep_ms=%llu throttle_ahead_ms=%u clock_hz=%d fb_submit=%llu fb_copy_us=%llu fb_interval_us=%llu/%llu over25=%llu over33=%llu core_ticks=%llu downcount=%d pc=0x%08x ra=0x%08x core=%s\n",
+        (unsigned long long)runtimeLogRatePerSecond(g_ppssppHookCalls, elapsedMs),
+        (unsigned long long)runtimeLogRatePerSecond(g_ppssppFastHleCalls, elapsedMs),
+        (unsigned long long)runtimeLogRatePerSecond(g_ppssppFastLcdCalls, elapsedMs),
+        (unsigned long long)runtimeLogRatePerSecond(g_ppssppFastAudioCalls, elapsedMs),
+        (unsigned long long)runtimeLogRatePerSecond(g_ppssppFastSemCalls, elapsedMs),
+        (unsigned long long)runtimeLogRatePerSecond(g_ppssppAdvanceCalls, elapsedMs),
+        (unsigned long long)runtimeLogRatePerSecond(g_ppssppReads, elapsedMs),
+        (unsigned long long)runtimeLogRatePerSecond(g_ppssppWrites, elapsedMs),
         (unsigned long long)g_ppssppFastFreadCalls,
         (unsigned long long)g_ppssppFastFreadBytes,
         (unsigned long long)g_ppssppFastFseekCalls,
@@ -1728,6 +1744,9 @@ static bool tryRunFastHle(uint32_t address)
             else if (file.type == _file_type_file)
             {
                 fsys_begin_fast_hle_call();
+                bool shouldRecordResourceLoad = runtimeResourceMonitorIsCapturing();
+                uint32_t positionBefore = shouldRecordResourceLoad ?
+                    fsys_stream_position(file.data) : 0;
                 const uint8_t* cachedData = NULL;
                 uint32_t cachedBytes = 0;
                 uint32_t cachedItems = 0;
@@ -1746,6 +1765,10 @@ static bool tryRunFastHle(uint32_t address)
                 fsys_end_fast_hle_call();
                 if (ret != (uint32_t)-1)
                 {
+                    if (shouldRecordResourceLoad)
+                    {
+                        fsys_record_load_to_guest(file.data, ptr, dst, positionBefore);
+                    }
                     g_ppssppFastFreadCalls++;
                     g_ppssppFastFreadBytes += (uint64_t)ret * (uint64_t)size;
                 }
@@ -1814,6 +1837,9 @@ static bool tryRunFastHle(uint32_t address)
         {
             void* dst = hostPointerCanonical(ptr, bytes);
             fsys_begin_fast_hle_call();
+            bool shouldRecordResourceLoad = runtimeResourceMonitorIsCapturing();
+            uint32_t positionBefore = shouldRecordResourceLoad ?
+                fsys_stream_position(stream) : 0;
             const uint8_t* cachedData = NULL;
             uint32_t cachedBytes = 0;
             uint32_t cachedItems = 0;
@@ -1832,6 +1858,10 @@ static bool tryRunFastHle(uint32_t address)
             fsys_end_fast_hle_call();
             if (dst && ret != (uint32_t)-1)
             {
+                if (shouldRecordResourceLoad)
+                {
+                    fsys_record_load_to_guest(stream, ptr, dst, positionBefore);
+                }
                 g_ppssppFastFreadCalls++;
                 g_ppssppFastFreadBytes += (uint64_t)ret * (uint64_t)size;
             }
@@ -1856,13 +1886,23 @@ static bool tryRunFastHle(uint32_t address)
     }
     else if (address == g_fastHleAddresses.osSemPend)
     {
+        syncPpssppStateToRuntime();
+        bool interrupted = false;
         if (!bridge_fast_os_sem_pend(
             currentMIPS->r[MIPS_REG_A0],
             currentMIPS->r[MIPS_REG_A1],
-            currentMIPS->r[MIPS_REG_A2]))
+            currentMIPS->r[MIPS_REG_A2],
+            g_ppssppRuntime,
+            &interrupted))
         {
+            if (interrupted)
+            {
+                syncRuntimeStateToPpsspp();
+                return true;
+            }
             return false;
         }
+        syncRuntimeStateToPpsspp();
         g_ppssppFastSemCalls++;
         ret = 0;
     }
@@ -1913,6 +1953,7 @@ void ppssppShimAttachRuntime(NativeRuntime* runtime)
 {
     clearEmuHackOriginals();
     g_ppssppRuntime = runtime;
+    g_runtimePauseRequested.store(false, std::memory_order_release);
     g_fastFramebufferDirectEnabled = ppssppShimParseEnabledEnv("DINGOO_PIE_IRJIT_FASTMEM_FB", true);
     rebuildFastMemoryRegions(runtime);
     initVfpuOrder();
@@ -1986,6 +2027,7 @@ void ppssppShimDetachRuntime(NativeRuntime* runtime)
     g_lastFastRegion = (size_t)-1;
     g_runtimeBeginTicks = 0;
     g_runtimeMaxTicks = 0;
+    g_runtimePauseRequested.store(false, std::memory_order_release);
     g_throttleStartTicks.store(0);
     g_throttleStartUs.store(0);
     memset(&g_fastHleAddresses, 0x00, sizeof(g_fastHleAddresses));
@@ -2000,12 +2042,52 @@ void ppssppShimSetRuntimeLimit(uint64_t beginTicks, uint64_t maxTicks)
 void ppssppShimRequestStop(void)
 {
     g_runtimeStopRequested.store(true, std::memory_order_release);
+    g_runtimePauseRequested.store(false, std::memory_order_release);
     coreState = CORE_POWERDOWN;
     coreStatePending = true;
     if (currentMIPS)
     {
         currentMIPS->downcount = -1;
     }
+}
+
+void ppssppShimRequestPause(NativeRuntime* runtime)
+{
+    if (runtime && runtime == g_ppssppRuntime && currentMIPS)
+    {
+        g_runtimePauseRequested.store(true, std::memory_order_release);
+        coreState = CORE_STEPPING_CPU;
+        coreStatePending = true;
+        currentMIPS->downcount = -1;
+    }
+}
+
+bool ppssppShimWaitForPauseResume(NativeRuntime* runtime)
+{
+    if (!runtime || runtime != g_ppssppRuntime ||
+        !g_runtimePauseRequested.exchange(false, std::memory_order_acq_rel))
+    {
+        return false;
+    }
+
+    syncPpssppStateToRuntime();
+    uint32_t restoreGeneration = pauseGateRestoreGeneration();
+    if (pauseGateWaitForResume() &&
+        restoreGeneration != pauseGateRestoreGeneration())
+    {
+        syncRuntimeStateToPpsspp();
+    }
+    if (g_runtimeStopRequested.load(std::memory_order_acquire))
+    {
+        coreState = CORE_POWERDOWN;
+        coreStatePending = true;
+    }
+    else
+    {
+        coreState = CORE_RUNNING_CPU;
+        coreStatePending = false;
+    }
+    return true;
 }
 
 uint32_t ppssppShimRunCodeHook(uint32_t address)
@@ -2018,6 +2100,20 @@ uint32_t ppssppShimRunCodeHook(uint32_t address)
     uint32_t currentAddress = address;
     for (uint32_t pass = 0; pass < 4; ++pass)
     {
+        {
+            uint32_t restoreGeneration = pauseGateRestoreGeneration();
+            if (pauseGateWaitForResume() &&
+                restoreGeneration != pauseGateRestoreGeneration())
+            {
+                syncRuntimeStateToPpsspp();
+                if (currentMIPS->pc != currentAddress)
+                {
+                    currentAddress = currentMIPS->pc;
+                    continue;
+                }
+            }
+        }
+
         bool hasHook = nativeRuntimeHasCodeHook(g_ppssppRuntime, currentAddress);
         if (irjitTraceEnabled() && g_irjitDispatchTraceCount < 128)
         {
@@ -2968,6 +3064,12 @@ void Advance()
     if (g_runtimeStopRequested.load(std::memory_order_acquire))
     {
         coreState = CORE_POWERDOWN;
+    }
+    uint32_t restoreGeneration = pauseGateRestoreGeneration();
+    if (pauseGateWaitForResume() &&
+        restoreGeneration != pauseGateRestoreGeneration())
+    {
+        syncRuntimeStateToPpsspp();
     }
     g_ticks += slicelength;
     if (currentMIPS)

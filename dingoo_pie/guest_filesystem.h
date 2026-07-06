@@ -39,9 +39,18 @@ extern uint32_t fsys_fwrite(void* ptr, uint32_t size, uint32_t count, uint32_t s
 extern uint32_t fsys_feof(uint32_t stream);
 extern bool fsys_read_cached(uint32_t stream, uint32_t size, uint32_t count, const uint8_t** data, uint32_t* bytesRead, uint32_t* itemsRead);
 extern bool fsys_seek_cached(uint32_t stream, uint32_t offset, uint32_t origin, uint32_t* ret);
+extern bool fsys_stream_is_app_package(uint32_t stream);
+extern bool fsys_stream_is_external_file(uint32_t stream);
+extern app_resource_entry* fsys_stream_resource(uint32_t stream);
+extern uint32_t fsys_stream_position(uint32_t stream);
+extern const char* fsys_stream_request_name(uint32_t stream);
+extern void fsys_record_load_to_guest(
+    uint32_t stream,
+    uint32_t guestAddress,
+    const void* hostData,
+    uint32_t positionBefore);
 extern void fsys_begin_fast_hle_call(void);
 extern void fsys_end_fast_hle_call(void);
 extern void fsys_set_profile_enabled(bool enabled);
 
 #endif
-

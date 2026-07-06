@@ -15,6 +15,7 @@
 
 #include "framebuffer.h"
 #include "pause_gate.h"
+#include "runtime_log.h"
 
 struct MemoryRegion
 {
@@ -467,15 +468,23 @@ static bool findExactCodeHookListIndex(NativeRuntime* runtime, uint32_t address,
 
 static void profileInterpreterHook(NativeRuntime* runtime)
 {
-    if (runtime->interpreterProfileEnabled)
+    if (runtime->interpreterProfileEnabled && runtimeLogProfileEnabled())
     {
         runtime->interpreterProfileHooks++;
     }
 }
 
+static void resetInterpreterProfileCounters(NativeRuntime* runtime)
+{
+    runtime->interpreterProfileLastMicros = 0;
+    runtime->interpreterProfileInstructions = 0;
+    runtime->interpreterProfileCheckCountdown = 1;
+    runtime->interpreterProfileHooks = 0;
+}
+
 static void profileInterpreterInstruction(NativeRuntime* runtime)
 {
-    if (!runtime->interpreterProfileEnabled)
+    if (!runtime->interpreterProfileEnabled || !runtimeLogProfileEnabled())
     {
         return;
     }
@@ -495,7 +504,7 @@ static void profileInterpreterInstruction(NativeRuntime* runtime)
     }
 
     uint64_t elapsedMicros = nowMicros - runtime->interpreterProfileLastMicros;
-    if (elapsedMicros >= 1000000)
+    if (elapsedMicros >= runtimeLogProfileIntervalUs())
     {
         uint64_t submittedFrames = consumeFramebufferSubmittedCount();
         uint64_t framebufferCopyMicros = consumeFramebufferCopyMicros();
@@ -508,9 +517,20 @@ static void profileInterpreterInstruction(NativeRuntime* runtime)
         uint64_t avgFrameIntervalMicros = submittedFrames ? totalFrameIntervalMicros / submittedFrames : 0;
         uint64_t ips = (runtime->interpreterProfileInstructions * 1000000ull) / elapsedMicros;
 
-        printf("profile interpreter: ips=%llu hooks=%llu/s fb_submit=%llu fb_copy_us=%llu fb_interval_us=%llu/%llu over25=%llu over33=%llu pc=0x%08x ra=0x%08x\n",
+        if (!ips && !runtime->interpreterProfileHooks && !submittedFrames &&
+            !framebufferCopyMicros && !avgFrameIntervalMicros && !maxFrameIntervalMicros &&
+            !over25msCount && !over33msCount && !runtimeLogShouldPrintEmptyProfile())
+        {
+            runtime->interpreterProfileInstructions = 0;
+            runtime->interpreterProfileHooks = 0;
+            runtime->interpreterProfileLastMicros = nowMicros;
+            return;
+        }
+
+        printf("profile:interpreter ips=%llu hooks=%llu/s fb_submit=%llu fb_copy_us=%llu fb_interval_us=%llu/%llu over25=%llu over33=%llu pc=0x%08x ra=0x%08x\n",
             (unsigned long long)ips,
-            (unsigned long long)runtime->interpreterProfileHooks,
+            (unsigned long long)runtimeLogRatePerSecondUs(
+                runtime->interpreterProfileHooks, elapsedMicros),
             (unsigned long long)submittedFrames,
             (unsigned long long)framebufferCopyMicros,
             (unsigned long long)avgFrameIntervalMicros,
@@ -569,7 +589,7 @@ maybe_print:
         lastMicros = nowMicros;
         return;
     }
-    if (nowMicros - lastMicros < 1000000)
+    if (nowMicros - lastMicros < runtimeLogProfileIntervalUs())
     {
         return;
     }
@@ -591,7 +611,7 @@ maybe_print:
         }
     }
 
-    printf("profile interpreter pc:");
+    printf("profile:interpreter-pc");
     for (uint32_t i = 0; i < sizeof(top) / sizeof(top[0]) && top[i].count; ++i)
     {
         printf(" 0x%08x=%u", top[i].pc, top[i].count);
@@ -1583,15 +1603,27 @@ RuntimeError nativeRuntimeCreate(NativeRuntime** out)
     runtime->cachedFetchRegionValid = false;
     runtime->hasRangedCodeHooks = false;
     runtime->nextHook = 1;
-    runtime->interpreterProfileEnabled = runtimeEnvEnabled("DINGOO_PIE_PROFILE");
-    runtime->interpreterProfileLastMicros = 0;
-    runtime->interpreterProfileInstructions = 0;
-    runtime->interpreterProfileCheckCountdown = 1;
-    runtime->interpreterProfileHooks = 0;
+    runtime->interpreterProfileEnabled = runtimeLogProfileEnabled();
+    resetInterpreterProfileCounters(runtime);
     runtime->interpreterPcProfileEnabled = runtimeEnvEnabled("DINGOO_PIE_INTERPRETER_PC_PROFILE");
     runtime->interpreterPcSampleCountdown = 1;
     *out = runtime;
     return RUNTIME_OK;
+}
+
+void nativeRuntimeApplyProfileSettings(NativeRuntime* runtime)
+{
+    if (!runtime)
+    {
+        return;
+    }
+
+    bool enabled = runtimeLogProfileEnabled();
+    if (runtime->interpreterProfileEnabled != enabled)
+    {
+        runtime->interpreterProfileEnabled = enabled;
+        resetInterpreterProfileCounters(runtime);
+    }
 }
 
 RuntimeError nativeRuntimeDestroy(NativeRuntime* runtime)
@@ -1638,6 +1670,7 @@ RuntimeError nativeRuntimeStart(NativeRuntime* runtime, uint64_t begin, uint64_t
 
     size_t executed = 0;
     uint32_t pausePollCountdown = 1;
+    uint32_t profilePollCountdown = 1;
     while (runtime->pc != (uint32_t)until)
     {
         if (runtime->stopRequested.load(std::memory_order_acquire))
@@ -1653,6 +1686,11 @@ RuntimeError nativeRuntimeStart(NativeRuntime* runtime, uint64_t begin, uint64_t
                 runtime->pc = (uint32_t)until;
                 break;
             }
+        }
+        if (--profilePollCountdown == 0)
+        {
+            profilePollCountdown = 4096;
+            nativeRuntimeApplyProfileSettings(runtime);
         }
         tracePcSample(runtime, runtime->pc);
         bool branched = false;

@@ -3,12 +3,14 @@
 #ifdef _WIN32
 
 #include "emulator_core.h"
+#include "platform_win32.h"
 #include "resource_ids.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <commctrl.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,8 +24,8 @@ static HWND g_debuggerWindow = NULL;
 static HWND g_disasmList = NULL;
 static HWND g_registerText = NULL;
 static HWND g_memoryList = NULL;
-static HWND g_breakpointList = NULL;
-static HWND g_watchList = NULL;
+static HWND g_pcHitList = NULL;
+static HWND g_writeHitList = NULL;
 static HBRUSH g_debuggerBackgroundBrush = NULL;
 static HFONT g_debuggerFont = NULL;
 static bool g_debuggerOwnFont = false;
@@ -36,46 +38,59 @@ static const int kDebuggerRightX = 944;
 static const int kDebuggerButtonWidth = 64;
 static const int kDebuggerButtonHeight = 28;
 static const int kDebuggerButtonGap = 8;
+static const int kDebuggerTopButtonGap = 10;
+static const int kDebuggerTopButtonWidth = 74;
+static const int kDebuggerTopButtonY = 10;
+static const int kDebuggerCloseButtonX = kDebuggerRightX - kDebuggerTopButtonWidth;
+static const int kDebuggerRefreshButtonX =
+    kDebuggerCloseButtonX - kDebuggerTopButtonGap - kDebuggerTopButtonWidth;
 static const int kDebuggerBottomButtonCount = 3;
 static const int kDebuggerBottomSectionGap = 20;
 static const int kDebuggerBottomButtonRowWidth =
     (kDebuggerButtonWidth * kDebuggerBottomButtonCount) +
     (kDebuggerButtonGap * (kDebuggerBottomButtonCount - 1));
-static const int kDebuggerListColumnPadding = 4;
 static const int kDebuggerBottomControlY = 526;
 static const int kDebuggerBottomInputY = 528;
 static const int kDebuggerBottomLabelY = 532;
 static const int kDebuggerBottomListY = 560;
 static const int kDebuggerBottomListHeight = 118;
-static const int kDebuggerBreakpointX = kDebuggerMargin;
-static const int kDebuggerBreakpointListWidth = 428;
-static const int kDebuggerBreakpointRight = kDebuggerBreakpointX + kDebuggerBreakpointListWidth;
-static const int kDebuggerWatchX = kDebuggerBreakpointRight + kDebuggerBottomSectionGap;
-static const int kDebuggerWatchListWidth = kDebuggerRightX - kDebuggerWatchX;
-static const int kDebuggerBreakpointButtonX =
-    kDebuggerBreakpointRight - kDebuggerBottomButtonRowWidth;
-static const int kDebuggerWatchButtonX = kDebuggerRightX - kDebuggerBottomButtonRowWidth;
+static const int kDebuggerPcHitX = kDebuggerMargin;
+static const int kDebuggerPcHitListWidth = 428;
+static const int kDebuggerPcHitRight = kDebuggerPcHitX + kDebuggerPcHitListWidth;
+static const int kDebuggerWriteHitX = kDebuggerPcHitRight + kDebuggerBottomSectionGap;
+static const int kDebuggerWriteHitListWidth = kDebuggerRightX - kDebuggerWriteHitX;
+static const int kDebuggerPcHitButtonX =
+    kDebuggerPcHitRight - kDebuggerBottomButtonRowWidth;
+static const int kDebuggerWriteHitButtonX = kDebuggerRightX - kDebuggerBottomButtonRowWidth;
+static const int kDebuggerPcHitAddressWidth = 118;
+static const int kDebuggerWriteHitAddressWidth = kDebuggerPcHitAddressWidth;
+static const int kDebuggerWriteHitSizeWidth = 36;
+static const int kDebuggerWriteHitInputGap = 6;
+static const int kDebuggerWriteHitSizeX =
+    kDebuggerWriteHitButtonX - kDebuggerButtonGap - kDebuggerWriteHitSizeWidth;
+static const int kDebuggerWriteHitAddressX =
+    kDebuggerWriteHitSizeX - kDebuggerWriteHitInputGap - kDebuggerWriteHitAddressWidth;
 
 static const int kDebuggerIdPcAddress = 44001;
 static const int kDebuggerIdMemAddress = 44002;
 static const int kDebuggerIdMemSize = 44003;
-static const int kDebuggerIdWatchAddress = 44004;
-static const int kDebuggerIdWatchSize = 44005;
-static const int kDebuggerIdBreakpointAddress = 44006;
+static const int kDebuggerIdWriteHitAddress = 44004;
+static const int kDebuggerIdWriteHitSize = 44005;
+static const int kDebuggerIdPcHitAddress = 44006;
 static const int kDebuggerIdRefresh = 44007;
-static const int kDebuggerIdAddBreakpoint = 44008;
-static const int kDebuggerIdRemoveBreakpoint = 44009;
-static const int kDebuggerIdAddWatch = 44010;
-static const int kDebuggerIdRemoveWatch = 44011;
-static const int kDebuggerIdClearBreakpoints = 44012;
-static const int kDebuggerIdClearWatches = 44013;
+static const int kDebuggerIdAddPcHit = 44008;
+static const int kDebuggerIdRemovePcHit = 44009;
+static const int kDebuggerIdAddWriteHit = 44010;
+static const int kDebuggerIdRemoveWriteHit = 44011;
+static const int kDebuggerIdClearPcHits = 44012;
+static const int kDebuggerIdClearWriteHits = 44013;
 static const int kDebuggerIdClose = 44014;
 static const int kDebuggerIdStatus = 44015;
 static const int kDebuggerIdDisasm = 44016;
 static const int kDebuggerIdRegisters = 44017;
 static const int kDebuggerIdMemory = 44018;
-static const int kDebuggerIdBreakpoints = 44019;
-static const int kDebuggerIdWatches = 44020;
+static const int kDebuggerIdPcHits = 44019;
+static const int kDebuggerIdWriteHits = 44020;
 
 static bool debuggerChinese(void)
 {
@@ -143,7 +158,8 @@ static HWND debuggerItem(int id)
 static HWND createDebuggerChild(HWND parent, const wchar_t* className, const wchar_t* text,
     DWORD exStyle, DWORD style, int x, int y, int w, int h, int id)
 {
-    HWND child = CreateWindowExW(exStyle, className, text, WS_CHILD | WS_VISIBLE | style,
+    DWORD childStyle = (DWORD)platformWin32NormalizeChildStyle(className, style);
+    HWND child = CreateWindowExW(exStyle, className, text, WS_CHILD | WS_VISIBLE | childStyle,
         x, y, w, h, parent, (HMENU)(INT_PTR)id, GetModuleHandleW(NULL), NULL);
     if (child)
     {
@@ -251,8 +267,18 @@ static bool parseHexEdit(int id, uint32_t* out)
     {
         return false;
     }
+    if (*p == L'-' || *p == L'+')
+    {
+        return false;
+    }
+
     wchar_t* end = NULL;
-    unsigned long value = wcstoul(p, &end, 0);
+    errno = 0;
+    unsigned long long value = wcstoull(p, &end, 0);
+    if (end == p || errno == ERANGE || value > 0xffffffffull)
+    {
+        return false;
+    }
     while (end && (*end == L' ' || *end == L'\t'))
     {
         end++;
@@ -332,7 +358,7 @@ static int debuggerListAvailableWidth(HWND list)
     }
 
     int width = rect.right - rect.left -
-        GetSystemMetrics(SM_CXVSCROLL) - kDebuggerListColumnPadding;
+        GetSystemMetrics(SM_CXVSCROLL) - 4;
     return width > 0 ? width : 0;
 }
 
@@ -396,31 +422,35 @@ static void setupMemoryList(HWND list)
 {
     DebuggerListColumnSpec columns[] = {
         { debuggerChinese() ? L"\u5730\u5740" : L"Address", 112 },
-        { L"+0 +1 +2 +3 +4 +5 +6 +7 +8 +9 +A +B +C +D +E +F", 640 },
-        { L"ASCII", 170 }
+        { L"+0 +1 +2 +3 +4 +5 +6 +7 +8 +9 +A +B +C +D +E +F", 560 },
+        { L"ASCII", 250 }
     };
     setupFittedListColumns(list, columns, sizeof(columns) / sizeof(columns[0]));
 }
 
-static void setupBreakpointList(HWND list)
+static void setupPcHitList(HWND list)
 {
-    DebuggerListColumnSpec columns[] = {
-        { debuggerChinese() ? L"\u5730\u5740" : L"Address", 146 },
-        { debuggerChinese() ? L"\u547d\u4e2d" : L"Hits", 80 },
-        { L"Last PC", 198 }
-    };
-    setupFittedListColumns(list, columns, sizeof(columns) / sizeof(columns[0]));
+    setupList(list);
+    int lastPcWidth = debuggerListAvailableWidth(list) - 140 - 76;
+    addListColumn(list, 0, L"PC", 140);
+    addListColumn(list, 1, debuggerChinese() ? L"\u547d\u4e2d\u6570" : L"Hit Count",
+        76);
+    addListColumn(list, 2, debuggerChinese() ? L"\u672b\u6b21\u547d\u4e2d PC" : L"Last Hit PC",
+        lastPcWidth > 0 ? lastPcWidth : 1);
 }
 
-static void setupWatchList(HWND list)
+static void setupWriteHitList(HWND list)
 {
-    DebuggerListColumnSpec columns[] = {
-        { debuggerChinese() ? L"\u8303\u56f4" : L"Range", 156 },
-        { debuggerChinese() ? L"\u547d\u4e2d" : L"Hits", 62 },
-        { L"Last PC", 104 },
-        { debuggerChinese() ? L"\u5199\u5165" : L"Write", 152 }
-    };
-    setupFittedListColumns(list, columns, sizeof(columns) / sizeof(columns[0]));
+    setupList(list);
+    int lastWriteWidth = debuggerListAvailableWidth(list) - 140 - 76 - 96;
+    addListColumn(list, 0, debuggerChinese() ? L"\u5199\u8303\u56f4" : L"Write Range",
+        140);
+    addListColumn(list, 1, debuggerChinese() ? L"\u547d\u4e2d\u6570" : L"Hit Count",
+        76);
+    addListColumn(list, 2, debuggerChinese() ? L"\u5199\u5165 PC" : L"Writer PC",
+        96);
+    addListColumn(list, 3, debuggerChinese() ? L"\u672b\u6b21\u5199\u5165" : L"Last Write",
+        lastWriteWidth > 0 ? lastWriteWidth : 1);
 }
 
 static int selectedListAddress(HWND list)
@@ -513,7 +543,12 @@ static void refreshMemory(uint32_t address, uint32_t bytes)
     uint32_t rows = (bytes + 15u) / 16u;
     for (uint32_t row = 0; row < rows; ++row)
     {
-        uint32_t rowAddress = address + row * 16u;
+        uint64_t rowAddress64 = (uint64_t)address + (uint64_t)row * 16u;
+        if (rowAddress64 > 0xffffffffull)
+        {
+            break;
+        }
+        uint32_t rowAddress = (uint32_t)rowAddress64;
         memset(buffer, 0, sizeof(buffer));
         bool ok = emulatorRuntimeReadMemory(rowAddress, buffer, sizeof(buffer));
 
@@ -553,18 +588,18 @@ static void refreshMemory(uint32_t address, uint32_t bytes)
 
 static void refreshDebugEntryLists(void)
 {
-    if (g_breakpointList)
+    if (g_pcHitList)
     {
-        clearDebuggerList(g_breakpointList);
-        std::vector<EmulatorRuntimeDebugEntry> breakpoints = emulatorRuntimeBreakpoints();
-        for (size_t i = 0; i < breakpoints.size(); ++i)
+        clearDebuggerList(g_pcHitList);
+        std::vector<EmulatorRuntimeDebugEntry> pcHits = emulatorRuntimePcHits();
+        for (size_t i = 0; i < pcHits.size(); ++i)
         {
             wchar_t addressText[32] = {};
             wchar_t hitsText[32] = {};
             wchar_t pcText[32] = {};
-            swprintf(addressText, sizeof(addressText) / sizeof(addressText[0]), L"%08X", breakpoints[i].address);
-            swprintf(hitsText, sizeof(hitsText) / sizeof(hitsText[0]), L"%llu", (unsigned long long)breakpoints[i].hits);
-            swprintf(pcText, sizeof(pcText) / sizeof(pcText[0]), L"%08X", breakpoints[i].lastPc);
+            swprintf(addressText, sizeof(addressText) / sizeof(addressText[0]), L"%08X", pcHits[i].address);
+            swprintf(hitsText, sizeof(hitsText) / sizeof(hitsText[0]), L"%llu", (unsigned long long)pcHits[i].hits);
+            swprintf(pcText, sizeof(pcText) / sizeof(pcText[0]), L"%08X", pcHits[i].lastPc);
 
             LVITEMW item;
             memset(&item, 0, sizeof(item));
@@ -572,29 +607,29 @@ static void refreshDebugEntryLists(void)
             item.iItem = (int)i;
             item.iSubItem = 0;
             item.pszText = addressText;
-            SendMessageW(g_breakpointList, LVM_INSERTITEMW, 0, (LPARAM)&item);
-            setListViewText(g_breakpointList, (int)i, 1, hitsText);
-            setListViewText(g_breakpointList, (int)i, 2, pcText);
+            SendMessageW(g_pcHitList, LVM_INSERTITEMW, 0, (LPARAM)&item);
+            setListViewText(g_pcHitList, (int)i, 1, hitsText);
+            setListViewText(g_pcHitList, (int)i, 2, pcText);
         }
-        finishDebuggerListRefresh(g_breakpointList);
+        finishDebuggerListRefresh(g_pcHitList);
     }
 
-    if (g_watchList)
+    if (g_writeHitList)
     {
-        clearDebuggerList(g_watchList);
-        std::vector<EmulatorRuntimeDebugEntry> watches = emulatorRuntimeWriteWatches();
-        for (size_t i = 0; i < watches.size(); ++i)
+        clearDebuggerList(g_writeHitList);
+        std::vector<EmulatorRuntimeDebugEntry> writeHits = emulatorRuntimeWriteHits();
+        for (size_t i = 0; i < writeHits.size(); ++i)
         {
             wchar_t rangeText[64] = {};
             wchar_t hitsText[32] = {};
             wchar_t pcText[32] = {};
             wchar_t writeText[96] = {};
             swprintf(rangeText, sizeof(rangeText) / sizeof(rangeText[0]), L"%08X +%u",
-                watches[i].address, watches[i].size);
-            swprintf(hitsText, sizeof(hitsText) / sizeof(hitsText[0]), L"%llu", (unsigned long long)watches[i].hits);
-            swprintf(pcText, sizeof(pcText) / sizeof(pcText[0]), L"%08X", watches[i].lastPc);
+                writeHits[i].address, writeHits[i].size);
+            swprintf(hitsText, sizeof(hitsText) / sizeof(hitsText[0]), L"%llu", (unsigned long long)writeHits[i].hits);
+            swprintf(pcText, sizeof(pcText) / sizeof(pcText[0]), L"%08X", writeHits[i].lastPc);
             swprintf(writeText, sizeof(writeText) / sizeof(writeText[0]), L"%08X/%u = %llX",
-                watches[i].lastAddress, watches[i].lastSize, (unsigned long long)watches[i].lastValue);
+                writeHits[i].lastAddress, writeHits[i].lastSize, (unsigned long long)writeHits[i].lastValue);
 
             LVITEMW item;
             memset(&item, 0, sizeof(item));
@@ -602,12 +637,12 @@ static void refreshDebugEntryLists(void)
             item.iItem = (int)i;
             item.iSubItem = 0;
             item.pszText = rangeText;
-            SendMessageW(g_watchList, LVM_INSERTITEMW, 0, (LPARAM)&item);
-            setListViewText(g_watchList, (int)i, 1, hitsText);
-            setListViewText(g_watchList, (int)i, 2, pcText);
-            setListViewText(g_watchList, (int)i, 3, writeText);
+            SendMessageW(g_writeHitList, LVM_INSERTITEMW, 0, (LPARAM)&item);
+            setListViewText(g_writeHitList, (int)i, 1, hitsText);
+            setListViewText(g_writeHitList, (int)i, 2, pcText);
+            setListViewText(g_writeHitList, (int)i, 3, writeText);
         }
-        finishDebuggerListRefresh(g_watchList);
+        finishDebuggerListRefresh(g_writeHitList);
     }
 }
 
@@ -655,91 +690,93 @@ static void refreshDebugger(void)
     refreshMemory(memAddress, memSize);
     refreshDebugEntryLists();
     setDebuggerStatus(debuggerChinese() ?
-        L"\u5df2\u5237\u65b0\u3002\u65ad\u70b9\u548c\u5199\u5165\u76d1\u89c6\u4f1a\u8bb0\u5f55\u547d\u4e2d\uff0c\u4e0d\u4f1a\u6682\u505c CPU\u3002" :
-        L"Refreshed. Breakpoints and write watches record hits without pausing the CPU.");
+        L"\u5df2\u5237\u65b0\u3002PC \u547d\u4e2d\u548c\u5199\u5165\u547d\u4e2d\u53ea\u8bb0\u5f55\u6b21\u6570\uff0c\u4e0d\u4f1a\u6682\u505c CPU\u3002" :
+        L"Refreshed. PC hits and write hits only count hits; they do not pause the CPU.");
 }
 
-static void addBreakpointFromInput(void)
+static void addPcHitFromInput(void)
 {
     uint32_t address = 0;
-    if (!parseHexEdit(kDebuggerIdBreakpointAddress, &address))
+    if (!parseHexEdit(kDebuggerIdPcHitAddress, &address))
     {
-        setDebuggerStatus(debuggerChinese() ? L"\u65ad\u70b9\u5730\u5740\u65e0\u6548\u3002" : L"Invalid breakpoint address.");
+        setDebuggerStatus(debuggerChinese() ? L"PC \u547d\u4e2d\u5730\u5740\u65e0\u6548\u3002" : L"Invalid PC hit address.");
         return;
     }
-    emulatorRuntimeAddBreakpoint(address);
+    emulatorRuntimeAddPcHit(address);
     refreshDebugEntryLists();
 }
 
-static void removeSelectedBreakpoint(void)
+static void removeSelectedPcHit(void)
 {
-    std::vector<EmulatorRuntimeDebugEntry> breakpoints = emulatorRuntimeBreakpoints();
-    int row = selectedListAddress(g_breakpointList);
-    if (row < 0 || (size_t)row >= breakpoints.size())
+    std::vector<EmulatorRuntimeDebugEntry> pcHits = emulatorRuntimePcHits();
+    int row = selectedListAddress(g_pcHitList);
+    if (row < 0 || (size_t)row >= pcHits.size())
     {
         return;
     }
-    emulatorRuntimeRemoveBreakpoint(breakpoints[(size_t)row].address);
+    emulatorRuntimeRemovePcHit(pcHits[(size_t)row].address);
     refreshDebugEntryLists();
 }
 
-static void addWatchFromInput(void)
+static void addWriteHitFromInput(void)
 {
     uint32_t address = 0;
     uint32_t size = 0;
-    if (!parseHexEdit(kDebuggerIdWatchAddress, &address) ||
-        !parseHexEdit(kDebuggerIdWatchSize, &size) ||
+    if (!parseHexEdit(kDebuggerIdWriteHitAddress, &address) ||
+        !parseHexEdit(kDebuggerIdWriteHitSize, &size) ||
         size == 0)
     {
-        setDebuggerStatus(debuggerChinese() ? L"\u5199\u5165\u76d1\u89c6\u8303\u56f4\u65e0\u6548\u3002" : L"Invalid write watch range.");
+        setDebuggerStatus(debuggerChinese() ? L"\u5199\u5165\u547d\u4e2d\u8303\u56f4\u65e0\u6548\u3002" : L"Invalid write hit range.");
         return;
     }
     if (size > 0x10000)
     {
         size = 0x10000;
-        setHexEdit(kDebuggerIdWatchSize, size);
+        setHexEdit(kDebuggerIdWriteHitSize, size);
     }
-    if (!emulatorRuntimeAddWriteWatch(address, size))
+    if (!emulatorRuntimeAddWriteHit(address, size))
     {
-        setDebuggerStatus(debuggerChinese() ? L"\u5199\u5165\u76d1\u89c6\u8303\u56f4\u8d85\u51fa\u5730\u5740\u7a7a\u95f4\u3002" : L"Write watch range is outside address space.");
+        setDebuggerStatus(debuggerChinese() ? L"\u5199\u5165\u547d\u4e2d\u8303\u56f4\u8d85\u51fa\u5730\u5740\u7a7a\u95f4\u3002" : L"Write hit range is outside address space.");
         return;
     }
     refreshDebugEntryLists();
 }
 
-static void removeSelectedWatch(void)
+static void removeSelectedWriteHit(void)
 {
-    std::vector<EmulatorRuntimeDebugEntry> watches = emulatorRuntimeWriteWatches();
-    int row = selectedListAddress(g_watchList);
-    if (row < 0 || (size_t)row >= watches.size())
+    std::vector<EmulatorRuntimeDebugEntry> writeHits = emulatorRuntimeWriteHits();
+    int row = selectedListAddress(g_writeHitList);
+    if (row < 0 || (size_t)row >= writeHits.size())
     {
         return;
     }
-    emulatorRuntimeRemoveWriteWatch(watches[(size_t)row].address, watches[(size_t)row].size);
+    emulatorRuntimeRemoveWriteHit(writeHits[(size_t)row].address, writeHits[(size_t)row].size);
     refreshDebugEntryLists();
 }
 
 static void createDebuggerToolbar(bool zh)
 {
-    createDebuggerLabel(zh ? L"PC \u9644\u8fd1" : L"PC view",
-        kDebuggerMargin, 16, 70, 22);
+    createDebuggerLabel(zh ? L"\u53cd\u6c47\u7f16\u5730\u5740" : L"Disasm Addr",
+        kDebuggerMargin, 16, 86, 22);
     createDebuggerChild(g_debuggerWindow, L"EDIT", L"",
         WS_EX_CLIENTEDGE, ES_AUTOHSCROLL,
-        92, 12, 118, 24, kDebuggerIdPcAddress);
-    createDebuggerLabel(zh ? L"\u5185\u5b58" : L"Memory",
-        228, 16, 60, 22);
+        108, 12, 118, 24, kDebuggerIdPcAddress);
+    createDebuggerLabel(zh ? L"\u5185\u5b58\u5730\u5740" : L"Mem Addr",
+        246, 16, 76, 22);
     createDebuggerChild(g_debuggerWindow, L"EDIT", L"",
         WS_EX_CLIENTEDGE, ES_AUTOHSCROLL,
-        288, 12, 118, 24, kDebuggerIdMemAddress);
-    createDebuggerLabel(zh ? L"\u957f\u5ea6" : L"Bytes",
-        424, 16, 48, 22);
+        328, 12, 118, 24, kDebuggerIdMemAddress);
+    createDebuggerLabel(zh ? L"\u5b57\u8282\u6570" : L"Bytes",
+        466, 16, 50, 22);
     createDebuggerChild(g_debuggerWindow, L"EDIT", L"0x100",
         WS_EX_CLIENTEDGE, ES_AUTOHSCROLL,
-        472, 12, 82, 24, kDebuggerIdMemSize);
+        522, 12, 82, 24, kDebuggerIdMemSize);
     createDebuggerButton(zh ? L"\u5237\u65b0" : L"Refresh",
-        572, 10, 82, kDebuggerButtonHeight, kDebuggerIdRefresh);
+        kDebuggerRefreshButtonX, kDebuggerTopButtonY,
+        kDebuggerTopButtonWidth, kDebuggerButtonHeight, kDebuggerIdRefresh);
     createDebuggerButton(zh ? L"\u5173\u95ed" : L"Close",
-        870, 10, 74, kDebuggerButtonHeight, kDebuggerIdClose);
+        kDebuggerCloseButtonX, kDebuggerTopButtonY,
+        kDebuggerTopButtonWidth, kDebuggerButtonHeight, kDebuggerIdClose);
 }
 
 static void createDebuggerMainViews(bool zh)
@@ -757,7 +794,7 @@ static void createDebuggerMainViews(bool zh)
         WS_EX_CLIENTEDGE, ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL,
         562, 76, 382, 244, kDebuggerIdRegisters);
 
-    createDebuggerLabel(zh ? L"\u5185\u5b58\u67e5\u770b" : L"Memory Viewer",
+    createDebuggerLabel(zh ? L"\u5185\u5b58\u5341\u516d\u8fdb\u5236" : L"Memory Hex View",
         kDebuggerMargin, 334, 130, 22);
     g_memoryList = createDebuggerChild(g_debuggerWindow, WC_LISTVIEWW, L"",
         WS_EX_CLIENTEDGE, LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
@@ -765,59 +802,63 @@ static void createDebuggerMainViews(bool zh)
     setupMemoryList(g_memoryList);
 }
 
-static void createDebuggerBreakpoints(bool zh)
+static void createDebuggerPcHits(bool zh)
 {
-    createDebuggerLabel(zh ? L"\u65ad\u70b9" : L"Breakpoints",
+    createDebuggerLabel(zh ? L"PC \u547d\u4e2d" : L"PC Hits",
         kDebuggerMargin, kDebuggerBottomLabelY, 90, 22);
     createDebuggerChild(g_debuggerWindow, L"EDIT", L"",
         WS_EX_CLIENTEDGE, ES_AUTOHSCROLL,
-        112, kDebuggerBottomInputY, 118, 24, kDebuggerIdBreakpointAddress);
+        112, kDebuggerBottomInputY,
+        kDebuggerPcHitAddressWidth, 24, kDebuggerIdPcHitAddress);
     DebuggerButtonSpec buttons[] = {
-        { zh ? L"\u6dfb\u52a0" : L"Add", kDebuggerIdAddBreakpoint },
-        { zh ? L"\u5220\u9664" : L"Remove", kDebuggerIdRemoveBreakpoint },
-        { zh ? L"\u6e05\u7a7a" : L"Clear", kDebuggerIdClearBreakpoints }
+        { zh ? L"\u6dfb\u52a0" : L"Add", kDebuggerIdAddPcHit },
+        { zh ? L"\u5220\u9664" : L"Remove", kDebuggerIdRemovePcHit },
+        { zh ? L"\u6e05\u7a7a" : L"Clear", kDebuggerIdClearPcHits }
     };
-    createDebuggerButtonRow(kDebuggerBreakpointButtonX, kDebuggerBottomControlY,
+    createDebuggerButtonRow(kDebuggerPcHitButtonX, kDebuggerBottomControlY,
         buttons, sizeof(buttons) / sizeof(buttons[0]));
-    g_breakpointList = createDebuggerChild(g_debuggerWindow, WC_LISTVIEWW, L"",
+    g_pcHitList = createDebuggerChild(g_debuggerWindow, WC_LISTVIEWW, L"",
         WS_EX_CLIENTEDGE, LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
-        kDebuggerBreakpointX, kDebuggerBottomListY,
-        kDebuggerBreakpointListWidth, kDebuggerBottomListHeight, kDebuggerIdBreakpoints);
-    setupBreakpointList(g_breakpointList);
+        kDebuggerPcHitX, kDebuggerBottomListY,
+        kDebuggerPcHitListWidth, kDebuggerBottomListHeight, kDebuggerIdPcHits);
+    setupPcHitList(g_pcHitList);
 }
 
-static void createDebuggerWatches(bool zh)
+static void createDebuggerWriteHits(bool zh)
 {
-    createDebuggerLabel(zh ? L"\u5199\u5165\u76d1\u89c6" : L"Write Watch",
-        kDebuggerWatchX, kDebuggerBottomLabelY, 92, 22);
+    createDebuggerLabel(zh ? L"\u5199\u5165\u547d\u4e2d" : L"Write Hits",
+        kDebuggerWriteHitX, kDebuggerBottomLabelY, 92, 22);
     createDebuggerChild(g_debuggerWindow, L"EDIT", L"",
         WS_EX_CLIENTEDGE, ES_AUTOHSCROLL,
-        560, kDebuggerBottomInputY, 94, 24, kDebuggerIdWatchAddress);
+        kDebuggerWriteHitAddressX, kDebuggerBottomInputY,
+        kDebuggerWriteHitAddressWidth, 24, kDebuggerIdWriteHitAddress);
     createDebuggerChild(g_debuggerWindow, L"EDIT", L"4",
         WS_EX_CLIENTEDGE, ES_AUTOHSCROLL,
-        660, kDebuggerBottomInputY, 36, 24, kDebuggerIdWatchSize);
+        kDebuggerWriteHitSizeX, kDebuggerBottomInputY,
+        kDebuggerWriteHitSizeWidth, 24, kDebuggerIdWriteHitSize);
     DebuggerButtonSpec buttons[] = {
-        { zh ? L"\u6dfb\u52a0" : L"Add", kDebuggerIdAddWatch },
-        { zh ? L"\u5220\u9664" : L"Remove", kDebuggerIdRemoveWatch },
-        { zh ? L"\u6e05\u7a7a" : L"Clear", kDebuggerIdClearWatches }
+        { zh ? L"\u6dfb\u52a0" : L"Add", kDebuggerIdAddWriteHit },
+        { zh ? L"\u5220\u9664" : L"Remove", kDebuggerIdRemoveWriteHit },
+        { zh ? L"\u6e05\u7a7a" : L"Clear", kDebuggerIdClearWriteHits }
     };
-    createDebuggerButtonRow(kDebuggerWatchButtonX, kDebuggerBottomControlY,
+    createDebuggerButtonRow(kDebuggerWriteHitButtonX, kDebuggerBottomControlY,
         buttons, sizeof(buttons) / sizeof(buttons[0]));
-    g_watchList = createDebuggerChild(g_debuggerWindow, WC_LISTVIEWW, L"",
+    g_writeHitList = createDebuggerChild(g_debuggerWindow, WC_LISTVIEWW, L"",
         WS_EX_CLIENTEDGE, LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
-        kDebuggerWatchX, kDebuggerBottomListY,
-        kDebuggerWatchListWidth, kDebuggerBottomListHeight, kDebuggerIdWatches);
-    setupWatchList(g_watchList);
+        kDebuggerWriteHitX, kDebuggerBottomListY,
+        kDebuggerWriteHitListWidth, kDebuggerBottomListHeight, kDebuggerIdWriteHits);
+    setupWriteHitList(g_writeHitList);
 }
 
 static void createDebuggerContents(bool zh)
 {
     createDebuggerToolbar(zh);
     createDebuggerMainViews(zh);
-    createDebuggerBreakpoints(zh);
-    createDebuggerWatches(zh);
+    createDebuggerPcHits(zh);
+    createDebuggerWriteHits(zh);
     createDebuggerChild(g_debuggerWindow, L"STATIC", L"",
-        0, 0, kDebuggerMargin, 690, kDebuggerRightX - kDebuggerMargin, 22, kDebuggerIdStatus);
+        0, SS_ENDELLIPSIS | SS_NOPREFIX,
+        kDebuggerMargin, 690, kDebuggerRightX - kDebuggerMargin, 22, kDebuggerIdStatus);
 }
 
 static LRESULT CALLBACK debuggerWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -832,24 +873,24 @@ static LRESULT CALLBACK debuggerWindowProc(HWND hwnd, UINT msg, WPARAM wParam, L
         case kDebuggerIdRefresh:
             refreshDebugger();
             return 0;
-        case kDebuggerIdAddBreakpoint:
-            addBreakpointFromInput();
+        case kDebuggerIdAddPcHit:
+            addPcHitFromInput();
             return 0;
-        case kDebuggerIdRemoveBreakpoint:
-            removeSelectedBreakpoint();
+        case kDebuggerIdRemovePcHit:
+            removeSelectedPcHit();
             return 0;
-        case kDebuggerIdClearBreakpoints:
-            emulatorRuntimeClearBreakpoints();
+        case kDebuggerIdClearPcHits:
+            emulatorRuntimeClearPcHits();
             refreshDebugEntryLists();
             return 0;
-        case kDebuggerIdAddWatch:
-            addWatchFromInput();
+        case kDebuggerIdAddWriteHit:
+            addWriteHitFromInput();
             return 0;
-        case kDebuggerIdRemoveWatch:
-            removeSelectedWatch();
+        case kDebuggerIdRemoveWriteHit:
+            removeSelectedWriteHit();
             return 0;
-        case kDebuggerIdClearWatches:
-            emulatorRuntimeClearWriteWatches();
+        case kDebuggerIdClearWriteHits:
+            emulatorRuntimeClearWriteHits();
             refreshDebugEntryLists();
             return 0;
         case kDebuggerIdClose:
@@ -902,8 +943,8 @@ static LRESULT CALLBACK debuggerWindowProc(HWND hwnd, UINT msg, WPARAM wParam, L
             g_disasmList = NULL;
             g_registerText = NULL;
             g_memoryList = NULL;
-            g_breakpointList = NULL;
-            g_watchList = NULL;
+            g_pcHitList = NULL;
+            g_writeHitList = NULL;
         }
         if (g_debuggerFont && g_debuggerOwnFont)
         {

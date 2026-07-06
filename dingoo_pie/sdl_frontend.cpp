@@ -1,16 +1,22 @@
 #include "sdl_frontend.h"
 
 #include "emulator_config.h"
-#include "cheat_finder.h"
+#include "input_mapping_ui.h"
+#include "memory_searcher_ui.h"
 #include "debugger_ui.h"
+#include "emulator_core.h"
 #include "input_controls.h"
 #include "framebuffer.h"
 #include "frontend_menu.h"
 #include "pause_gate.h"
+#include "platform_win32.h"
+#include "resource_monitor_ui.h"
 #include "sdk_hle.h"
 #include "sdl_audio.h"
 #include "resource_ids.h"
+#include "save_state.h"
 #include "ui_strings.h"
+#include "runtime_log.h"
 
 #include <SDL2/SDL.h>
 #ifdef _WIN32
@@ -42,9 +48,13 @@ static SDL_Window* g_window = NULL;
 static SDL_Renderer* g_renderer = NULL;
 static SDL_Texture* g_frameTexture = NULL;
 static SDL_Texture* g_fpsOverlayTexture = NULL;
+static SDL_Texture* g_idleTitleTexture = NULL;
+static SDL_Texture* g_idleSymbolTextures[4] = {};
 static int g_fpsOverlayValue = -1;
 static int g_fpsOverlayWidth = 0;
 static int g_fpsOverlayHeight = 0;
+static int g_idleTitleTextureWidth = 0;
+static int g_idleTitleTextureHeight = 0;
 static SDL_GameController* g_gameController = NULL;
 static uint32_t g_gameControllerButtonControls = 0;
 static uint32_t g_gameControllerAxisControls = 0;
@@ -55,8 +65,6 @@ static bool g_controllerMappingPending = false;
 static uint32_t g_controllerMappingTarget = 0;
 static bool g_controllerMappingInitialized = false;
 static std::string g_appliedControllerMapping;
-static bool g_keyboardMappingPending = false;
-static uint32_t g_keyboardMappingTarget = 0;
 static SDL_atomic_t g_quitRequested;
 static SDL_atomic_t g_gamePaused;
 static bool g_userPauseRequested = false;
@@ -70,15 +78,15 @@ static bool g_lastDisplayFrameValid = false;
 #ifdef _WIN32
 static HWND g_nativeWindow = NULL;
 static HIMC g_defaultImeContext = NULL;
-static HWND g_inputMappingWindow = NULL;
-static HBRUSH g_inputMappingBackgroundBrush = NULL;
-static HFONT g_inputMappingFont = NULL;
-static bool g_inputMappingOwnFont = false;
 static bool g_menuLoopPauseActive = false;
 #endif
 
 static const uint64_t kMinimizedThrottlePresentIntervalMs = 250;
 static const uint32_t kMinimizedThrottleLoopDelayMs = 50;
+static const uint64_t kIdlePresentIntervalUs = 16667;
+static const uint64_t kIdleWakeMarginUs = 2000;
+static const uint32_t kIdleMaxWaitMs = 4;
+static const double kPi = 3.14159265358979323846;
 
 static bool inputTraceEnabled(void);
 static void openFirstGameController(void);
@@ -142,18 +150,6 @@ static void SDLCALL frontendSdlLogOutput(void* userdata, int category,
         sdlLogPriorityName(priority),
         sdlLogCategoryName(category),
         message ? message : "");
-}
-
-static void presentBlackFrame(void)
-{
-    if (!g_renderer)
-    {
-        return;
-    }
-    SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_NONE);
-    SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
-    SDL_RenderClear(g_renderer);
-    SDL_RenderPresent(g_renderer);
 }
 
 static uint32_t controlMask(uint32_t controlBit)
@@ -235,7 +231,10 @@ static const uint8_t kLetterD[7] = { 0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e };
 static const uint8_t kLetterE[7] = { 0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f };
 static const uint8_t kLetterF[7] = { 0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10 };
 static const uint8_t kLetterG[7] = { 0x0e, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0f };
+static const uint8_t kLetterI[7] = { 0x0e, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0e };
 static const uint8_t kLetterL[7] = { 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f };
+static const uint8_t kLetterN[7] = { 0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11 };
+static const uint8_t kLetterO[7] = { 0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e };
 static const uint8_t kLetterP[7] = { 0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10 };
 static const uint8_t kLetterR[7] = { 0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11 };
 static const uint8_t kLetterS[7] = { 0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e };
@@ -244,6 +243,11 @@ static const uint8_t kLetterU[7] = { 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e };
 static const uint8_t kLetterX[7] = { 0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11 };
 static const uint8_t kLetterY[7] = { 0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04 };
 static const uint8_t kColon[7]   = { 0x00, 0x04, 0x04, 0x00, 0x04, 0x04, 0x00 };
+static const uint8_t kLowerE[7]  = { 0x00, 0x00, 0x0e, 0x11, 0x1f, 0x10, 0x0e };
+static const uint8_t kLowerG[7]  = { 0x00, 0x00, 0x0f, 0x11, 0x0f, 0x01, 0x0e };
+static const uint8_t kLowerI[7]  = { 0x04, 0x00, 0x0c, 0x04, 0x04, 0x04, 0x0e };
+static const uint8_t kLowerN[7]  = { 0x00, 0x00, 0x1e, 0x11, 0x11, 0x11, 0x11 };
+static const uint8_t kLowerO[7]  = { 0x00, 0x00, 0x0e, 0x11, 0x11, 0x11, 0x0e };
 
 static const uint8_t* glyphForChar(char ch)
 {
@@ -260,7 +264,10 @@ static const uint8_t* glyphForChar(char ch)
     case 'D': return kLetterD;
     case 'E': return kLetterE;
     case 'G': return kLetterG;
+    case 'I': return kLetterI;
     case 'L': return kLetterL;
+    case 'N': return kLetterN;
+    case 'O': return kLetterO;
     case 'P': return kLetterP;
     case 'R': return kLetterR;
     case 'S': return kLetterS;
@@ -269,6 +276,11 @@ static const uint8_t* glyphForChar(char ch)
     case 'X': return kLetterX;
     case 'Y': return kLetterY;
     case ':': return kColon;
+    case 'e': return kLowerE;
+    case 'g': return kLowerG;
+    case 'i': return kLowerI;
+    case 'n': return kLowerN;
+    case 'o': return kLowerO;
     default: return NULL;
     }
 }
@@ -287,6 +299,8 @@ static uint32_t g_virtualMouseControls = 0;
 static bool g_virtualMouseButtonHeld = false;
 static uint64_t g_virtualMouseReleaseTicks = 0;
 static const uint64_t kVirtualMouseClickHoldMs = 180;
+static uint64_t g_postRestoreInputBlockUntilTicks = 0;
+static const uint64_t kPostRestoreInputBlockMs = 160;
 
 // Virtual controls and gamepads both feed synthetic Dingoo controls; merge the
 // sources before updating input state so releasing one source does not cancel another.
@@ -306,6 +320,23 @@ static void applyFrontendSyntheticControlMask(uint32_t oldMask, uint32_t newMask
             inputSetSyntheticControl(bit, (newMask & mask) != 0);
         }
     }
+}
+
+static bool frontendPostRestoreInputBlocked(void)
+{
+    uint64_t until = g_postRestoreInputBlockUntilTicks;
+    if (!until)
+    {
+        return false;
+    }
+
+    uint64_t now = SDL_GetTicks64();
+    if (now < until)
+    {
+        return true;
+    }
+    g_postRestoreInputBlockUntilTicks = 0;
+    return false;
 }
 
 static bool virtualControlsVisible(void)
@@ -535,6 +566,760 @@ static void drawVirtualText(const char* text, int x, int y, int scale, SDL_Color
     }
 }
 
+static int rendererTextWidth(const char* text, int scale)
+{
+    return text && *text ? ((int)strlen(text) * 6 - 1) * scale : 0;
+}
+
+static void drawRendererGlyph(const uint8_t* glyph, int x, int y, int scale, SDL_Color color)
+{
+    if (!glyph)
+    {
+        return;
+    }
+
+    SDL_SetRenderDrawColor(g_renderer, color.r, color.g, color.b, color.a);
+    for (int row = 0; row < 7; ++row)
+    {
+        for (int col = 0; col < 5; ++col)
+        {
+            if (glyph[row] & (1 << (4 - col)))
+            {
+                SDL_Rect rect = { x + col * scale, y + row * scale, scale, scale };
+                SDL_RenderFillRect(g_renderer, &rect);
+            }
+        }
+    }
+}
+
+static void drawRendererText(const char* text, int x, int y, int scale, SDL_Color color)
+{
+    if (!text)
+    {
+        return;
+    }
+
+    int cursor = x;
+    for (const char* p = text; *p; ++p)
+    {
+        const uint8_t* glyph = glyphForChar(*p);
+        drawRendererGlyph(glyph, cursor, y, scale, color);
+        cursor += 6 * scale;
+    }
+}
+
+static uint64_t counterToUs(uint64_t counter, uint64_t frequency)
+{
+    return frequency ? counter * 1000000ull / frequency : 0;
+}
+
+static uint64_t idlePresentIntervalUs(uint64_t activePresentIntervalMs)
+{
+    uint64_t activeUs = activePresentIntervalMs * 1000ull;
+    return activeUs > kIdlePresentIntervalUs ? activeUs : kIdlePresentIntervalUs;
+}
+
+static uint32_t idleLoopDelayMs(uint64_t nowCounter, uint64_t lastPresentCounter, uint64_t presentIntervalUs, uint64_t counterFrequency)
+{
+    if (!lastPresentCounter || !counterFrequency || presentIntervalUs <= kIdleWakeMarginUs)
+    {
+        return 1;
+    }
+
+    uint64_t elapsedUs = counterToUs(nowCounter - lastPresentCounter, counterFrequency);
+    if (elapsedUs + kIdleWakeMarginUs >= presentIntervalUs)
+    {
+        return 1;
+    }
+
+    uint64_t delayMs = (presentIntervalUs - elapsedUs - kIdleWakeMarginUs) / 1000;
+    if (delayMs > kIdleMaxWaitMs)
+    {
+        delayMs = kIdleMaxWaitMs;
+    }
+    return delayMs < 1 ? 1 : (uint32_t)delayMs;
+}
+
+static uint8_t blendChannel(uint8_t start, uint8_t end, int index, int count)
+{
+    if (count <= 1)
+    {
+        return end;
+    }
+
+    int value = (int)start + ((int)end - (int)start) * index / (count - 1);
+    if (value < 0)
+    {
+        value = 0;
+    }
+    else if (value > 255)
+    {
+        value = 255;
+    }
+    return (uint8_t)value;
+}
+
+static void drawVerticalGradientRect(
+    int x, int y, int w, int h,
+    SDL_Color top, SDL_Color bottom)
+{
+    if (w <= 0 || h <= 0)
+    {
+        return;
+    }
+
+    for (int row = 0; row < h; ++row)
+    {
+        SDL_SetRenderDrawColor(g_renderer,
+            blendChannel(top.r, bottom.r, row, h),
+            blendChannel(top.g, bottom.g, row, h),
+            blendChannel(top.b, bottom.b, row, h),
+            blendChannel(top.a, bottom.a, row, h));
+        SDL_RenderDrawLine(g_renderer, x, y + row, x + w - 1, y + row);
+    }
+}
+
+static uint32_t idleSymbolHash(uint32_t value)
+{
+    value ^= value >> 16;
+    value *= 0x7feb352du;
+    value ^= value >> 15;
+    value *= 0x846ca68bu;
+    value ^= value >> 16;
+    return value;
+}
+
+static double idleSymbolUnit(uint32_t seed)
+{
+    return (double)(idleSymbolHash(seed) & 0xffffu) / 65535.0;
+}
+
+static double clampDouble(double value, double minValue, double maxValue)
+{
+    if (value < minValue)
+    {
+        return minValue;
+    }
+    if (value > maxValue)
+    {
+        return maxValue;
+    }
+    return value;
+}
+
+static void putPixelArgbClipped(uint32_t* pixels, int width, int height, int x, int y, uint8_t alpha)
+{
+    if (!pixels || x < 0 || y < 0 || x >= width || y >= height || alpha == 0)
+    {
+        return;
+    }
+
+    uint32_t* pixel = pixels + (size_t)y * (size_t)width + (size_t)x;
+    uint8_t oldAlpha = (uint8_t)((*pixel >> 24) & 0xff);
+    if (alpha > oldAlpha)
+    {
+        *pixel = ((uint32_t)alpha << 24) | 0x00ffffffu;
+    }
+}
+
+static double distanceToSegment(double px, double py, double x1, double y1, double x2, double y2)
+{
+    double vx = x2 - x1;
+    double vy = y2 - y1;
+    double wx = px - x1;
+    double wy = py - y1;
+    double lengthSq = vx * vx + vy * vy;
+    if (lengthSq <= 0.000001)
+    {
+        double dx = px - x1;
+        double dy = py - y1;
+        return sqrt(dx * dx + dy * dy);
+    }
+
+    double t = (wx * vx + wy * vy) / lengthSq;
+    t = clampDouble(t, 0.0, 1.0);
+    double cx = x1 + t * vx;
+    double cy = y1 + t * vy;
+    double dx = px - cx;
+    double dy = py - cy;
+    return sqrt(dx * dx + dy * dy);
+}
+
+static void drawTextureLine(uint32_t* pixels, int width, int height, double x1, double y1, double x2, double y2, double radius)
+{
+    int minX = (int)(clampDouble(floor((x1 < x2 ? x1 : x2) - radius - 2.0), 0.0, (double)(width - 1)));
+    int maxX = (int)(clampDouble(ceil((x1 > x2 ? x1 : x2) + radius + 2.0), 0.0, (double)(width - 1)));
+    int minY = (int)(clampDouble(floor((y1 < y2 ? y1 : y2) - radius - 2.0), 0.0, (double)(height - 1)));
+    int maxY = (int)(clampDouble(ceil((y1 > y2 ? y1 : y2) + radius + 2.0), 0.0, (double)(height - 1)));
+
+    for (int y = minY; y <= maxY; ++y)
+    {
+        for (int x = minX; x <= maxX; ++x)
+        {
+            double dist = distanceToSegment((double)x + 0.5, (double)y + 0.5, x1, y1, x2, y2);
+            double coverage = radius + 0.75 - dist;
+            if (coverage <= 0.0)
+            {
+                continue;
+            }
+            if (coverage > 1.0)
+            {
+                coverage = 1.0;
+            }
+            putPixelArgbClipped(pixels, width, height, x, y, (uint8_t)(coverage * 255.0));
+        }
+    }
+}
+
+static void drawTextureCircle(uint32_t* pixels, int width, int height, double centerX, double centerY, double radius, double strokeRadius)
+{
+    int minX = (int)(clampDouble(floor(centerX - radius - strokeRadius - 2.0), 0.0, (double)(width - 1)));
+    int maxX = (int)(clampDouble(ceil(centerX + radius + strokeRadius + 2.0), 0.0, (double)(width - 1)));
+    int minY = (int)(clampDouble(floor(centerY - radius - strokeRadius - 2.0), 0.0, (double)(height - 1)));
+    int maxY = (int)(clampDouble(ceil(centerY + radius + strokeRadius + 2.0), 0.0, (double)(height - 1)));
+
+    for (int y = minY; y <= maxY; ++y)
+    {
+        for (int x = minX; x <= maxX; ++x)
+        {
+            double dx = (double)x + 0.5 - centerX;
+            double dy = (double)y + 0.5 - centerY;
+            double dist = fabs(sqrt(dx * dx + dy * dy) - radius);
+            double coverage = strokeRadius + 0.75 - dist;
+            if (coverage <= 0.0)
+            {
+                continue;
+            }
+            if (coverage > 1.0)
+            {
+                coverage = 1.0;
+            }
+            putPixelArgbClipped(pixels, width, height, x, y, (uint8_t)(coverage * 255.0));
+        }
+    }
+}
+
+static void drawTextureSymbolSegment(
+    uint32_t* pixels, int width, int height, double halfSize,
+    double x1, double y1, double x2, double y2, double strokeRadius)
+{
+    double centerX = (double)width * 0.5;
+    double centerY = (double)height * 0.5;
+    drawTextureLine(pixels, width, height,
+        centerX + x1 * halfSize, centerY + y1 * halfSize,
+        centerX + x2 * halfSize, centerY + y2 * halfSize,
+        strokeRadius);
+}
+
+static SDL_Texture* createIdleSymbolTexture(int type)
+{
+    // Cache idle symbols as alpha textures so the idle loop only animates placement.
+    const int textureSize = 128;
+    const double halfSize = textureSize * 0.42;
+    const double strokeRadius = textureSize * 0.035;
+    uint32_t pixels[textureSize * textureSize];
+    memset(pixels, 0, sizeof(pixels));
+
+    switch (type & 3)
+    {
+    case 0:
+        drawTextureSymbolSegment(pixels, textureSize, textureSize, halfSize, -0.65, -0.65, 0.65, 0.65, strokeRadius);
+        drawTextureSymbolSegment(pixels, textureSize, textureSize, halfSize, -0.65, 0.65, 0.65, -0.65, strokeRadius);
+        break;
+    case 1:
+        drawTextureCircle(pixels, textureSize, textureSize,
+            textureSize * 0.5, textureSize * 0.5, halfSize * 0.68, strokeRadius);
+        break;
+    case 2:
+        drawTextureSymbolSegment(pixels, textureSize, textureSize, halfSize, -0.62, -0.62, 0.62, -0.62, strokeRadius);
+        drawTextureSymbolSegment(pixels, textureSize, textureSize, halfSize, 0.62, -0.62, 0.62, 0.62, strokeRadius);
+        drawTextureSymbolSegment(pixels, textureSize, textureSize, halfSize, 0.62, 0.62, -0.62, 0.62, strokeRadius);
+        drawTextureSymbolSegment(pixels, textureSize, textureSize, halfSize, -0.62, 0.62, -0.62, -0.62, strokeRadius);
+        break;
+    default:
+        drawTextureSymbolSegment(pixels, textureSize, textureSize, halfSize, 0.0, -0.72, 0.72, 0.58, strokeRadius);
+        drawTextureSymbolSegment(pixels, textureSize, textureSize, halfSize, 0.72, 0.58, -0.72, 0.58, strokeRadius);
+        drawTextureSymbolSegment(pixels, textureSize, textureSize, halfSize, -0.72, 0.58, 0.0, -0.72, strokeRadius);
+        break;
+    }
+
+    SDL_Texture* texture = SDL_CreateTexture(g_renderer, SDL_PIXELFORMAT_ARGB8888,
+        SDL_TEXTUREACCESS_STATIC, textureSize, textureSize);
+    if (!texture)
+    {
+        return NULL;
+    }
+    SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureScaleMode(texture, SDL_ScaleModeLinear);
+    if (SDL_UpdateTexture(texture, NULL, pixels, textureSize * (int)sizeof(uint32_t)) != 0)
+    {
+        SDL_DestroyTexture(texture);
+        return NULL;
+    }
+    return texture;
+}
+
+static void resetIdleSymbolTextures(void)
+{
+    for (int i = 0; i < 4; ++i)
+    {
+        if (g_idleSymbolTextures[i])
+        {
+            SDL_DestroyTexture(g_idleSymbolTextures[i]);
+            g_idleSymbolTextures[i] = NULL;
+        }
+    }
+}
+
+static SDL_Texture* idleSymbolTexture(int type)
+{
+    int index = type & 3;
+    if (!g_idleSymbolTextures[index])
+    {
+        g_idleSymbolTextures[index] = createIdleSymbolTexture(index);
+    }
+    return g_idleSymbolTextures[index];
+}
+
+static void renderIdleSymbolTexture(SDL_Texture* texture, double centerX, double centerY, double size, double angle)
+{
+    SDL_FRect dst =
+    {
+        (float)(centerX - size * 0.5),
+        (float)(centerY - size * 0.5),
+        (float)size,
+        (float)size
+    };
+    SDL_RenderCopyExF(g_renderer, texture, NULL, &dst, angle * 180.0 / kPi, NULL, SDL_FLIP_NONE);
+}
+
+static void drawIdleFloatingSymbol(int type, double centerX, double centerY, double size, double angle, SDL_Color color)
+{
+    SDL_Texture* texture = idleSymbolTexture(type);
+    if (!texture)
+    {
+        return;
+    }
+
+    SDL_SetTextureColorMod(texture, color.r, color.g, color.b);
+    SDL_SetTextureAlphaMod(texture, color.a);
+    renderIdleSymbolTexture(texture, centerX, centerY, size, angle);
+}
+
+struct IdleSymbolSpec
+{
+    int type;
+    double anchorX;
+    double anchorY;
+    double size;
+    double driftX;
+    double driftY;
+    double speedX;
+    double speedY;
+    double phaseX;
+    double phaseY;
+    double rotationPhase;
+    double rotationSpeed;
+    double rotationAmount;
+    uint8_t alpha;
+};
+
+struct IdleSymbolSample
+{
+    double x;
+    double y;
+    double angle;
+};
+
+struct IdleAnimationClock
+{
+    uint64_t timeMs = 0;
+    uint64_t lastHostTicks = 0;
+
+    void pause(void)
+    {
+        lastHostTicks = 0;
+    }
+
+    void reset(void)
+    {
+        timeMs = 0;
+        pause();
+    }
+
+    uint64_t advance(uint64_t hostTicks)
+    {
+        if (!lastHostTicks)
+        {
+            lastHostTicks = hostTicks;
+            return timeMs;
+        }
+
+        if (hostTicks > lastHostTicks)
+        {
+            timeMs += hostTicks - lastHostTicks;
+        }
+        lastHostTicks = hostTicks;
+        return timeMs;
+    }
+};
+
+static IdleAnimationClock g_idleAnimationClock;
+
+static int idleSymbolCount(int width, int height, bool smallLayer)
+{
+    int count = smallLayer ? (width * height) / (80 * 80) : (width * height) / (120 * 120);
+    int minCount = smallLayer ? 12 : 8;
+    int maxCount = smallLayer ? 48 : 28;
+    if (count < minCount)
+    {
+        return minCount;
+    }
+    if (count > maxCount)
+    {
+        return maxCount;
+    }
+    return count;
+}
+
+static IdleSymbolSpec buildIdleSymbolSpec(int width, int height, int index, bool smallLayer)
+{
+    uint32_t seed = smallLayer ? (uint32_t)index + 1009u : (uint32_t)index + 17u;
+    double sizeBase = (double)(height < width ? height : width);
+    double size = smallLayer ?
+        sizeBase * (0.050 + idleSymbolUnit(seed * 19u + 301u) * 0.035) :
+        sizeBase * (0.125 + idleSymbolUnit(seed * 19u + 3u) * 0.070);
+    double minSize = smallLayer ? 14.0 : 28.0;
+    if (size < minSize)
+    {
+        size = minSize;
+    }
+
+    IdleSymbolSpec spec = {};
+    spec.type = index < 4 ? index : (int)(idleSymbolHash(seed * 71u + 37u) & 3u);
+    spec.size = size;
+    spec.anchorX = idleSymbolUnit(seed * 31u + 5u) * (double)width;
+    spec.anchorY = idleSymbolUnit(seed * 41u + 7u) * (double)height;
+    spec.driftX = smallLayer ?
+        (10.0 + idleSymbolUnit(seed * 43u + 13u) * 16.0) :
+        (20.0 + idleSymbolUnit(seed * 43u + 13u) * 28.0);
+    spec.driftY = smallLayer ?
+        (8.0 + idleSymbolUnit(seed * 47u + 17u) * 14.0) :
+        (18.0 + idleSymbolUnit(seed * 47u + 17u) * 26.0);
+    spec.speedX = smallLayer ?
+        (0.30 + idleSymbolUnit(seed * 53u + 19u) * 0.22) :
+        (0.20 + idleSymbolUnit(seed * 53u + 19u) * 0.20);
+    spec.speedY = smallLayer ?
+        (0.24 + idleSymbolUnit(seed * 59u + 23u) * 0.20) :
+        (0.16 + idleSymbolUnit(seed * 59u + 23u) * 0.18);
+    spec.phaseX = idleSymbolUnit(seed * 61u + 29u) * 2.0 * kPi;
+    spec.phaseY = idleSymbolUnit(seed * 67u + 31u) * 2.0 * kPi;
+    spec.rotationPhase = idleSymbolUnit(seed * 83u + 47u) * 2.0 * kPi;
+    spec.rotationSpeed = smallLayer ?
+        (0.22 + idleSymbolUnit(seed * 89u + 53u) * 0.18) :
+        (0.14 + idleSymbolUnit(seed * 89u + 53u) * 0.14);
+    spec.rotationAmount = smallLayer ? 0.34 : 0.42;
+    spec.alpha = (uint8_t)(smallLayer ?
+        (9 + (int)(idleSymbolUnit(seed * 13u + 11u) * 9.0)) :
+        (24 + (int)(idleSymbolUnit(seed * 13u + 11u) * 17.0)));
+
+    if (!smallLayer && index < 4)
+    {
+        static const double kAnchorX[4] = { 0.20, 0.80, 0.24, 0.76 };
+        static const double kAnchorY[4] = { 0.25, 0.30, 0.75, 0.72 };
+        spec.anchorX = kAnchorX[index] * (double)width +
+            (idleSymbolUnit(seed * 73u + 41u) - 0.5) * (double)width * 0.06;
+        spec.anchorY = kAnchorY[index] * (double)height +
+            (idleSymbolUnit(seed * 79u + 43u) - 0.5) * (double)height * 0.06;
+        spec.driftX = clampDouble(spec.driftX, 6.0, (double)width * 0.055);
+        spec.driftY = clampDouble(spec.driftY, 6.0, (double)height * 0.055);
+    }
+
+    double visibleMargin = spec.size * 0.55;
+    spec.anchorX = clampDouble(spec.anchorX,
+        smallLayer ? -spec.size : visibleMargin,
+        smallLayer ? (double)width + spec.size : (double)width - visibleMargin);
+    spec.anchorY = clampDouble(spec.anchorY,
+        smallLayer ? -spec.size : visibleMargin,
+        smallLayer ? (double)height + spec.size : (double)height - visibleMargin);
+    return spec;
+}
+
+static IdleSymbolSample sampleIdleSymbolMotion(const IdleSymbolSpec& spec, int width, int height, double t, int index, bool smallLayer)
+{
+    IdleSymbolSample sample =
+    {
+        spec.anchorX +
+            sin(t * spec.speedX + spec.phaseX) * spec.driftX +
+            sin(t * (spec.speedY * 0.37) + spec.phaseY) * spec.driftX * 0.18,
+        spec.anchorY +
+            cos(t * spec.speedY + spec.phaseY) * spec.driftY +
+            sin(t * (spec.speedX * 0.41) + spec.phaseX) * spec.driftY * 0.16,
+        sin(t * spec.rotationSpeed + spec.rotationPhase) * spec.rotationAmount
+    };
+
+    if (!smallLayer && index < 4)
+    {
+        double visibleMargin = spec.size * 0.55;
+        sample.x = clampDouble(sample.x, visibleMargin, (double)width - visibleMargin);
+        sample.y = clampDouble(sample.y, visibleMargin, (double)height - visibleMargin);
+    }
+    return sample;
+}
+
+static void drawIdleFloatingSymbolLayer(int width, int height, double t, int count, bool smallLayer)
+{
+    for (int i = 0; i < count; ++i)
+    {
+        IdleSymbolSpec spec = buildIdleSymbolSpec(width, height, i, smallLayer);
+        IdleSymbolSample sample = sampleIdleSymbolMotion(spec, width, height, t, i, smallLayer);
+        SDL_Color color = { 255, 255, 255, spec.alpha };
+        drawIdleFloatingSymbol(spec.type, sample.x, sample.y, spec.size, sample.angle, color);
+    }
+}
+
+static void drawIdleFloatingSymbols(int width, int height, double t)
+{
+    int mainCount = idleSymbolCount(width, height, false);
+    int smallCount = idleSymbolCount(width, height, true);
+
+    drawIdleFloatingSymbolLayer(width, height, t, smallCount, true);
+    drawIdleFloatingSymbolLayer(width, height, t, mainCount, false);
+}
+
+static void resetIdleTitleTexture(void)
+{
+    if (g_idleTitleTexture)
+    {
+        SDL_DestroyTexture(g_idleTitleTexture);
+        g_idleTitleTexture = NULL;
+    }
+    g_idleTitleTextureWidth = 0;
+    g_idleTitleTextureHeight = 0;
+}
+
+static void resetIdleTextures(void)
+{
+    resetIdleTitleTexture();
+    resetIdleSymbolTextures();
+}
+
+void frontendReleaseIdleResources(void)
+{
+    g_idleAnimationClock.reset();
+    resetIdleTextures();
+}
+
+#ifdef _WIN32
+static bool ensureIdleTitleTexture(int rendererWidth, int rendererHeight)
+{
+    if (g_idleTitleTexture && g_idleTitleTextureWidth > 0 && g_idleTitleTextureHeight > 0)
+    {
+        return true;
+    }
+
+    int fontSize = rendererHeight / 7;
+    if (fontSize < 42)
+    {
+        fontSize = 42;
+    }
+    if (fontSize > 96)
+    {
+        fontSize = 96;
+    }
+
+    HDC measureDc = CreateCompatibleDC(NULL);
+    if (!measureDc)
+    {
+        return false;
+    }
+
+    HFONT font = CreateFontW(
+        -fontSize, 0, 0, 0, FW_SEMIBOLD,
+        FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    if (!font)
+    {
+        DeleteDC(measureDc);
+        return false;
+    }
+
+    const wchar_t* title = L"DingooPie";
+    HGDIOBJ oldFont = SelectObject(measureDc, font);
+    SIZE textSize = {};
+    bool ok = GetTextExtentPoint32W(measureDc, title, (int)wcslen(title), &textSize) != 0;
+    SelectObject(measureDc, oldFont);
+    DeleteDC(measureDc);
+    if (!ok || textSize.cx <= 0 || textSize.cy <= 0)
+    {
+        DeleteObject(font);
+        return false;
+    }
+
+    int textureWidth = textSize.cx + fontSize;
+    int textureHeight = textSize.cy + fontSize / 2;
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = textureWidth;
+    bmi.bmiHeader.biHeight = -textureHeight;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = NULL;
+    HDC dc = CreateCompatibleDC(NULL);
+    HBITMAP bitmap = dc ? CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &bits, NULL, 0) : NULL;
+    if (!dc || !bitmap || !bits)
+    {
+        if (bitmap)
+        {
+            DeleteObject(bitmap);
+        }
+        if (dc)
+        {
+            DeleteDC(dc);
+        }
+        DeleteObject(font);
+        return false;
+    }
+
+    memset(bits, 0, (size_t)textureWidth * (size_t)textureHeight * 4u);
+    HGDIOBJ oldBitmap = SelectObject(dc, bitmap);
+    oldFont = SelectObject(dc, font);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, RGB(255, 255, 255));
+    RECT textRect = { fontSize / 2, fontSize / 6, textureWidth, textureHeight };
+    DrawTextW(dc, title, -1, &textRect, DT_LEFT | DT_TOP | DT_NOCLIP | DT_SINGLELINE);
+    SelectObject(dc, oldFont);
+    SelectObject(dc, oldBitmap);
+
+    uint8_t* pixels = (uint8_t*)bits;
+    for (int y = 0; y < textureHeight; ++y)
+    {
+        for (int x = 0; x < textureWidth; ++x)
+        {
+            uint8_t* p = pixels + ((size_t)y * (size_t)textureWidth + (size_t)x) * 4u;
+            uint8_t alpha = p[0] > p[1] ? p[0] : p[1];
+            alpha = alpha > p[2] ? alpha : p[2];
+            p[0] = 255;
+            p[1] = 255;
+            p[2] = 255;
+            p[3] = alpha;
+        }
+    }
+
+    SDL_Texture* texture = SDL_CreateTexture(g_renderer, SDL_PIXELFORMAT_BGRA32,
+        SDL_TEXTUREACCESS_STATIC, textureWidth, textureHeight);
+    if (texture)
+    {
+        SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+        if (SDL_UpdateTexture(texture, NULL, bits, textureWidth * 4) != 0)
+        {
+            SDL_DestroyTexture(texture);
+            texture = NULL;
+        }
+    }
+
+    DeleteObject(bitmap);
+    DeleteDC(dc);
+    DeleteObject(font);
+
+    if (!texture)
+    {
+        return false;
+    }
+
+    g_idleTitleTexture = texture;
+    g_idleTitleTextureWidth = textureWidth;
+    g_idleTitleTextureHeight = textureHeight;
+    return true;
+}
+
+static bool drawIdleTitle(int width, int height)
+{
+    if (!ensureIdleTitleTexture(width, height))
+    {
+        return false;
+    }
+
+    SDL_Rect dst =
+    {
+        (width - g_idleTitleTextureWidth) / 2,
+        (height - g_idleTitleTextureHeight) / 2,
+        g_idleTitleTextureWidth,
+        g_idleTitleTextureHeight
+    };
+    SDL_SetTextureAlphaMod(g_idleTitleTexture, 248);
+    SDL_RenderCopy(g_renderer, g_idleTitleTexture, NULL, &dst);
+    return true;
+}
+#else
+static bool drawIdleTitle(int width, int height)
+{
+    const char* title = "DingooPie";
+    int scale = 10;
+    int maxTitleWidth = width > 48 ? width - 48 : width;
+    int maxTitleHeight = height > 32 ? height - 32 : height;
+    while (scale > 2 &&
+        (rendererTextWidth(title, scale) > maxTitleWidth || 7 * scale > maxTitleHeight))
+    {
+        --scale;
+    }
+    int titleWidth = rendererTextWidth(title, scale);
+    int titleHeight = 7 * scale;
+    int titleX = (width - titleWidth) / 2;
+    int titleY = (height - titleHeight) / 2;
+
+    SDL_Color shadow = { 0, 0, 0, 120 };
+    SDL_Color text = { 244, 250, 255, 245 };
+    drawRendererText(title, titleX + scale / 2, titleY + scale / 2, scale, shadow);
+    drawRendererText(title, titleX, titleY, scale, text);
+    return true;
+}
+#endif
+
+static bool drawIdleScreen(uint64_t animationTimeMs)
+{
+    if (!g_renderer)
+    {
+        return false;
+    }
+
+    int width = 0;
+    int height = 0;
+    SDL_GetRendererOutputSize(g_renderer, &width, &height);
+    if (width <= 0 || height <= 0)
+    {
+        return false;
+    }
+
+    SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_NONE);
+    SDL_Color bgTop = { 56, 110, 160, 255 };
+    SDL_Color bgBottom = { 22, 58, 92, 255 };
+    SDL_SetRenderDrawColor(g_renderer, bgTop.r, bgTop.g, bgTop.b, bgTop.a);
+    if (SDL_RenderClear(g_renderer) != 0)
+    {
+        printf("frontend: idle SDL_RenderClear failed: %s\n", SDL_GetError());
+        return false;
+    }
+    drawVerticalGradientRect(0, 0, width, height, bgTop, bgBottom);
+    g_lastDisplayFrameValid = false;
+
+    SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
+    double t = (double)animationTimeMs / 1000.0;
+    drawIdleFloatingSymbols(width, height, t);
+    if (!drawIdleTitle(width, height))
+    {
+        SDL_Color fallback = { 244, 250, 255, 245 };
+        drawRendererText("DingooPie", width / 2 - rendererTextWidth("DingooPie", 7) / 2,
+            height / 2 - 24, 7, fallback);
+    }
+
+    SDL_RenderPresent(g_renderer);
+    return true;
+}
+
 static uint32_t virtualControlMask(uint32_t controlBit)
 {
     return 1u << controlBit;
@@ -696,6 +1481,21 @@ static bool handleVirtualControlMouseEvent(const SDL_Event& ev)
     {
         releaseVirtualMouseControls();
         return false;
+    }
+
+    bool leftMouseEvent =
+        (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT) ||
+        (ev.type == SDL_MOUSEBUTTONUP && ev.button.button == SDL_BUTTON_LEFT) ||
+        (ev.type == SDL_MOUSEMOTION && (ev.motion.state & SDL_BUTTON_LMASK));
+    if (leftMouseEvent && frontendPostRestoreInputBlocked())
+    {
+        releaseVirtualMouseControls();
+        if (inputTraceEnabled())
+        {
+            printf("frontend: virtual mouse ignored after restore type=%u\n",
+                (unsigned int)ev.type);
+        }
+        return true;
     }
 
     if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT)
@@ -1365,7 +2165,7 @@ static void handleRawKeyboardInput(HRAWINPUT rawInput)
                     acceptsInput ? 1u : 0u);
             }
 
-            if (acceptsInput && !g_keyboardMappingPending)
+            if (acceptsInput && !inputMappingUiKeyboardCapturePending() && !frontendPostRestoreInputBlocked())
             {
                 inputHandleHostVirtualKey(virtualKey, pressed);
             }
@@ -1396,7 +2196,6 @@ static void handleSystemWindowEvent(const SDL_Event& ev)
 #ifdef _WIN32
 static void setMenuLoopPauseActive(bool active)
 {
-    active = active && frontendMenuGameRunning();
     if (g_menuLoopPauseActive == active)
     {
         return;
@@ -1600,6 +2399,19 @@ static void releaseFrontendInputControls(void)
     inputClearControls();
 }
 
+void frontendResetInputAfterStateRestore(void)
+{
+    releaseVirtualMouseControls();
+    releaseGameControllerControls();
+    inputResetTransientControls();
+    g_postRestoreInputBlockUntilTicks = SDL_GetTicks64() + kPostRestoreInputBlockMs;
+    if (inputTraceEnabled())
+    {
+        printf("frontend: post-restore input reset block_ms=%llu\n",
+            (unsigned long long)kPostRestoreInputBlockMs);
+    }
+}
+
 bool frontendGamePaused(void)
 {
     return SDL_AtomicGet(&g_gamePaused) != 0;
@@ -1640,9 +2452,16 @@ static void applyFrontendPauseState(bool refreshMenu)
     SDL_AtomicSet(&g_gamePaused, paused ? 1 : 0);
     if (paused)
     {
+        // Menus and dialogs can block this thread, so freeze idle motion before
+        // control enters native modal code.
+        g_idleAnimationClock.pause();
         releaseFrontendInputControls();
     }
     pauseGateSetPaused(paused);
+    if (paused)
+    {
+        emulatorRuntimeNotifyPauseRequested();
+    }
     MixerSetFrontendPaused(paused);
     printf("frontend: game pause %s\n", paused ? "on" : "off");
     if (refreshMenu)
@@ -1696,8 +2515,13 @@ void frontendEndModalPause(void)
     {
         return;
     }
+    bool wasPaused = frontendGamePaused();
     --g_modalPauseDepth;
     applyFrontendPauseState(true);
+    if (wasPaused && !frontendGamePaused() && !pauseGateWaitForNoWaiters(2000))
+    {
+        printf("frontend: modal pause drain timeout waiters=%u\n", pauseGateWaiterCount());
+    }
 }
 
 bool frontendWaitForRuntimePaused(uint32_t timeoutMs)
@@ -2208,450 +3032,36 @@ static void showControllerMappingUnavailable(void)
     MessageBoxW(g_nativeWindow, body, controllerMappingTitle(), MB_OK | MB_ICONINFORMATION);
 }
 
-struct InputMappingControlRow
-{
-    uint32_t controlBit;
-    const wchar_t* labelEn;
-    const wchar_t* labelZh;
-};
-
-static const InputMappingControlRow kInputMappingRows[] =
-{
-    { CONTROL_BUTTON_A, L"A", L"A" },
-    { CONTROL_BUTTON_B, L"B", L"B" },
-    { CONTROL_BUTTON_X, L"X", L"X" },
-    { CONTROL_BUTTON_Y, L"Y", L"Y" },
-    { CONTROL_BUTTON_START, L"START", L"START" },
-    { CONTROL_BUTTON_SELECT, L"SELECT", L"SELECT" },
-    { CONTROL_TRIGGER_LEFT, L"Left Shoulder", L"\u5de6\u80a9\u952e" },
-    { CONTROL_TRIGGER_RIGHT, L"Right Shoulder", L"\u53f3\u80a9\u952e" },
-    { CONTROL_DPAD_UP, L"D-pad Up", L"\u65b9\u5411\u952e\u4e0a" },
-    { CONTROL_DPAD_DOWN, L"D-pad Down", L"\u65b9\u5411\u952e\u4e0b" },
-    { CONTROL_DPAD_LEFT, L"D-pad Left", L"\u65b9\u5411\u952e\u5de6" },
-    { CONTROL_DPAD_RIGHT, L"D-pad Right", L"\u65b9\u5411\u952e\u53f3" },
-};
-
-static const int kInputMappingIdKeyboardBase = 41000;
-static const int kInputMappingIdControllerBase = 41100;
-static const int kInputMappingIdKeyboardTextBase = 41200;
-static const int kInputMappingIdControllerTextBase = 41300;
-static const int kInputMappingIdResetKeyboard = 41400;
-static const int kInputMappingIdResetController = 41401;
-static const int kInputMappingIdClose = 41402;
-static const int kInputMappingIdStatus = 41403;
-
-static std::wstring utf8ToWideSimple(const std::string& text)
-{
-    int size = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, NULL, 0);
-    if (size <= 0)
-    {
-        return asciiToWide(text.c_str());
-    }
-    std::wstring out((size_t)size - 1, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, &out[0], size);
-    return out;
-}
-
-static const wchar_t* inputMappingRowLabel(const InputMappingControlRow& row)
-{
-    return frontendUiLanguage() == UI_LANGUAGE_CHINESE ? row.labelZh : row.labelEn;
-}
-
-static int inputMappingRowIndexForButton(int id, int base)
-{
-    int index = id - base;
-    if (index < 0 || index >= (int)(sizeof(kInputMappingRows) / sizeof(kInputMappingRows[0])))
-    {
-        return -1;
-    }
-    return index;
-}
-
-static HWND inputMappingItem(int id)
-{
-    return g_inputMappingWindow ? GetDlgItem(g_inputMappingWindow, id) : NULL;
-}
-
-static HFONT inputMappingFont(void)
-{
-    if (g_inputMappingFont)
-    {
-        return g_inputMappingFont;
-    }
-
-    NONCLIENTMETRICSW metrics;
-    memset(&metrics, 0, sizeof(metrics));
-    metrics.cbSize = sizeof(metrics);
-    if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, metrics.cbSize, &metrics, 0))
-    {
-        g_inputMappingFont = CreateFontIndirectW(&metrics.lfMessageFont);
-        g_inputMappingOwnFont = g_inputMappingFont != NULL;
-    }
-    if (!g_inputMappingFont)
-    {
-        g_inputMappingFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
-        g_inputMappingOwnFont = false;
-    }
-    return g_inputMappingFont;
-}
-
-static void setInputMappingStatus(const wchar_t* text)
-{
-    HWND status = inputMappingItem(kInputMappingIdStatus);
-    if (status)
-    {
-        SendMessageW(status, WM_SETREDRAW, FALSE, 0);
-        SetWindowTextW(status, L"");
-        SetWindowTextW(status, text ? text : L"");
-        SendMessageW(status, WM_SETREDRAW, TRUE, 0);
-        InvalidateRect(status, NULL, TRUE);
-        UpdateWindow(status);
-    }
-}
-
-static void refreshInputMappingWindow(void)
-{
-    if (!g_inputMappingWindow)
-    {
-        return;
-    }
-    for (int i = 0; i < (int)(sizeof(kInputMappingRows) / sizeof(kInputMappingRows[0])); ++i)
-    {
-        uint32_t controlBit = kInputMappingRows[i].controlBit;
-        SetWindowTextW(inputMappingItem(kInputMappingIdKeyboardTextBase + i),
-            utf8ToWideSimple(inputKeyboardSourceForControl(controlBit)).c_str());
-        SetWindowTextW(inputMappingItem(kInputMappingIdControllerTextBase + i),
-            utf8ToWideSimple(frontendControllerSourceForControl(controlBit)).c_str());
-    }
-}
-
-static void saveKeyboardMappingFromRuntime(void)
-{
-    if (!g_frontendSettings)
-    {
-        return;
-    }
-    g_frontendSettings->keyboardMapping = inputCurrentKeyboardMapping();
-    emulatorSaveSettings(*g_frontendSettings);
-    frontendMenuRefresh();
-}
-
-static void beginKeyboardMappingCapture(uint32_t controlBit)
-{
-    g_keyboardMappingPending = true;
-    g_keyboardMappingTarget = controlBit;
-    std::wstring status;
-    if (frontendUiLanguage() == UI_LANGUAGE_CHINESE)
-    {
-        status = L"\u8bf7\u6309\u4e0b\u8981\u6620\u5c04\u5230 ";
-        status += controllerTargetDisplayName(controlMask(controlBit));
-        status += L" \u7684\u952e\u76d8\u6309\u952e\uff0cEsc \u53d6\u6d88\u3002";
-    }
-    else
-    {
-        status = L"Press a keyboard key for ";
-        status += controllerTargetDisplayName(controlMask(controlBit));
-        status += L"; Esc cancels.";
-    }
-    setInputMappingStatus(status.c_str());
-    SetFocus(g_inputMappingWindow);
-}
-
-static SDL_Scancode win32VirtualKeyToScancode(WPARAM virtualKey, LPARAM keyData)
-{
-    if (virtualKey >= 'A' && virtualKey <= 'Z')
-    {
-        return (SDL_Scancode)(SDL_SCANCODE_A + (virtualKey - 'A'));
-    }
-    if (virtualKey >= '1' && virtualKey <= '9')
-    {
-        return (SDL_Scancode)(SDL_SCANCODE_1 + (virtualKey - '1'));
-    }
-    if (virtualKey == '0') return SDL_SCANCODE_0;
-
-    switch (virtualKey)
-    {
-    case VK_ESCAPE: return SDL_SCANCODE_ESCAPE;
-    case VK_BACK: return SDL_SCANCODE_BACKSPACE;
-    case VK_TAB: return SDL_SCANCODE_TAB;
-    case VK_RETURN: return (keyData & (1 << 24)) ? SDL_SCANCODE_KP_ENTER : SDL_SCANCODE_RETURN;
-    case VK_SPACE: return SDL_SCANCODE_SPACE;
-    case VK_PRIOR: return SDL_SCANCODE_PAGEUP;
-    case VK_NEXT: return SDL_SCANCODE_PAGEDOWN;
-    case VK_END: return SDL_SCANCODE_END;
-    case VK_HOME: return SDL_SCANCODE_HOME;
-    case VK_LEFT: return SDL_SCANCODE_LEFT;
-    case VK_UP: return SDL_SCANCODE_UP;
-    case VK_RIGHT: return SDL_SCANCODE_RIGHT;
-    case VK_DOWN: return SDL_SCANCODE_DOWN;
-    case VK_INSERT: return SDL_SCANCODE_INSERT;
-    case VK_DELETE: return SDL_SCANCODE_DELETE;
-    case VK_LSHIFT: return SDL_SCANCODE_LSHIFT;
-    case VK_RSHIFT: return SDL_SCANCODE_RSHIFT;
-    case VK_SHIFT: return SDL_SCANCODE_LSHIFT;
-    case VK_LCONTROL: return SDL_SCANCODE_LCTRL;
-    case VK_RCONTROL: return SDL_SCANCODE_RCTRL;
-    case VK_CONTROL: return SDL_SCANCODE_LCTRL;
-    case VK_LMENU: return SDL_SCANCODE_LALT;
-    case VK_RMENU: return SDL_SCANCODE_RALT;
-    case VK_MENU: return SDL_SCANCODE_LALT;
-    case VK_F1: return SDL_SCANCODE_F1;
-    case VK_F2: return SDL_SCANCODE_F2;
-    case VK_F3: return SDL_SCANCODE_F3;
-    case VK_F4: return SDL_SCANCODE_F4;
-    case VK_F5: return SDL_SCANCODE_F5;
-    case VK_F6: return SDL_SCANCODE_F6;
-    case VK_F7: return SDL_SCANCODE_F7;
-    case VK_F8: return SDL_SCANCODE_F8;
-    case VK_F9: return SDL_SCANCODE_F9;
-    case VK_F10: return SDL_SCANCODE_F10;
-    case VK_F11: return SDL_SCANCODE_F11;
-    case VK_F12: return SDL_SCANCODE_F12;
-    default:
-        break;
-    }
-
-    return SDL_GetScancodeFromKey((SDL_Keycode)MapVirtualKeyW((UINT)virtualKey, MAPVK_VK_TO_CHAR));
-}
-
-static void finishKeyboardMappingCapture(SDL_Scancode scancode)
-{
-    if (!g_keyboardMappingPending)
-    {
-        return;
-    }
-    uint32_t target = g_keyboardMappingTarget;
-    g_keyboardMappingPending = false;
-    g_keyboardMappingTarget = 0;
-    if (scancode != SDL_SCANCODE_ESCAPE && inputSetKeyboardMappingForControl(target, scancode))
-    {
-        saveKeyboardMappingFromRuntime();
-        refreshInputMappingWindow();
-        setInputMappingStatus(frontendUiLanguage() == UI_LANGUAGE_CHINESE ?
-            L"\u952e\u76d8\u6620\u5c04\u5df2\u4fdd\u5b58\u3002" : L"Keyboard mapping saved.");
-        printf("frontend: keyboard mapping saved target=%s source=%s spec='%s'\n",
-            controllerTargetName(controlMask(target)),
-            SDL_GetScancodeName(scancode),
-            g_frontendSettings ? g_frontendSettings->keyboardMapping.c_str() : inputCurrentKeyboardMapping().c_str());
-    }
-    else
-    {
-        setInputMappingStatus(frontendUiLanguage() == UI_LANGUAGE_CHINESE ?
-            L"\u952e\u76d8\u6620\u5c04\u5df2\u53d6\u6d88\u3002" : L"Keyboard mapping cancelled.");
-    }
-}
-
-static LRESULT CALLBACK inputMappingWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-    switch (msg)
-    {
-    case WM_COMMAND:
-    {
-        int id = LOWORD(wParam);
-        int keyboardIndex = inputMappingRowIndexForButton(id, kInputMappingIdKeyboardBase);
-        if (keyboardIndex >= 0)
-        {
-            beginKeyboardMappingCapture(kInputMappingRows[keyboardIndex].controlBit);
-            return 0;
-        }
-        int controllerIndex = inputMappingRowIndexForButton(id, kInputMappingIdControllerBase);
-        if (controllerIndex >= 0)
-        {
-            frontendBeginControllerMapping(kInputMappingRows[controllerIndex].controlBit);
-            refreshInputMappingWindow();
-            return 0;
-        }
-        if (id == kInputMappingIdResetKeyboard)
-        {
-            inputResetKeyboardMapping();
-            saveKeyboardMappingFromRuntime();
-            refreshInputMappingWindow();
-            setInputMappingStatus(frontendUiLanguage() == UI_LANGUAGE_CHINESE ?
-                L"\u952e\u76d8\u6620\u5c04\u5df2\u6062\u590d\u9ed8\u8ba4\u3002" : L"Keyboard mapping restored to defaults.");
-            return 0;
-        }
-        if (id == kInputMappingIdResetController)
-        {
-            frontendResetControllerMapping();
-            refreshInputMappingWindow();
-            setInputMappingStatus(frontendUiLanguage() == UI_LANGUAGE_CHINESE ?
-                L"\u624b\u67c4\u6620\u5c04\u5df2\u6062\u590d\u9ed8\u8ba4\u3002" : L"Controller mapping restored to defaults.");
-            return 0;
-        }
-        if (id == kInputMappingIdClose)
-        {
-            DestroyWindow(hwnd);
-            return 0;
-        }
-        break;
-    }
-    case WM_KEYDOWN:
-        if (g_keyboardMappingPending)
-        {
-            finishKeyboardMappingCapture(win32VirtualKeyToScancode(wParam, lParam));
-            return 0;
-        }
-        break;
-    case WM_CTLCOLORSTATIC:
-    {
-        int id = GetDlgCtrlID((HWND)lParam);
-        int rowCount = (int)(sizeof(kInputMappingRows) / sizeof(kInputMappingRows[0]));
-        bool valueField =
-            (id >= kInputMappingIdKeyboardTextBase && id < kInputMappingIdKeyboardTextBase + rowCount) ||
-            (id >= kInputMappingIdControllerTextBase && id < kInputMappingIdControllerTextBase + rowCount);
-        if (valueField || id == kInputMappingIdStatus)
-        {
-            SetBkMode((HDC)wParam, OPAQUE);
-            if (valueField)
-            {
-                SetBkColor((HDC)wParam, GetSysColor(COLOR_WINDOW));
-                SetTextColor((HDC)wParam, GetSysColor(COLOR_WINDOWTEXT));
-                return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
-            }
-            SetBkColor((HDC)wParam, GetSysColor(COLOR_BTNFACE));
-            SetTextColor((HDC)wParam, GetSysColor(COLOR_BTNTEXT));
-            return (LRESULT)(g_inputMappingBackgroundBrush ?
-                g_inputMappingBackgroundBrush : GetSysColorBrush(COLOR_BTNFACE));
-        }
-        SetBkMode((HDC)wParam, TRANSPARENT);
-        return (LRESULT)(g_inputMappingBackgroundBrush ?
-            g_inputMappingBackgroundBrush : GetSysColorBrush(COLOR_BTNFACE));
-    }
-    case WM_CTLCOLOREDIT:
-        SetBkColor((HDC)wParam, GetSysColor(COLOR_WINDOW));
-        SetTextColor((HDC)wParam, GetSysColor(COLOR_WINDOWTEXT));
-        return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
-    case WM_CLOSE:
-        DestroyWindow(hwnd);
-        return 0;
-    case WM_DESTROY:
-        if (g_inputMappingWindow == hwnd)
-        {
-            g_inputMappingWindow = NULL;
-            g_keyboardMappingPending = false;
-            g_keyboardMappingTarget = 0;
-        }
-        if (g_inputMappingFont && g_inputMappingOwnFont)
-        {
-            DeleteObject(g_inputMappingFont);
-        }
-        g_inputMappingFont = NULL;
-        g_inputMappingOwnFont = false;
-        return 0;
-    default:
-        break;
-    }
-    return DefWindowProcW(hwnd, msg, wParam, lParam);
-}
-
-static void ensureInputMappingWindowClass(void)
-{
-    static bool registered = false;
-    if (registered)
-    {
-        return;
-    }
-    WNDCLASSW wc;
-    memset(&wc, 0, sizeof(wc));
-    wc.lpfnWndProc = inputMappingWindowProc;
-    wc.hInstance = GetModuleHandleW(NULL);
-    wc.lpszClassName = L"DingooPieInputMappingWindow";
-    wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
-    wc.hIcon = loadDingooPieIcon(32);
-    wc.hbrBackground = g_inputMappingBackgroundBrush;
-    RegisterClassW(&wc);
-    registered = true;
-}
-
-static HWND createInputMappingChild(HWND parent, const wchar_t* className, const wchar_t* text,
-    DWORD exStyle, DWORD style, int x, int y, int w, int h, int id)
-{
-    HWND child = CreateWindowExW(exStyle, className, text, WS_CHILD | WS_VISIBLE | style,
-        x, y, w, h, parent, (HMENU)(INT_PTR)id, GetModuleHandleW(NULL), NULL);
-    if (child)
-    {
-        SendMessageW(child, WM_SETFONT, (WPARAM)inputMappingFont(), TRUE);
-        SetWindowTheme(child, L"Explorer", NULL);
-    }
-    return child;
-}
-
 void frontendOpenInputMappingWindow(void)
 {
-    if (g_inputMappingWindow)
-    {
-        ShowWindow(g_inputMappingWindow, SW_SHOWNOACTIVATE);
-        return;
-    }
-
-    bool zh = frontendUiLanguage() == UI_LANGUAGE_CHINESE;
-    g_inputMappingBackgroundBrush = GetSysColorBrush(COLOR_BTNFACE);
-    ensureInputMappingWindowClass();
-    int rowCount = (int)(sizeof(kInputMappingRows) / sizeof(kInputMappingRows[0]));
-    int width = 760;
-    int height = 100 + rowCount * 34 + 54;
-    g_inputMappingWindow = CreateWindowExW(WS_EX_CONTROLPARENT,
-        L"DingooPieInputMappingWindow",
-        zh ? L"\u6309\u952e\u6620\u5c04" : L"Input Mapping",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, width, height,
-        NULL, NULL, GetModuleHandleW(NULL), NULL);
-    if (!g_inputMappingWindow)
-    {
-        return;
-    }
-    applyDingooPieIconToWindow(g_inputMappingWindow);
-
-    createInputMappingChild(g_inputMappingWindow, L"STATIC", zh ? L"\u63a7\u5236" : L"Control",
-        0, 0, 18, 16, 120, 20, -1);
-    createInputMappingChild(g_inputMappingWindow, L"STATIC", zh ? L"\u952e\u76d8" : L"Keyboard",
-        0, 0, 150, 16, 160, 20, -1);
-    createInputMappingChild(g_inputMappingWindow, L"STATIC", zh ? L"\u624b\u67c4 / \u6447\u6746" : L"Controller / Stick",
-        0, 0, 390, 16, 180, 20, -1);
-
-    for (int i = 0; i < rowCount; ++i)
-    {
-        int y = 44 + i * 34;
-        createInputMappingChild(g_inputMappingWindow, L"STATIC", inputMappingRowLabel(kInputMappingRows[i]),
-            0, 0, 18, y + 4, 120, 22, -1);
-        createInputMappingChild(g_inputMappingWindow, L"EDIT", L"",
-            WS_EX_CLIENTEDGE, ES_READONLY | ES_AUTOHSCROLL,
-            150, y, 150, 24, kInputMappingIdKeyboardTextBase + i);
-        createInputMappingChild(g_inputMappingWindow, L"BUTTON", zh ? L"\u8bbe\u7f6e\u952e\u76d8" : L"Set Key",
-            0, 0, 306, y - 1, 74, 26, kInputMappingIdKeyboardBase + i);
-        createInputMappingChild(g_inputMappingWindow, L"EDIT", L"",
-            WS_EX_CLIENTEDGE, ES_READONLY | ES_AUTOHSCROLL,
-            390, y, 170, 24, kInputMappingIdControllerTextBase + i);
-        createInputMappingChild(g_inputMappingWindow, L"BUTTON", zh ? L"\u8bbe\u7f6e\u624b\u67c4" : L"Set Pad",
-            0, 0, 566, y - 1, 82, 26, kInputMappingIdControllerBase + i);
-    }
-
-    int bottomY = 48 + rowCount * 34;
-    createInputMappingChild(g_inputMappingWindow, L"STATIC", L"",
-        0, 0, 18, bottomY, 520, 24, kInputMappingIdStatus);
-    createInputMappingChild(g_inputMappingWindow, L"BUTTON", zh ? L"\u6062\u590d\u952e\u76d8\u9ed8\u8ba4" : L"Reset Keyboard",
-        0, 0, 18, bottomY + 30, 136, 28, kInputMappingIdResetKeyboard);
-    createInputMappingChild(g_inputMappingWindow, L"BUTTON", zh ? L"\u6062\u590d\u624b\u67c4\u9ed8\u8ba4" : L"Reset Controller",
-        0, 0, 162, bottomY + 30, 140, 28, kInputMappingIdResetController);
-    createInputMappingChild(g_inputMappingWindow, L"BUTTON", zh ? L"\u5173\u95ed" : L"Close",
-        0, 0, 650, bottomY + 30, 74, 28, kInputMappingIdClose);
-
-    refreshInputMappingWindow();
-    setInputMappingStatus(zh ?
-        L"\u70b9\u51fb\u8bbe\u7f6e\u952e\u76d8\u6216\u8bbe\u7f6e\u624b\u67c4\u540e\u6309\u4e0b\u76ee\u6807\u6309\u952e\u3002" :
-        L"Choose Set Key or Set Pad, then press the target input.");
-    ShowWindow(g_inputMappingWindow, SW_SHOWNOACTIVATE);
-    UpdateWindow(g_inputMappingWindow);
+    InputMappingUiCallbacks callbacks;
+    memset(&callbacks, 0, sizeof(callbacks));
+    callbacks.controllerSourceForControl = frontendControllerSourceForControl;
+    callbacks.beginControllerMapping = frontendBeginControllerMapping;
+    callbacks.resetControllerMapping = frontendResetControllerMapping;
+    callbacks.settingsChanged = frontendMenuRefresh;
+    inputMappingUiOpenWindow(g_nativeWindow, frontendUiLanguage(), g_frontendSettings, callbacks);
 }
 
-void frontendOpenCheatFinderWindow(void)
+void frontendOpenResourceMonitorWindow(void)
 {
 #ifdef _WIN32
     if (!frontendMenuGameRunning())
     {
         return;
     }
-    cheatFinderOpenWindow(g_nativeWindow, frontendUiLanguage());
+    resourceMonitorOpenWindow(g_nativeWindow, frontendUiLanguage());
+#endif
+}
+
+void frontendOpenMemorySearcherWindow(void)
+{
+#ifdef _WIN32
+    if (!frontendMenuGameRunning())
+    {
+        return;
+    }
+    memorySearcherOpenWindow(g_nativeWindow, frontendUiLanguage());
 #endif
 }
 
@@ -2711,7 +3121,7 @@ static bool finishControllerMapping(const ControllerPhysicalSource& source)
         nextMapping.empty() ? "(default)" : nextMapping.c_str());
 #ifdef _WIN32
     showControllerMappingSaved(targetMask, source.name);
-    refreshInputMappingWindow();
+    inputMappingUiRefresh();
 #endif
     return true;
 }
@@ -2742,7 +3152,7 @@ void frontendBeginControllerMapping(uint32_t controlBit)
     {
         printf("frontend: controller mapping unavailable because no SDL GameController is connected\n");
 #ifdef _WIN32
-        setInputMappingStatus(frontendUiLanguage() == UI_LANGUAGE_CHINESE ?
+        inputMappingUiSetStatus(frontendUiLanguage() == UI_LANGUAGE_CHINESE ?
             L"\u672a\u68c0\u6d4b\u5230 SDL GameController \u517c\u5bb9\u624b\u67c4\u3002" :
             L"No SDL GameController-compatible pad detected.");
         showControllerMappingUnavailable();
@@ -2780,7 +3190,7 @@ void frontendResetControllerMapping(void)
     frontendMenuRefresh();
     printf("frontend: controller mapping reset to defaults\n");
 #ifdef _WIN32
-    refreshInputMappingWindow();
+    inputMappingUiRefresh();
 #endif
 }
 
@@ -2878,7 +3288,7 @@ static void handleGameControllerDeviceRemoved(SDL_JoystickID instanceId)
     {
         cancelControllerMapping();
 #ifdef _WIN32
-        setInputMappingStatus(frontendUiLanguage() == UI_LANGUAGE_CHINESE ?
+        inputMappingUiSetStatus(frontendUiLanguage() == UI_LANGUAGE_CHINESE ?
             L"\u624b\u67c4\u5df2\u65ad\u5f00\uff0c\u6620\u5c04\u7b49\u5f85\u5df2\u53d6\u6d88\u3002" :
             L"Controller disconnected; mapping wait cancelled.");
 #endif
@@ -3145,6 +3555,7 @@ void frontendApplyVideoSettings(const EmulatorSettings& settings)
         g_lastDisplayFrameWidth = displayWidth;
         g_lastDisplayFrameHeight = displayHeight;
     }
+    resetIdleTextures();
 
     if (g_window)
     {
@@ -3182,10 +3593,12 @@ void frontendApplyAudioSettings(const EmulatorSettings& settings)
 {
     MixerSetMasterVolumePercent(settings.audioVolumePercent);
     MixerSetBufferSamples(settings.audioBufferSamples);
-    printf("frontend: audio settings volume=%d buffer_samples=%d drop_audio=%u\n",
+    MixerSetAudioEffect(settings.audioEffect);
+    printf("frontend: audio settings volume=%d buffer_samples=%d effect=%s audio_disabled=%u\n",
         settings.audioVolumePercent,
         settings.audioBufferSamples,
-        settings.dropAudio ? 1u : 0u);
+        emulatorAudioEffectName(settings.audioEffect),
+        settings.audioDisabled ? 1u : 0u);
 }
 
 void frontendApplyInputSettings(const EmulatorSettings& settings)
@@ -3232,14 +3645,31 @@ struct AutoPressPlan
     uint64_t holdMs;
 };
 
-struct AutoPressSequenceEvent
+struct AutoControlSequenceEvent
 {
     uint32_t controlBit;
     uint64_t startMs;
     uint64_t holdMs;
 };
 
+struct AutoVirtualClickEvent
+{
+    AutoControlSequenceEvent timing;
+    uint64_t downElapsedMs;
+    bool downSent;
+    bool upSent;
+};
+
+struct AutoStateAction
+{
+    int slot;
+    uint64_t startMs;
+    bool done;
+};
+
 static const int kMaxAutoPressSequenceEvents = 64;
+static const int kMaxAutoVirtualClickEvents = 64;
+static const int kMaxAutoStateActions = 32;
 
 static bool parseControlName(const char* text, size_t length, uint32_t* outControlBit)
 {
@@ -3324,6 +3754,26 @@ static bool parseControlName(const char* text, size_t length, uint32_t* outContr
         *outControlBit = CONTROL_BUTTON_SELECT;
         return true;
     }
+    if (length == 2 && _strnicmp(text, "UP", length) == 0)
+    {
+        *outControlBit = CONTROL_DPAD_UP;
+        return true;
+    }
+    if (length == 4 && _strnicmp(text, "DOWN", length) == 0)
+    {
+        *outControlBit = CONTROL_DPAD_DOWN;
+        return true;
+    }
+    if (length == 4 && _strnicmp(text, "LEFT", length) == 0)
+    {
+        *outControlBit = CONTROL_DPAD_LEFT;
+        return true;
+    }
+    if (length == 5 && _strnicmp(text, "RIGHT", length) == 0)
+    {
+        *outControlBit = CONTROL_DPAD_RIGHT;
+        return true;
+    }
     return false;
 }
 
@@ -3344,82 +3794,195 @@ static bool parseUnsignedField(const char* text, uint64_t* out)
     return true;
 }
 
-static int parseAutoPressSequence(AutoPressSequenceEvent* events, int capacity)
+static int parseAutoStateSequence(const char* envName, AutoStateAction* actions, int capacity)
+{
+    if (!envName || !actions || capacity <= 0)
+    {
+        return 0;
+    }
+
+    const char* spec = getenv(envName);
+    if (!spec || !spec[0])
+    {
+        return 0;
+    }
+
+    char buffer[2048];
+    snprintf(buffer, sizeof(buffer), "%s", spec);
+
+    int count = 0;
+    char* token = buffer;
+    while (token && *token && count < capacity)
+    {
+        char* next = strchr(token, ',');
+        if (next)
+        {
+            *next = 0;
+            next++;
+        }
+
+        while (*token == ' ' || *token == '\t')
+        {
+            token++;
+        }
+        size_t tokenLength = strlen(token);
+        while (tokenLength > 0 && (token[tokenLength - 1] == ' ' || token[tokenLength - 1] == '\t'))
+        {
+            token[--tokenLength] = 0;
+        }
+
+        char* at = strchr(token, '@');
+        if (at)
+        {
+            *at = 0;
+            uint64_t slot = 0;
+            uint64_t startMs = 0;
+            if (parseUnsignedField(token, &slot) &&
+                parseUnsignedField(at + 1, &startMs) &&
+                slot >= 1 && slot <= kSaveStateSlotCount)
+            {
+                actions[count].slot = (int)slot;
+                actions[count].startMs = startMs;
+                actions[count].done = false;
+                count++;
+            }
+            else
+            {
+                printf("frontend: invalid %s token='%s@%s'\n", envName, token, at + 1);
+            }
+        }
+        else if (tokenLength > 0)
+        {
+            printf("frontend: invalid %s token='%s'\n", envName, token);
+        }
+
+        token = next;
+    }
+
+    printf("frontend: %s actions=%d spec='%s'\n", envName, count, spec);
+    return count;
+}
+
+static void runAutoStateActions(AutoStateAction* actions, int count, uint64_t elapsedMs, bool save)
+{
+    if (!actions || count <= 0)
+    {
+        return;
+    }
+
+    for (int i = 0; i < count; ++i)
+    {
+        if (actions[i].done || elapsedMs < actions[i].startMs)
+        {
+            continue;
+        }
+        actions[i].done = true;
+        if (save)
+        {
+            frontendMenuSaveStateSlotForAutomation(actions[i].slot);
+        }
+        else
+        {
+            frontendMenuLoadStateSlotForAutomation(actions[i].slot);
+        }
+    }
+}
+
+static int parseTimedControlSequence(const char* envName, const char* logName,
+    AutoControlSequenceEvent* events, int capacity)
+{
+    if (!envName || !logName || !events || capacity <= 0)
+    {
+        return 0;
+    }
+
+    const char* spec = getenv(envName);
+    if (!spec || !spec[0])
+    {
+        return 0;
+    }
+
+    char buffer[2048];
+    snprintf(buffer, sizeof(buffer), "%s", spec);
+
+    int count = 0;
+    char* token = buffer;
+    while (token && *token && count < capacity)
+    {
+        char* next = strchr(token, ',');
+        if (next)
+        {
+            *next = 0;
+            next++;
+        }
+
+        while (*token == ' ' || *token == '\t')
+        {
+            token++;
+        }
+        size_t tokenLength = strlen(token);
+        while (tokenLength > 0 && (token[tokenLength - 1] == ' ' || token[tokenLength - 1] == '\t'))
+        {
+            token[--tokenLength] = 0;
+        }
+
+        char* at = strchr(token, '@');
+        char* colon = at ? strchr(at + 1, ':') : NULL;
+        if (at && colon)
+        {
+            *at = 0;
+            *colon = 0;
+            uint32_t controlBit = 0;
+            uint64_t startMs = 0;
+            uint64_t holdMs = 0;
+            if (parseControlName(token, strlen(token), &controlBit) &&
+                parseUnsignedField(at + 1, &startMs) &&
+                parseUnsignedField(colon + 1, &holdMs))
+            {
+                if (holdMs < 20)
+                {
+                    holdMs = 20;
+                }
+                if (holdMs > 5000)
+                {
+                    holdMs = 5000;
+                }
+                events[count].controlBit = controlBit;
+                events[count].startMs = startMs;
+                events[count].holdMs = holdMs;
+                count++;
+            }
+            else
+            {
+                printf("frontend: invalid %s token='%s@%s:%s'\n",
+                    logName, token, at + 1, colon + 1);
+            }
+        }
+        else if (tokenLength > 0)
+        {
+            printf("frontend: invalid %s token='%s'\n", logName, token);
+        }
+
+        token = next;
+    }
+
+    printf("frontend: %s events=%d spec='%s'\n", logName, count, spec);
+    return count;
+}
+
+static int parseAutoPressSequence(AutoControlSequenceEvent* events, int capacity)
 {
     static int initialized = 0;
-    static AutoPressSequenceEvent parsedEvents[kMaxAutoPressSequenceEvents] = {};
+    static AutoControlSequenceEvent parsedEvents[kMaxAutoPressSequenceEvents] = {};
     static int parsedCount = 0;
 
     if (!initialized)
     {
-        const char* spec = getenv("DINGOO_PIE_AUTOPRESS_SEQUENCE");
-        if (spec && spec[0])
-        {
-            char buffer[2048];
-            snprintf(buffer, sizeof(buffer), "%s", spec);
-
-            char* token = buffer;
-            while (token && *token && parsedCount < kMaxAutoPressSequenceEvents)
-            {
-                char* next = strchr(token, ',');
-                if (next)
-                {
-                    *next = 0;
-                    next++;
-                }
-
-                while (*token == ' ' || *token == '\t')
-                {
-                    token++;
-                }
-                size_t tokenLength = strlen(token);
-                while (tokenLength > 0 && (token[tokenLength - 1] == ' ' || token[tokenLength - 1] == '\t'))
-                {
-                    token[--tokenLength] = 0;
-                }
-
-                char* at = strchr(token, '@');
-                char* colon = at ? strchr(at + 1, ':') : NULL;
-                if (at && colon)
-                {
-                    *at = 0;
-                    *colon = 0;
-                    uint32_t controlBit = 0;
-                    uint64_t startMs = 0;
-                    uint64_t holdMs = 0;
-                    if (parseControlName(token, strlen(token), &controlBit) &&
-                        parseUnsignedField(at + 1, &startMs) &&
-                        parseUnsignedField(colon + 1, &holdMs))
-                    {
-                        if (holdMs < 20)
-                        {
-                            holdMs = 20;
-                        }
-                        if (holdMs > 5000)
-                        {
-                            holdMs = 5000;
-                        }
-                        parsedEvents[parsedCount].controlBit = controlBit;
-                        parsedEvents[parsedCount].startMs = startMs;
-                        parsedEvents[parsedCount].holdMs = holdMs;
-                        parsedCount++;
-                    }
-                    else
-                    {
-                        printf("frontend: invalid autopress sequence token='%s@%s:%s'\n",
-                            token, at + 1, colon + 1);
-                    }
-                }
-                else if (tokenLength > 0)
-                {
-                    printf("frontend: invalid autopress sequence token='%s'\n", token);
-                }
-
-                token = next;
-            }
-
-            printf("frontend: autopress sequence events=%d spec='%s'\n", parsedCount, spec);
-        }
+        parsedCount = parseTimedControlSequence(
+            "DINGOO_PIE_AUTOPRESS_SEQUENCE",
+            "autopress sequence",
+            parsedEvents,
+            kMaxAutoPressSequenceEvents);
         initialized = 1;
     }
 
@@ -3435,9 +3998,32 @@ static int parseAutoPressSequence(AutoPressSequenceEvent* events, int capacity)
     return copyCount;
 }
 
+static int parseAutoVirtualClickSequence(AutoVirtualClickEvent* events, int capacity)
+{
+    if (!events || capacity <= 0)
+    {
+        return 0;
+    }
+
+    AutoControlSequenceEvent parsedEvents[kMaxAutoVirtualClickEvents] = {};
+    int count = parseTimedControlSequence(
+        "DINGOO_PIE_AUTOTEST_VIRTUAL_CLICK_SEQUENCE",
+        "virtual click sequence",
+        parsedEvents,
+        capacity < kMaxAutoVirtualClickEvents ? capacity : kMaxAutoVirtualClickEvents);
+    for (int i = 0; i < count; ++i)
+    {
+        events[i].timing = parsedEvents[i];
+        events[i].downElapsedMs = 0;
+        events[i].downSent = false;
+        events[i].upSent = false;
+    }
+    return count;
+}
+
 static void updateAutoPressSequence(uint64_t now, uint64_t startTicks)
 {
-    AutoPressSequenceEvent events[kMaxAutoPressSequenceEvents];
+    AutoControlSequenceEvent events[kMaxAutoPressSequenceEvents];
     int count = parseAutoPressSequence(events, kMaxAutoPressSequenceEvents);
     if (count <= 0)
     {
@@ -3469,6 +4055,105 @@ static void updateAutoPressSequence(uint64_t now, uint64_t startTicks)
         if (referencedControls & mask)
         {
             inputSetSyntheticControl(controlBit, (activeControls & mask) != 0);
+        }
+    }
+}
+
+static bool findVirtualControlClickPoint(uint32_t controlBit, int* outX, int* outY)
+{
+    if (!outX || !outY)
+    {
+        return false;
+    }
+
+    uint32_t targetMask = virtualControlMask(controlBit);
+    VirtualControlButton buttons[16];
+    int count = buildVirtualControls(buttons, 16);
+    for (int i = 0; i < count; ++i)
+    {
+        if (buttons[i].controlMask == targetMask)
+        {
+            int x = buttons[i].rect.x + buttons[i].rect.w / 2;
+            int y = buttons[i].rect.y + buttons[i].rect.h / 2;
+            if (portraitModeEnabled() && g_renderer)
+            {
+                int rendererWidth = 0;
+                int rendererHeight = 0;
+                SDL_GetRendererOutputSize(g_renderer, &rendererWidth, &rendererHeight);
+                if (rendererWidth > 0 && rendererHeight > 0)
+                {
+                    int rendererX = y;
+                    int rendererY = rendererHeight - 1 - x;
+                    x = rendererX;
+                    y = rendererY;
+                }
+            }
+            *outX = x;
+            *outY = y;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool dispatchAutoVirtualClick(uint32_t controlBit, bool down)
+{
+    int x = 0;
+    int y = 0;
+    if (!findVirtualControlClickPoint(controlBit, &x, &y))
+    {
+        return false;
+    }
+
+    SDL_Event ev = {};
+    if (down)
+    {
+        ev.type = SDL_MOUSEBUTTONDOWN;
+        ev.button.button = SDL_BUTTON_LEFT;
+        ev.button.state = SDL_PRESSED;
+        ev.button.x = x;
+        ev.button.y = y;
+    }
+    else
+    {
+        ev.type = SDL_MOUSEBUTTONUP;
+        ev.button.button = SDL_BUTTON_LEFT;
+        ev.button.state = SDL_RELEASED;
+        ev.button.x = x;
+        ev.button.y = y;
+    }
+
+    bool handled = handleVirtualControlMouseEvent(ev);
+    printf("frontend: autotest virtual click %s control=%u handled=%u x=%d y=%d\n",
+        down ? "down" : "up",
+        (unsigned int)controlBit,
+        handled ? 1u : 0u,
+        x,
+        y);
+    return handled;
+}
+
+static void runAutoVirtualClickActions(AutoVirtualClickEvent* events, int count, uint64_t elapsedMs)
+{
+    if (!events || count <= 0 || frontendGamePaused() || frontendPostRestoreInputBlocked())
+    {
+        return;
+    }
+
+    for (int i = 0; i < count; ++i)
+    {
+        const AutoControlSequenceEvent& timing = events[i].timing;
+        if (!events[i].downSent && elapsedMs >= timing.startMs)
+        {
+            dispatchAutoVirtualClick(timing.controlBit, true);
+            events[i].downElapsedMs = elapsedMs;
+            events[i].downSent = true;
+        }
+        if (events[i].downSent && !events[i].upSent &&
+            elapsedMs >= events[i].downElapsedMs + timing.holdMs)
+        {
+            dispatchAutoVirtualClick(timing.controlBit, false);
+            events[i].upSent = true;
         }
     }
 }
@@ -4210,6 +4895,8 @@ static bool drawFrame(uint16_t* pixels, int displayedFps)
         printf("frontend: SDL_UpdateTexture failed: %s\n", SDL_GetError());
         return false;
     }
+    SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
     if (SDL_RenderClear(g_renderer) != 0)
     {
         printf("frontend: SDL_RenderClear failed: %s\n", SDL_GetError());
@@ -4276,6 +4963,71 @@ bool frontendSaveScreenshot(const char* path)
     bool ok = writeScreenshotByExtension(path, snapshot.data(), screenshotWidth, screenshotHeight);
     printf("frontend: screenshot %s size=%dx%d path=%s\n",
         ok ? "saved" : "failed", screenshotWidth, screenshotHeight, path ? path : "");
+    return ok;
+}
+
+bool frontendSaveScreenshotThumbnail(const char* path, int maxWidth, int maxHeight)
+{
+    if (!g_lastDisplayFrameValid)
+    {
+        printf("frontend: thumbnail skipped because no display frame is available\n");
+        return false;
+    }
+    if (!path || !path[0] || maxWidth <= 0 || maxHeight <= 0)
+    {
+        return false;
+    }
+
+    std::vector<uint16_t> snapshot;
+    int screenshotWidth = 0;
+    int screenshotHeight = 0;
+    if (!buildDisplaySizedScreenshot(&snapshot, &screenshotWidth, &screenshotHeight))
+    {
+        printf("frontend: thumbnail skipped because display size is unavailable\n");
+        return false;
+    }
+
+    int scaledWidth = maxWidth;
+    int scaledHeight = (int)(((int64_t)screenshotHeight * scaledWidth) / screenshotWidth);
+    if (scaledHeight > maxHeight)
+    {
+        scaledHeight = maxHeight;
+        scaledWidth = (int)(((int64_t)screenshotWidth * scaledHeight) / screenshotHeight);
+    }
+    if (scaledWidth <= 0)
+    {
+        scaledWidth = 1;
+    }
+    if (scaledHeight <= 0)
+    {
+        scaledHeight = 1;
+    }
+
+    std::vector<uint16_t> thumbnail((size_t)maxWidth * (size_t)maxHeight, 0);
+    int offsetX = (maxWidth - scaledWidth) / 2;
+    int offsetY = (maxHeight - scaledHeight) / 2;
+    for (int y = 0; y < scaledHeight; ++y)
+    {
+        int srcY = (int)(((int64_t)y * screenshotHeight) / scaledHeight);
+        if (srcY >= screenshotHeight)
+        {
+            srcY = screenshotHeight - 1;
+        }
+        for (int x = 0; x < scaledWidth; ++x)
+        {
+            int srcX = (int)(((int64_t)x * screenshotWidth) / scaledWidth);
+            if (srcX >= screenshotWidth)
+            {
+                srcX = screenshotWidth - 1;
+            }
+            thumbnail[(size_t)(offsetY + y) * (size_t)maxWidth + (size_t)(offsetX + x)] =
+                snapshot[(size_t)srcY * (size_t)screenshotWidth + (size_t)srcX];
+        }
+    }
+
+    bool ok = writeScreenshotByExtension(path, thumbnail.data(), maxWidth, maxHeight);
+    printf("frontend: thumbnail %s size=%dx%d path=%s\n",
+        ok ? "saved" : "failed", maxWidth, maxHeight, path);
     return ok;
 }
 
@@ -4375,11 +5127,12 @@ bool frontendInit(EmulatorSettings* settings, const char* currentAppPath)
         frontendApplyInputSettings(*settings);
     }
 
-    // Keep restart relaunches from exposing the default Win32 client background
-    // before the first emulated frame is ready.
-    presentBlackFrame();
+    // Keep startup from exposing the default Win32 client background before the
+    // first emulated frame or idle screen is ready.
+    g_idleAnimationClock.reset();
+    drawIdleScreen(g_idleAnimationClock.advance(SDL_GetTicks64()));
     SDL_ShowWindow(g_window);
-    presentBlackFrame();
+    drawIdleScreen(g_idleAnimationClock.advance(SDL_GetTicks64()));
     SDL_RaiseWindow(g_window);
     SDL_SetWindowInputFocus(g_window);
 
@@ -4403,6 +5156,7 @@ void frontendShutdown(void)
     clearFrontendPauseRequests(false);
     closeGameController();
     resetFpsOverlayTexture();
+    resetIdleTextures();
     if (g_frameTexture)
     {
         SDL_DestroyTexture(g_frameTexture);
@@ -4453,11 +5207,43 @@ void frontendRunLoop(const EmulatorOptions& options)
     {
         minPresentIntervalMs = 1;
     }
-    uint64_t autotestSaveStateMs = parsePositiveEnv("DINGOO_PIE_AUTOTEST_SAVE_STATE_MS", 0, 0, 60 * 60 * 1000);
-    uint64_t autotestLoadStateMs = parsePositiveEnv("DINGOO_PIE_AUTOTEST_LOAD_STATE_MS", 0, 0, 60 * 60 * 1000);
-    bool autotestSaveStateDone = autotestSaveStateMs == 0;
-    bool autotestLoadStateDone = autotestLoadStateMs == 0;
+    AutoStateAction autotestSaveStateActions[kMaxAutoStateActions] = {};
+    AutoStateAction autotestLoadStateActions[kMaxAutoStateActions] = {};
+    AutoVirtualClickEvent autotestVirtualClickEvents[kMaxAutoVirtualClickEvents] = {};
+    int autotestSaveStateActionCount = parseAutoStateSequence(
+        "DINGOO_PIE_AUTOTEST_SAVE_STATE_SEQUENCE",
+        autotestSaveStateActions,
+        kMaxAutoStateActions);
+    int autotestLoadStateActionCount = parseAutoStateSequence(
+        "DINGOO_PIE_AUTOTEST_LOAD_STATE_SEQUENCE",
+        autotestLoadStateActions,
+        kMaxAutoStateActions);
+    int autotestVirtualClickCount = parseAutoVirtualClickSequence(
+        autotestVirtualClickEvents,
+        kMaxAutoVirtualClickEvents);
+    if (autotestSaveStateActionCount == 0)
+    {
+        uint64_t autotestSaveStateMs = parsePositiveEnv("DINGOO_PIE_AUTOTEST_SAVE_STATE_MS", 0, 0, 60 * 60 * 1000);
+        if (autotestSaveStateMs)
+        {
+            autotestSaveStateActions[0].slot = 1;
+            autotestSaveStateActions[0].startMs = autotestSaveStateMs;
+            autotestSaveStateActionCount = 1;
+        }
+    }
+    if (autotestLoadStateActionCount == 0)
+    {
+        uint64_t autotestLoadStateMs = parsePositiveEnv("DINGOO_PIE_AUTOTEST_LOAD_STATE_MS", 0, 0, 60 * 60 * 1000);
+        if (autotestLoadStateMs)
+        {
+            autotestLoadStateActions[0].slot = 1;
+            autotestLoadStateActions[0].startMs = autotestLoadStateMs;
+            autotestLoadStateActionCount = 1;
+        }
+    }
     uint64_t lastPresentTicks = 0;
+    uint64_t lastIdlePresentCounter = 0;
+    uint64_t performanceFrequency = SDL_GetPerformanceFrequency();
     bool pendingFrameRequest = false;
     uint16_t frameCopy[SCREEN_WIDTH * SCREEN_HEIGHT];
 
@@ -4465,16 +5251,12 @@ void frontendRunLoop(const EmulatorOptions& options)
     {
         uint64_t loopNow = SDL_GetTicks64();
         uint64_t loopElapsed = loopNow - startTicks;
-        if (!autotestSaveStateDone && loopElapsed >= autotestSaveStateMs)
-        {
-            autotestSaveStateDone = true;
-            frontendMenuSaveStateSlotForAutomation(1);
-        }
-        if (!autotestLoadStateDone && loopElapsed >= autotestLoadStateMs)
-        {
-            autotestLoadStateDone = true;
-            frontendMenuLoadStateSlotForAutomation(1);
-        }
+        runAutoStateActions(autotestSaveStateActions,
+            autotestSaveStateActionCount, loopElapsed, true);
+        runAutoStateActions(autotestLoadStateActions,
+            autotestLoadStateActionCount, loopElapsed, false);
+        runAutoVirtualClickActions(autotestVirtualClickEvents,
+            autotestVirtualClickCount, loopElapsed);
 
         frontendMenuRefreshCheats();
         bool drewFrame = false;
@@ -4505,11 +5287,11 @@ void frontendRunLoop(const EmulatorOptions& options)
             {
             case SDL_KEYDOWN:
 #ifdef _WIN32
-                if (g_keyboardMappingPending)
+                if (inputMappingUiKeyboardCapturePending())
                 {
                     if (!ev.key.repeat)
                     {
-                        finishKeyboardMappingCapture(ev.key.keysym.scancode);
+                        inputMappingUiHandleKeyboardScancode(ev.key.keysym.scancode);
                     }
                     break;
                 }
@@ -4537,6 +5319,10 @@ void frontendRunLoop(const EmulatorOptions& options)
                 {
                     break;
                 }
+                if (frontendPostRestoreInputBlocked())
+                {
+                    break;
+                }
                 if (!ev.key.repeat)
                 {
                     inputHandleHostScancode(ev.key.keysym.scancode, true);
@@ -4552,12 +5338,16 @@ void frontendRunLoop(const EmulatorOptions& options)
                 break;
             case SDL_KEYUP:
 #ifdef _WIN32
-                if (g_keyboardMappingPending)
+                if (inputMappingUiKeyboardCapturePending())
                 {
                     break;
                 }
 #endif
                 if (frontendGamePaused())
+                {
+                    break;
+                }
+                if (frontendPostRestoreInputBlocked())
                 {
                     break;
                 }
@@ -4587,13 +5377,15 @@ void frontendRunLoop(const EmulatorOptions& options)
                 break;
             case SDL_CONTROLLERBUTTONDOWN:
             case SDL_CONTROLLERBUTTONUP:
-                if (!frontendGamePaused() || g_controllerMappingPending)
+                if ((!frontendGamePaused() || g_controllerMappingPending) &&
+                    !frontendPostRestoreInputBlocked())
                 {
                     handleGameControllerButtonEvent(ev.cbutton);
                 }
                 break;
             case SDL_CONTROLLERAXISMOTION:
-                if (!frontendGamePaused() || g_controllerMappingPending)
+                if ((!frontendGamePaused() || g_controllerMappingPending) &&
+                    !frontendPostRestoreInputBlocked())
                 {
                     handleGameControllerAxisEvent(ev.caxis);
                 }
@@ -4623,6 +5415,11 @@ void frontendRunLoop(const EmulatorOptions& options)
                         setMinimizedPauseActive(true);
                     }
                 }
+                else if (ev.window.event == SDL_WINDOWEVENT_RESIZED ||
+                    ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED)
+                {
+                    resetIdleTextures();
+                }
                 else if (ev.window.event == SDL_WINDOWEVENT_RESTORED)
                 {
                     if (g_minimizedPauseActive)
@@ -4650,6 +5447,7 @@ void frontendRunLoop(const EmulatorOptions& options)
 
         if (frontendGamePaused())
         {
+            g_idleAnimationClock.pause();
             SDL_Delay(1);
             continue;
         }
@@ -4672,8 +5470,35 @@ void frontendRunLoop(const EmulatorOptions& options)
         updateAutoPressSequence(now, startTicks);
         uint64_t activePresentIntervalMs = minimizedThrottle ?
             kMinimizedThrottlePresentIntervalMs : minPresentIntervalMs;
-        bool presentDue = !hasPresentedFrame || !lastPresentTicks || now - lastPresentTicks >= activePresentIntervalMs;
-        if ((pendingFrameRequest && presentDue) || !hasPresentedFrame)
+        bool gameRunning = frontendMenuGameRunning();
+        if (gameRunning)
+        {
+            g_idleAnimationClock.pause();
+        }
+        uint64_t nowCounter = SDL_GetPerformanceCounter();
+        uint64_t idleIntervalUs = idlePresentIntervalUs(activePresentIntervalMs);
+        bool idlePresentDue = !hasPresentedFrame || !lastIdlePresentCounter ||
+            !performanceFrequency ||
+            counterToUs(nowCounter - lastIdlePresentCounter, performanceFrequency) >= idleIntervalUs;
+        uint64_t presentIntervalMs = activePresentIntervalMs;
+        bool gamePresentDue = !hasPresentedFrame || !lastPresentTicks ||
+            now - lastPresentTicks >= presentIntervalMs;
+        if (!gameRunning && idlePresentDue)
+        {
+            if (drawIdleScreen(g_idleAnimationClock.advance(now)))
+            {
+                drewFrame = true;
+                hasPresentedFrame = true;
+                lastPresentTicks = now;
+                lastIdlePresentCounter = nowCounter;
+                if (runtimeLogProfileEnabled())
+                {
+                    profileDraws++;
+                }
+                presentedFrames++;
+            }
+        }
+        else if (gameRunning && ((pendingFrameRequest && gamePresentDue) || !hasPresentedFrame))
         {
             copyPresentedFramebuff(frameCopy, sizeof(frameCopy));
             uint32_t frameHash = hashFramePixels(frameCopy);
@@ -4689,13 +5514,21 @@ void frontendRunLoop(const EmulatorOptions& options)
                 hasPresentedFrame = true;
                 lastPresentTicks = now;
                 pendingFrameRequest = false;
-                profileDraws++;
+                if (runtimeLogProfileEnabled())
+                {
+                    profileDraws++;
+                }
                 presentedFrames++;
                 if (contentChanged)
                 {
                     contentFrames++;
                 }
             }
+        }
+
+        if (gameRunning && hasPresentedFrame)
+        {
+            frontendMenuProcessDeferredResourceMonitorOpen();
         }
 
         now = SDL_GetTicks64();
@@ -4708,17 +5541,31 @@ void frontendRunLoop(const EmulatorOptions& options)
             fpsLastTicks = now;
         }
 
-        if (g_frontendSettings && g_frontendSettings->debugProfile)
+        if (runtimeLogProfileEnabled())
         {
             profileLoops++;
-            if (now - profileLastTicks >= 1000)
+            uint64_t profileElapsed = now - profileLastTicks;
+            if (profileElapsed >= runtimeLogProfileIntervalMs())
             {
-                printf("profile frontend: loops=%u/s draws=%u/s presented_fps=%d submitted_fps=%d content_fps=%d\n",
-                    profileLoops, profileDraws, displayedPresentedFps, displayedPresentedFps, displayedContentFps);
+                bool hasFrontendActivity = profileDraws || displayedPresentedFps || displayedContentFps;
+                if (hasFrontendActivity ||
+                    runtimeLogShouldPrintEmptyProfile())
+                {
+                    uint32_t loopsPerSecond = (uint32_t)((profileLoops * 1000ull) / profileElapsed);
+                    uint32_t drawsPerSecond = (uint32_t)((profileDraws * 1000ull) / profileElapsed);
+                    printf("profile:frontend loops=%u/s draws=%u/s presented_fps=%d submitted_fps=%d content_fps=%d\n",
+                        loopsPerSecond, drawsPerSecond, displayedPresentedFps, displayedPresentedFps, displayedContentFps);
+                }
                 profileLoops = 0;
                 profileDraws = 0;
                 profileLastTicks = now;
             }
+        }
+        else
+        {
+            profileLoops = 0;
+            profileDraws = 0;
+            profileLastTicks = now;
         }
 
         if (minimizedThrottle)
@@ -4727,7 +5574,8 @@ void frontendRunLoop(const EmulatorOptions& options)
         }
         else if (!drewFrame)
         {
-            SDL_Delay(1);
+            SDL_Delay(gameRunning ? 1 :
+                idleLoopDelayMs(nowCounter, lastIdlePresentCounter, idleIntervalUs, performanceFrequency));
         }
     }
 
@@ -4735,4 +5583,3 @@ void frontendRunLoop(const EmulatorOptions& options)
         running ? 1u : 0u, (unsigned int)SDL_AtomicGet(&g_quitRequested));
     resetFpsOverlayTexture();
 }
-

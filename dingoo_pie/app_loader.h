@@ -26,6 +26,13 @@ typedef struct {
 	uint8_t* decoded_data;
 } app_resource_entry;
 
+// Resource entry discovered from package-local filename/offset indexes.
+typedef struct {
+	char*    name;
+	uint32_t offset;
+	uint32_t size;
+} app_package_resource_entry;
+
 // In-memory representation of a Dingoo Technology .app container.
 typedef struct {
 	uint32_t           import_count;
@@ -34,6 +41,10 @@ typedef struct {
 	app_export_entry** export_data;
 	uint32_t           resource_count;
 	app_resource_entry* resource_data;
+	uint32_t           package_resource_count;
+	app_package_resource_entry* package_resource_data;
+	bool               package_resource_index_scanned;
+	uint32_t           package_resource_scan_start;
 	uint32_t           bin_size;
 	void*              bin_data;
 	uint32_t           file_size;
@@ -47,6 +58,7 @@ typedef struct {
 extern app* app_create(FILE* file, uint32_t fileSize);
 extern bool app_probe_file_header(FILE* file, uint32_t fileSize);
 extern void app_delete(app* inApp);
+extern void app_parse_package_resource_indexes(app* inApp);
 extern app_resource_entry* app_find_resource(app* inApp, const char* inName);
 extern void app_trace_resource_candidates(app* inApp, const char* inName);
 extern const uint8_t* app_resource_data(app* inApp, app_resource_entry* inEntry);

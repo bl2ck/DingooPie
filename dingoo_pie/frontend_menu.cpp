@@ -1,20 +1,25 @@
 #include "frontend_menu.h"
 
 #include "app_paths.h"
+#include "cheat_manager_ui.h"
 #include "cheat_runtime.h"
 #include "debug_console.h"
 #include "emulator_config.h"
 #include "emulator_core.h"
 #include "input_controls.h"
+#include "runtime_log.h"
 #include "save_state.h"
+#include "save_state_manager_ui.h"
 #include "sdl_frontend.h"
 #include "platform_win32.h"
 #include "ui_strings.h"
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <chrono>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <time.h>
 #include <utility>
 #include <vector>
@@ -37,26 +42,37 @@ enum FrontendMenuCommand
     MENU_FILE_RESTART,
     MENU_FILE_PAUSE_RESUME,
     MENU_FILE_SAVE_SCREENSHOT,
-    MENU_FILE_SAVE_STATE_SLOT_1,
-    MENU_FILE_SAVE_STATE_SLOT_2,
-    MENU_FILE_SAVE_STATE_SLOT_3,
-    MENU_FILE_SAVE_STATE_SLOT_4,
-    MENU_FILE_SAVE_STATE_SLOT_5,
-    MENU_FILE_SAVE_STATE_SLOT_6,
-    MENU_FILE_SAVE_STATE_SLOT_7,
-    MENU_FILE_SAVE_STATE_SLOT_8,
-    MENU_FILE_SAVE_STATE_SLOT_9,
-    MENU_FILE_SAVE_STATE_SLOT_10,
-    MENU_FILE_LOAD_STATE_SLOT_1,
-    MENU_FILE_LOAD_STATE_SLOT_2,
-    MENU_FILE_LOAD_STATE_SLOT_3,
-    MENU_FILE_LOAD_STATE_SLOT_4,
-    MENU_FILE_LOAD_STATE_SLOT_5,
-    MENU_FILE_LOAD_STATE_SLOT_6,
-    MENU_FILE_LOAD_STATE_SLOT_7,
-    MENU_FILE_LOAD_STATE_SLOT_8,
-    MENU_FILE_LOAD_STATE_SLOT_9,
-    MENU_FILE_LOAD_STATE_SLOT_10,
+    MENU_FILE_SAVE_SLOT_1,
+    MENU_FILE_SAVE_SLOT_2,
+    MENU_FILE_SAVE_SLOT_3,
+    MENU_FILE_SAVE_SLOT_4,
+    MENU_FILE_SAVE_SLOT_5,
+    MENU_FILE_SAVE_SLOT_6,
+    MENU_FILE_SAVE_SLOT_7,
+    MENU_FILE_SAVE_SLOT_8,
+    MENU_FILE_SAVE_SLOT_9,
+    MENU_FILE_SAVE_SLOT_10,
+    MENU_FILE_SAVE_SLOT_11,
+    MENU_FILE_SAVE_SLOT_12,
+    MENU_FILE_SAVE_SLOT_13,
+    MENU_FILE_SAVE_SLOT_14,
+    MENU_FILE_SAVE_SLOT_15,
+    MENU_FILE_LOAD_SLOT_1,
+    MENU_FILE_LOAD_SLOT_2,
+    MENU_FILE_LOAD_SLOT_3,
+    MENU_FILE_LOAD_SLOT_4,
+    MENU_FILE_LOAD_SLOT_5,
+    MENU_FILE_LOAD_SLOT_6,
+    MENU_FILE_LOAD_SLOT_7,
+    MENU_FILE_LOAD_SLOT_8,
+    MENU_FILE_LOAD_SLOT_9,
+    MENU_FILE_LOAD_SLOT_10,
+    MENU_FILE_LOAD_SLOT_11,
+    MENU_FILE_LOAD_SLOT_12,
+    MENU_FILE_LOAD_SLOT_13,
+    MENU_FILE_LOAD_SLOT_14,
+    MENU_FILE_LOAD_SLOT_15,
+    MENU_FILE_SAVE_STATE_MANAGER,
     MENU_FILE_EXIT,
     MENU_VIDEO_SCALE_1X,
     MENU_VIDEO_SCALE_2X,
@@ -108,19 +124,24 @@ enum FrontendMenuCommand
     MENU_VIDEO_MINIMIZED_THROTTLE,
     MENU_VIDEO_PORTRAIT,
     MENU_VIDEO_SHOW_FPS,
-    MENU_SETTINGS_AUDIO_VOLUME_0,
-    MENU_SETTINGS_AUDIO_VOLUME_25,
-    MENU_SETTINGS_AUDIO_VOLUME_50,
-    MENU_SETTINGS_AUDIO_VOLUME_75,
-    MENU_SETTINGS_AUDIO_VOLUME_100,
-    MENU_SETTINGS_AUDIO_VOLUME_125,
-    MENU_SETTINGS_AUDIO_VOLUME_150,
-    MENU_SETTINGS_AUDIO_BUFFER_512,
-    MENU_SETTINGS_AUDIO_BUFFER_1024,
-    MENU_SETTINGS_AUDIO_BUFFER_2048,
-    MENU_SETTINGS_AUDIO_BUFFER_4096,
-    MENU_SETTINGS_AUDIO_BUFFER_8192,
-    MENU_SETTINGS_DROP_AUDIO,
+    MENU_AUDIO_VOLUME_0,
+    MENU_AUDIO_VOLUME_25,
+    MENU_AUDIO_VOLUME_50,
+    MENU_AUDIO_VOLUME_75,
+    MENU_AUDIO_VOLUME_100,
+    MENU_AUDIO_VOLUME_125,
+    MENU_AUDIO_VOLUME_150,
+    MENU_AUDIO_BUFFER_512,
+    MENU_AUDIO_BUFFER_1024,
+    MENU_AUDIO_BUFFER_2048,
+    MENU_AUDIO_BUFFER_4096,
+    MENU_AUDIO_BUFFER_8192,
+    MENU_AUDIO_EFFECT_OFF,
+    MENU_AUDIO_EFFECT_SOFT,
+    MENU_AUDIO_EFFECT_CLEAR,
+    MENU_AUDIO_EFFECT_BASS_BOOST,
+    MENU_AUDIO_EFFECT_MONO,
+    MENU_AUDIO_DISABLE,
     MENU_INPUT_DISABLE_IME,
     MENU_INPUT_SHOW_VIRTUAL_CONTROLS,
     MENU_INPUT_MAPPING_WINDOW,
@@ -133,50 +154,52 @@ enum FrontendMenuCommand
     MENU_SETTINGS_CPU_CLOCK_370,
     MENU_SETTINGS_CPU_CLOCK_400,
     MENU_SETTINGS_CPU_CLOCK_430,
-    MENU_SETTINGS_SPEED_AUTO,
-    MENU_SETTINGS_SPEED_100,
-    MENU_SETTINGS_SPEED_095,
-    MENU_SETTINGS_SPEED_090,
-    MENU_SETTINGS_SPEED_085,
-    MENU_SETTINGS_SPEED_080,
-    MENU_SETTINGS_SPEED_075,
-    MENU_SETTINGS_SPEED_070,
-    MENU_SETTINGS_SPEED_065,
-    MENU_SETTINGS_SPEED_060,
-    MENU_SETTINGS_SPEED_055,
-    MENU_SETTINGS_SPEED_050,
-    MENU_SETTINGS_SPEED_045,
-    MENU_SETTINGS_SPEED_040,
-    MENU_SETTINGS_SPEED_035,
-    MENU_SETTINGS_SPEED_030,
-    MENU_SETTINGS_SPEED_025,
-    MENU_SETTINGS_SPEED_020,
-    MENU_SETTINGS_DELAY_AUTO,
-    MENU_SETTINGS_DELAY_100,
-    MENU_SETTINGS_DELAY_095,
-    MENU_SETTINGS_DELAY_090,
-    MENU_SETTINGS_DELAY_085,
-    MENU_SETTINGS_DELAY_080,
-    MENU_SETTINGS_DELAY_075,
-    MENU_SETTINGS_DELAY_070,
-    MENU_SETTINGS_DELAY_065,
-    MENU_SETTINGS_DELAY_060,
-    MENU_SETTINGS_DELAY_055,
-    MENU_SETTINGS_DELAY_050,
-    MENU_SETTINGS_DELAY_045,
-    MENU_SETTINGS_DELAY_040,
-    MENU_SETTINGS_DELAY_035,
-    MENU_SETTINGS_DELAY_030,
-    MENU_SETTINGS_DELAY_025,
-    MENU_SETTINGS_DELAY_020,
+    MENU_SETTINGS_RUNTIME_SPEED_AUTO,
+    MENU_SETTINGS_RUNTIME_SPEED_100,
+    MENU_SETTINGS_RUNTIME_SPEED_095,
+    MENU_SETTINGS_RUNTIME_SPEED_090,
+    MENU_SETTINGS_RUNTIME_SPEED_085,
+    MENU_SETTINGS_RUNTIME_SPEED_080,
+    MENU_SETTINGS_RUNTIME_SPEED_075,
+    MENU_SETTINGS_RUNTIME_SPEED_070,
+    MENU_SETTINGS_RUNTIME_SPEED_065,
+    MENU_SETTINGS_RUNTIME_SPEED_060,
+    MENU_SETTINGS_RUNTIME_SPEED_055,
+    MENU_SETTINGS_RUNTIME_SPEED_050,
+    MENU_SETTINGS_RUNTIME_SPEED_045,
+    MENU_SETTINGS_RUNTIME_SPEED_040,
+    MENU_SETTINGS_RUNTIME_SPEED_035,
+    MENU_SETTINGS_RUNTIME_SPEED_030,
+    MENU_SETTINGS_RUNTIME_SPEED_025,
+    MENU_SETTINGS_RUNTIME_SPEED_020,
+    MENU_SETTINGS_DELAY_SCALE_AUTO,
+    MENU_SETTINGS_DELAY_SCALE_100,
+    MENU_SETTINGS_DELAY_SCALE_095,
+    MENU_SETTINGS_DELAY_SCALE_090,
+    MENU_SETTINGS_DELAY_SCALE_085,
+    MENU_SETTINGS_DELAY_SCALE_080,
+    MENU_SETTINGS_DELAY_SCALE_075,
+    MENU_SETTINGS_DELAY_SCALE_070,
+    MENU_SETTINGS_DELAY_SCALE_065,
+    MENU_SETTINGS_DELAY_SCALE_060,
+    MENU_SETTINGS_DELAY_SCALE_055,
+    MENU_SETTINGS_DELAY_SCALE_050,
+    MENU_SETTINGS_DELAY_SCALE_045,
+    MENU_SETTINGS_DELAY_SCALE_040,
+    MENU_SETTINGS_DELAY_SCALE_035,
+    MENU_SETTINGS_DELAY_SCALE_030,
+    MENU_SETTINGS_DELAY_SCALE_025,
+    MENU_SETTINGS_DELAY_SCALE_020,
     MENU_SETTINGS_ENABLE_CHEATS,
+    MENU_SETTINGS_CHEAT_MANAGER,
     MENU_SETTINGS_LANGUAGE_CHINESE,
     MENU_SETTINGS_LANGUAGE_ENGLISH,
     MENU_SETTINGS_RESET,
     MENU_DEBUG_SHOW_CONSOLE,
     MENU_DEBUG_PROFILE,
     MENU_DEBUG_OPEN_LOG,
-    MENU_DEBUG_CHEAT_FINDER,
+    MENU_DEBUG_RESOURCE_MONITOR,
+    MENU_DEBUG_MEMORY_SEARCHER,
     MENU_DEBUG_DEBUGGER,
     MENU_HELP_ABOUT
 };
@@ -188,14 +211,14 @@ static const unsigned int MENU_CHEAT_ENTRY_BASE = 4000;
 static const unsigned int MENU_CHEAT_ENTRY_LIMIT = 128;
 static const unsigned int MENU_CHEAT_ENTRY_MAX =
     MENU_CHEAT_ENTRY_BASE + MENU_CHEAT_ENTRY_LIMIT - 1;
-static const unsigned int MENU_SAVE_STATE_SLOT_BASE = MENU_FILE_SAVE_STATE_SLOT_1;
-static const unsigned int MENU_LOAD_STATE_SLOT_BASE = MENU_FILE_LOAD_STATE_SLOT_1;
+static const unsigned int MENU_SAVE_SLOT_BASE = MENU_FILE_SAVE_SLOT_1;
+static const unsigned int MENU_LOAD_SLOT_BASE = MENU_FILE_LOAD_SLOT_1;
 
 #ifdef _WIN32
 static HWND g_menuWindow = NULL;
 static HMENU g_cheatMenu = NULL;
-static HMENU g_saveStateMenu = NULL;
-static HMENU g_loadStateMenu = NULL;
+static HMENU g_saveSlotMenu = NULL;
+static HMENU g_loadSlotMenu = NULL;
 #endif
 static EmulatorSettings* g_menuSettings = NULL;
 static std::string g_currentAppPath;
@@ -204,14 +227,31 @@ static bool g_pendingRelaunch = false;
 static std::string g_pendingRelaunchPath;
 static uint32_t g_menuCheatRevision = 0xffffffffu;
 static std::string g_cheatMismatchPromptSource;
+static bool g_resourceMonitorAutoOpenedForRun = false;
+static bool g_resourceMonitorAutoOpenPending = false;
 
 static void rebuildMenu(void);
 
-class ScopedGamePauseForDialog
+static void openResourceMonitorForCurrentRun(void)
+{
+    if (!g_menuSettings ||
+        !g_menuSettings->resourceMonitorAutoOpen ||
+        !g_gameRunning ||
+        g_resourceMonitorAutoOpenedForRun)
+    {
+        return;
+    }
+
+    g_resourceMonitorAutoOpenedForRun = true;
+    printf("frontend: resource monitor auto-open requested\n");
+    frontendOpenResourceMonitorWindow();
+}
+
+class ScopedFrontendModalPause
 {
 public:
-    explicit ScopedGamePauseForDialog(bool active)
-        : active_(active && g_gameRunning)
+    explicit ScopedFrontendModalPause(bool active)
+        : active_(active)
     {
         if (active_)
         {
@@ -219,7 +259,7 @@ public:
         }
     }
 
-    ~ScopedGamePauseForDialog()
+    ~ScopedFrontendModalPause()
     {
         if (active_)
         {
@@ -240,6 +280,19 @@ public:
 private:
     bool active_;
 };
+
+static int showModalMessageBox(const wchar_t* text, const wchar_t* caption, unsigned int type)
+{
+#ifdef _WIN32
+    ScopedFrontendModalPause pauseWhileOpen(true);
+    return MessageBoxW(g_menuWindow, text, caption, type);
+#else
+    (void)text;
+    (void)caption;
+    (void)type;
+    return 0;
+#endif
+}
 
 static const wchar_t* uiText(UiTextId id)
 {
@@ -274,7 +327,7 @@ static int percentForVideoCommand(unsigned int commandId, unsigned int firstComm
 static int percentForAudioVolumeCommand(unsigned int commandId)
 {
     static const int kValues[] = { 0, 25, 50, 75, 100, 125, 150 };
-    unsigned int index = commandId - MENU_SETTINGS_AUDIO_VOLUME_0;
+    unsigned int index = commandId - MENU_AUDIO_VOLUME_0;
     if (index >= sizeof(kValues) / sizeof(kValues[0]))
     {
         return 100;
@@ -296,6 +349,13 @@ struct MinimizedBehaviorPreset
     UiTextId labelId;
 };
 
+struct AudioEffectPreset
+{
+    unsigned int commandId;
+    AudioEffectMode effect;
+    UiTextId labelId;
+};
+
 static const MinimizedBehaviorPreset kMinimizedBehaviorPresets[] =
 {
     { MENU_VIDEO_MINIMIZED_NORMAL, MINIMIZED_BEHAVIOR_NORMAL, TXT_VIDEO_MINIMIZED_NORMAL },
@@ -303,46 +363,55 @@ static const MinimizedBehaviorPreset kMinimizedBehaviorPresets[] =
     { MENU_VIDEO_MINIMIZED_THROTTLE, MINIMIZED_BEHAVIOR_THROTTLE, TXT_VIDEO_MINIMIZED_THROTTLE },
 };
 
+static const AudioEffectPreset kAudioEffectPresets[] =
+{
+    { MENU_AUDIO_EFFECT_OFF, AUDIO_EFFECT_OFF, TXT_AUDIO_EFFECT_OFF },
+    { MENU_AUDIO_EFFECT_SOFT, AUDIO_EFFECT_SOFT, TXT_AUDIO_EFFECT_SOFT },
+    { MENU_AUDIO_EFFECT_CLEAR, AUDIO_EFFECT_CLEAR, TXT_AUDIO_EFFECT_CLEAR },
+    { MENU_AUDIO_EFFECT_BASS_BOOST, AUDIO_EFFECT_BASS_BOOST, TXT_AUDIO_EFFECT_BASS_BOOST },
+    { MENU_AUDIO_EFFECT_MONO, AUDIO_EFFECT_MONO, TXT_AUDIO_EFFECT_MONO },
+};
+
 static const ScalePreset kRuntimeSpeedPresets[] =
 {
-    { MENU_SETTINGS_SPEED_100, 100, "1.0" },
-    { MENU_SETTINGS_SPEED_095, 95, "0.95" },
-    { MENU_SETTINGS_SPEED_090, 90, "0.90" },
-    { MENU_SETTINGS_SPEED_085, 85, "0.85" },
-    { MENU_SETTINGS_SPEED_080, 80, "0.80" },
-    { MENU_SETTINGS_SPEED_075, 75, "0.75" },
-    { MENU_SETTINGS_SPEED_070, 70, "0.70" },
-    { MENU_SETTINGS_SPEED_065, 65, "0.65" },
-    { MENU_SETTINGS_SPEED_060, 60, "0.60" },
-    { MENU_SETTINGS_SPEED_055, 55, "0.55" },
-    { MENU_SETTINGS_SPEED_050, 50, "0.50" },
-    { MENU_SETTINGS_SPEED_045, 45, "0.45" },
-    { MENU_SETTINGS_SPEED_040, 40, "0.40" },
-    { MENU_SETTINGS_SPEED_035, 35, "0.35" },
-    { MENU_SETTINGS_SPEED_030, 30, "0.30" },
-    { MENU_SETTINGS_SPEED_025, 25, "0.25" },
-    { MENU_SETTINGS_SPEED_020, 20, "0.20" },
+    { MENU_SETTINGS_RUNTIME_SPEED_100, 100, "1.0" },
+    { MENU_SETTINGS_RUNTIME_SPEED_095, 95, "0.95" },
+    { MENU_SETTINGS_RUNTIME_SPEED_090, 90, "0.90" },
+    { MENU_SETTINGS_RUNTIME_SPEED_085, 85, "0.85" },
+    { MENU_SETTINGS_RUNTIME_SPEED_080, 80, "0.80" },
+    { MENU_SETTINGS_RUNTIME_SPEED_075, 75, "0.75" },
+    { MENU_SETTINGS_RUNTIME_SPEED_070, 70, "0.70" },
+    { MENU_SETTINGS_RUNTIME_SPEED_065, 65, "0.65" },
+    { MENU_SETTINGS_RUNTIME_SPEED_060, 60, "0.60" },
+    { MENU_SETTINGS_RUNTIME_SPEED_055, 55, "0.55" },
+    { MENU_SETTINGS_RUNTIME_SPEED_050, 50, "0.50" },
+    { MENU_SETTINGS_RUNTIME_SPEED_045, 45, "0.45" },
+    { MENU_SETTINGS_RUNTIME_SPEED_040, 40, "0.40" },
+    { MENU_SETTINGS_RUNTIME_SPEED_035, 35, "0.35" },
+    { MENU_SETTINGS_RUNTIME_SPEED_030, 30, "0.30" },
+    { MENU_SETTINGS_RUNTIME_SPEED_025, 25, "0.25" },
+    { MENU_SETTINGS_RUNTIME_SPEED_020, 20, "0.20" },
 };
 
 static const ScalePreset kDelayScalePresets[] =
 {
-    { MENU_SETTINGS_DELAY_100, 100, "1.0" },
-    { MENU_SETTINGS_DELAY_095, 95, "0.95" },
-    { MENU_SETTINGS_DELAY_090, 90, "0.90" },
-    { MENU_SETTINGS_DELAY_085, 85, "0.85" },
-    { MENU_SETTINGS_DELAY_080, 80, "0.80" },
-    { MENU_SETTINGS_DELAY_075, 75, "0.75" },
-    { MENU_SETTINGS_DELAY_070, 70, "0.70" },
-    { MENU_SETTINGS_DELAY_065, 65, "0.65" },
-    { MENU_SETTINGS_DELAY_060, 60, "0.60" },
-    { MENU_SETTINGS_DELAY_055, 55, "0.55" },
-    { MENU_SETTINGS_DELAY_050, 50, "0.50" },
-    { MENU_SETTINGS_DELAY_045, 45, "0.45" },
-    { MENU_SETTINGS_DELAY_040, 40, "0.40" },
-    { MENU_SETTINGS_DELAY_035, 35, "0.35" },
-    { MENU_SETTINGS_DELAY_030, 30, "0.30" },
-    { MENU_SETTINGS_DELAY_025, 25, "0.25" },
-    { MENU_SETTINGS_DELAY_020, 20, "0.20" },
+    { MENU_SETTINGS_DELAY_SCALE_100, 100, "1.0" },
+    { MENU_SETTINGS_DELAY_SCALE_095, 95, "0.95" },
+    { MENU_SETTINGS_DELAY_SCALE_090, 90, "0.90" },
+    { MENU_SETTINGS_DELAY_SCALE_085, 85, "0.85" },
+    { MENU_SETTINGS_DELAY_SCALE_080, 80, "0.80" },
+    { MENU_SETTINGS_DELAY_SCALE_075, 75, "0.75" },
+    { MENU_SETTINGS_DELAY_SCALE_070, 70, "0.70" },
+    { MENU_SETTINGS_DELAY_SCALE_065, 65, "0.65" },
+    { MENU_SETTINGS_DELAY_SCALE_060, 60, "0.60" },
+    { MENU_SETTINGS_DELAY_SCALE_055, 55, "0.55" },
+    { MENU_SETTINGS_DELAY_SCALE_050, 50, "0.50" },
+    { MENU_SETTINGS_DELAY_SCALE_045, 45, "0.45" },
+    { MENU_SETTINGS_DELAY_SCALE_040, 40, "0.40" },
+    { MENU_SETTINGS_DELAY_SCALE_035, 35, "0.35" },
+    { MENU_SETTINGS_DELAY_SCALE_030, 30, "0.30" },
+    { MENU_SETTINGS_DELAY_SCALE_025, 25, "0.25" },
+    { MENU_SETTINGS_DELAY_SCALE_020, 20, "0.20" },
 };
 
 static const ScalePreset* scalePresetForCommand(
@@ -427,6 +496,30 @@ static const MinimizedBehaviorPreset* minimizedBehaviorPresetForCommand(unsigned
         }
     }
     return NULL;
+}
+
+static const AudioEffectPreset* audioEffectPresetForCommand(unsigned int commandId)
+{
+    for (size_t i = 0; i < sizeof(kAudioEffectPresets) / sizeof(kAudioEffectPresets[0]); ++i)
+    {
+        if (kAudioEffectPresets[i].commandId == commandId)
+        {
+            return &kAudioEffectPresets[i];
+        }
+    }
+    return NULL;
+}
+
+static const AudioEffectPreset* audioEffectPresetForEffect(AudioEffectMode effect)
+{
+    for (size_t i = 0; i < sizeof(kAudioEffectPresets) / sizeof(kAudioEffectPresets[0]); ++i)
+    {
+        if (kAudioEffectPresets[i].effect == effect)
+        {
+            return &kAudioEffectPresets[i];
+        }
+    }
+    return &kAudioEffectPresets[0];
 }
 
 static void applyAndSaveRuntimeSettings(void)
@@ -559,7 +652,7 @@ static std::wstring saveStateSlotLabel(int slot, bool exists, uint64_t modifiedT
     return std::wstring(label);
 }
 
-static void refreshSaveStateMenus(void)
+static void refreshSaveLoadSlotMenus(void)
 {
     if (!g_menuWindow)
     {
@@ -574,8 +667,8 @@ static void refreshSaveStateMenus(void)
         {
             info = saveStateSlotInfo(g_currentAppPath, slot);
         }
-        UINT saveId = MENU_SAVE_STATE_SLOT_BASE + (UINT)(slot - 1);
-        UINT loadId = MENU_LOAD_STATE_SLOT_BASE + (UINT)(slot - 1);
+        UINT saveId = MENU_SAVE_SLOT_BASE + (UINT)(slot - 1);
+        UINT loadId = MENU_LOAD_SLOT_BASE + (UINT)(slot - 1);
         std::wstring label = saveStateSlotLabel(slot, canSave && info.exists, info.modifiedTime);
         setMenuText(saveId, label.c_str());
         setMenuText(loadId, label.c_str());
@@ -630,6 +723,7 @@ static void refreshCheatMenu(const CheatRuntimeStatus& status)
 
     appendCheckedMenuItem(g_cheatMenu, MENU_SETTINGS_ENABLE_CHEATS,
         uiText(TXT_SETTINGS_ENABLE_CHEATS), g_menuSettings && g_menuSettings->cheatsEnabled);
+    appendMenuItem(g_cheatMenu, MENU_SETTINGS_CHEAT_MANAGER, uiText(TXT_SETTINGS_CHEAT_MANAGER));
     AppendMenuW(g_cheatMenu, MF_SEPARATOR, 0, NULL);
 
     if (!status.loaded)
@@ -683,7 +777,7 @@ static void showCheatShaMismatchPrompt(const CheatRuntimeStatus& status)
     body += platformUtf8ToWide(status.appSha256.empty() ? "(none)" : status.appSha256);
     body += L"\nCurrent SHA256: ";
     body += platformUtf8ToWide(status.currentAppSha256.empty() ? "(none)" : status.currentAppSha256);
-    MessageBoxW(g_menuWindow, body.c_str(), uiText(TXT_DIALOG_CHEATS_TITLE),
+    showModalMessageBox(body.c_str(), uiText(TXT_DIALOG_CHEATS_TITLE),
         MB_OK | MB_ICONWARNING);
 }
 
@@ -819,7 +913,7 @@ static void openTextFileNearExe(const wchar_t* fileName)
     DWORD attrs = GetFileAttributesW(path.c_str());
     if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY))
     {
-        MessageBoxW(g_menuWindow,
+        showModalMessageBox(
             uiText(TXT_DEBUG_LOG_MISSING_BODY),
             uiText(TXT_DEBUG_LOG_MISSING_TITLE),
             MB_OK | MB_ICONINFORMATION);
@@ -909,7 +1003,7 @@ static void saveScreenshotWithDialog(void)
     std::wstring path(fileName);
     ensureScreenshotExtension(&path, ofn.nFilterIndex);
     bool ok = frontendSaveScreenshot(platformWideToUtf8(path).c_str());
-    MessageBoxW(g_menuWindow,
+    showModalMessageBox(
         ok ? uiText(TXT_DIALOG_SCREENSHOT_SAVED) : uiText(TXT_DIALOG_SCREENSHOT_FAILED),
         L"DingooPie",
         ok ? MB_OK | MB_ICONINFORMATION : MB_OK | MB_ICONERROR);
@@ -961,8 +1055,8 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
     HMENU menuBar = CreateMenu();
     HMENU fileMenu = CreatePopupMenu();
     HMENU recentMenu = CreatePopupMenu();
-    HMENU saveStateMenu = CreatePopupMenu();
-    HMENU loadStateMenu = CreatePopupMenu();
+    HMENU saveSlotMenu = CreatePopupMenu();
+    HMENU loadSlotMenu = CreatePopupMenu();
     HMENU optionsMenu = CreatePopupMenu();
     HMENU videoMenu = CreatePopupMenu();
     HMENU scaleMenu = CreatePopupMenu();
@@ -976,6 +1070,7 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
     HMENU audioMenu = CreatePopupMenu();
     HMENU audioVolumeMenu = CreatePopupMenu();
     HMENU audioBufferMenu = CreatePopupMenu();
+    HMENU audioEffectMenu = CreatePopupMenu();
     HMENU inputMenu = CreatePopupMenu();
     HMENU settingsMenu = CreatePopupMenu();
     HMENU backendMenu = CreatePopupMenu();
@@ -996,13 +1091,14 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
     for (int slot = 1; slot <= kSaveStateSlotCount; ++slot)
     {
         std::wstring label = saveStateSlotLabel(slot, false, 0);
-        appendMenuItem(saveStateMenu, MENU_SAVE_STATE_SLOT_BASE + (UINT)(slot - 1), label.c_str());
-        appendMenuItem(loadStateMenu, MENU_LOAD_STATE_SLOT_BASE + (UINT)(slot - 1), label.c_str());
+        appendMenuItem(saveSlotMenu, MENU_SAVE_SLOT_BASE + (UINT)(slot - 1), label.c_str());
+        appendMenuItem(loadSlotMenu, MENU_LOAD_SLOT_BASE + (UINT)(slot - 1), label.c_str());
     }
-    g_saveStateMenu = saveStateMenu;
-    g_loadStateMenu = loadStateMenu;
-    AppendMenuW(fileMenu, MF_POPUP, (UINT_PTR)saveStateMenu, uiText(TXT_FILE_SAVE_STATE));
-    AppendMenuW(fileMenu, MF_POPUP, (UINT_PTR)loadStateMenu, uiText(TXT_FILE_LOAD_STATE));
+    g_saveSlotMenu = saveSlotMenu;
+    g_loadSlotMenu = loadSlotMenu;
+    AppendMenuW(fileMenu, MF_POPUP, (UINT_PTR)saveSlotMenu, uiText(TXT_FILE_SAVE_SLOT));
+    AppendMenuW(fileMenu, MF_POPUP, (UINT_PTR)loadSlotMenu, uiText(TXT_FILE_LOAD_SLOT));
+    appendMenuItem(fileMenu, MENU_FILE_SAVE_STATE_MANAGER, uiText(TXT_FILE_SAVE_STATE_MANAGER));
     AppendMenuW(fileMenu, MF_SEPARATOR, 0, NULL);
     appendMenuItem(fileMenu, MENU_FILE_EXIT, uiText(TXT_FILE_EXIT));
 
@@ -1070,21 +1166,27 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
     appendMenuItem(videoMenu, MENU_VIDEO_PORTRAIT, uiText(TXT_VIDEO_PORTRAIT));
     appendMenuItem(videoMenu, MENU_VIDEO_SHOW_FPS, uiText(TXT_VIDEO_SHOW_FPS));
 
-    appendMenuItem(audioVolumeMenu, MENU_SETTINGS_AUDIO_VOLUME_0, L"0%");
-    appendMenuItem(audioVolumeMenu, MENU_SETTINGS_AUDIO_VOLUME_25, L"25%");
-    appendMenuItem(audioVolumeMenu, MENU_SETTINGS_AUDIO_VOLUME_50, L"50%");
-    appendMenuItem(audioVolumeMenu, MENU_SETTINGS_AUDIO_VOLUME_75, L"75%");
-    appendMenuItem(audioVolumeMenu, MENU_SETTINGS_AUDIO_VOLUME_100, L"100%");
-    appendMenuItem(audioVolumeMenu, MENU_SETTINGS_AUDIO_VOLUME_125, L"125%");
-    appendMenuItem(audioVolumeMenu, MENU_SETTINGS_AUDIO_VOLUME_150, L"150%");
-    appendMenuItem(audioBufferMenu, MENU_SETTINGS_AUDIO_BUFFER_512, audioBufferLabel(512).c_str());
-    appendMenuItem(audioBufferMenu, MENU_SETTINGS_AUDIO_BUFFER_1024, audioBufferLabel(1024).c_str());
-    appendMenuItem(audioBufferMenu, MENU_SETTINGS_AUDIO_BUFFER_2048, audioBufferLabel(2048).c_str());
-    appendMenuItem(audioBufferMenu, MENU_SETTINGS_AUDIO_BUFFER_4096, audioBufferLabel(4096).c_str());
-    appendMenuItem(audioBufferMenu, MENU_SETTINGS_AUDIO_BUFFER_8192, audioBufferLabel(8192).c_str());
-    AppendMenuW(audioMenu, MF_POPUP, (UINT_PTR)audioVolumeMenu, uiText(TXT_SETTINGS_AUDIO_VOLUME));
-    AppendMenuW(audioMenu, MF_POPUP, (UINT_PTR)audioBufferMenu, uiText(TXT_SETTINGS_AUDIO_BUFFER));
-    appendMenuItem(audioMenu, MENU_SETTINGS_DROP_AUDIO, uiText(TXT_SETTINGS_DROP_AUDIO));
+    appendMenuItem(audioVolumeMenu, MENU_AUDIO_VOLUME_0, L"0%");
+    appendMenuItem(audioVolumeMenu, MENU_AUDIO_VOLUME_25, L"25%");
+    appendMenuItem(audioVolumeMenu, MENU_AUDIO_VOLUME_50, L"50%");
+    appendMenuItem(audioVolumeMenu, MENU_AUDIO_VOLUME_75, L"75%");
+    appendMenuItem(audioVolumeMenu, MENU_AUDIO_VOLUME_100, L"100%");
+    appendMenuItem(audioVolumeMenu, MENU_AUDIO_VOLUME_125, L"125%");
+    appendMenuItem(audioVolumeMenu, MENU_AUDIO_VOLUME_150, L"150%");
+    appendMenuItem(audioBufferMenu, MENU_AUDIO_BUFFER_512, audioBufferLabel(512).c_str());
+    appendMenuItem(audioBufferMenu, MENU_AUDIO_BUFFER_1024, audioBufferLabel(1024).c_str());
+    appendMenuItem(audioBufferMenu, MENU_AUDIO_BUFFER_2048, audioBufferLabel(2048).c_str());
+    appendMenuItem(audioBufferMenu, MENU_AUDIO_BUFFER_4096, audioBufferLabel(4096).c_str());
+    appendMenuItem(audioBufferMenu, MENU_AUDIO_BUFFER_8192, audioBufferLabel(8192).c_str());
+    for (size_t i = 0; i < sizeof(kAudioEffectPresets) / sizeof(kAudioEffectPresets[0]); ++i)
+    {
+        appendMenuItem(audioEffectMenu, kAudioEffectPresets[i].commandId,
+            uiText(kAudioEffectPresets[i].labelId));
+    }
+    AppendMenuW(audioMenu, MF_POPUP, (UINT_PTR)audioVolumeMenu, uiText(TXT_AUDIO_VOLUME));
+    AppendMenuW(audioMenu, MF_POPUP, (UINT_PTR)audioBufferMenu, uiText(TXT_AUDIO_BUFFER));
+    AppendMenuW(audioMenu, MF_POPUP, (UINT_PTR)audioEffectMenu, uiText(TXT_AUDIO_EFFECT));
+    appendMenuItem(audioMenu, MENU_AUDIO_DISABLE, uiText(TXT_AUDIO_DISABLE));
 
     appendMenuItem(inputMenu, MENU_INPUT_DISABLE_IME, uiText(TXT_INPUT_DISABLE_IME));
     appendMenuItem(inputMenu, MENU_INPUT_SHOW_VIRTUAL_CONTROLS, uiText(TXT_INPUT_VIRTUAL_CONTROLS));
@@ -1100,29 +1202,29 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
     appendMenuItem(backendMenu, MENU_SETTINGS_BACKEND_IRJIT, uiText(TXT_SETTINGS_BACKEND_IRJIT));
     appendMenuItem(backendMenu, MENU_SETTINGS_BACKEND_INTERPRETER, uiText(TXT_SETTINGS_BACKEND_INTERPRETER));
     AppendMenuW(settingsMenu, MF_POPUP, (UINT_PTR)backendMenu, uiText(TXT_SETTINGS_CPU_BACKEND));
-    appendMenuItem(cpuClockMenu, MENU_SETTINGS_CPU_CLOCK_AUTO, uiText(TXT_SETTINGS_SPEED_AUTO));
+    appendMenuItem(cpuClockMenu, MENU_SETTINGS_CPU_CLOCK_AUTO, uiText(TXT_SETTINGS_AUTO));
     appendMenuItem(cpuClockMenu, MENU_SETTINGS_CPU_CLOCK_200, L"200 MHz");
     appendMenuItem(cpuClockMenu, MENU_SETTINGS_CPU_CLOCK_336, L"336 MHz");
     appendMenuItem(cpuClockMenu, MENU_SETTINGS_CPU_CLOCK_370, L"370 MHz");
     appendMenuItem(cpuClockMenu, MENU_SETTINGS_CPU_CLOCK_400, L"400 MHz");
     appendMenuItem(cpuClockMenu, MENU_SETTINGS_CPU_CLOCK_430, L"430 MHz");
     AppendMenuW(settingsMenu, MF_POPUP, (UINT_PTR)cpuClockMenu, uiText(TXT_SETTINGS_CPU_CLOCK));
-    appendMenuItem(speedMenu, MENU_SETTINGS_SPEED_AUTO, uiText(TXT_SETTINGS_SPEED_AUTO));
+    appendMenuItem(speedMenu, MENU_SETTINGS_RUNTIME_SPEED_AUTO, uiText(TXT_SETTINGS_AUTO));
     for (size_t i = 0; i < sizeof(kRuntimeSpeedPresets) / sizeof(kRuntimeSpeedPresets[0]); ++i)
     {
         appendScalePreset(speedMenu, kRuntimeSpeedPresets[i]);
     }
     AppendMenuW(settingsMenu, MF_POPUP, (UINT_PTR)speedMenu, uiText(TXT_SETTINGS_RUNTIME_SPEED));
 
-    appendMenuItem(delayMenu, MENU_SETTINGS_DELAY_AUTO, uiText(TXT_SETTINGS_DELAY_AUTO));
+    appendMenuItem(delayMenu, MENU_SETTINGS_DELAY_SCALE_AUTO, uiText(TXT_SETTINGS_AUTO));
     for (size_t i = 0; i < sizeof(kDelayScalePresets) / sizeof(kDelayScalePresets[0]); ++i)
     {
         appendScalePreset(delayMenu, kDelayScalePresets[i]);
     }
-    AppendMenuW(settingsMenu, MF_POPUP, (UINT_PTR)delayMenu, uiText(TXT_SETTINGS_DELAY));
+    AppendMenuW(settingsMenu, MF_POPUP, (UINT_PTR)delayMenu, uiText(TXT_SETTINGS_DELAY_SCALE));
     g_cheatMenu = cheatMenu;
     refreshCheatMenu(cheatRuntimeGetStatus());
-    AppendMenuW(settingsMenu, MF_POPUP, (UINT_PTR)cheatMenu, uiText(TXT_SETTINGS_CHEAT_LIST));
+    AppendMenuW(settingsMenu, MF_POPUP, (UINT_PTR)cheatMenu, uiText(TXT_SETTINGS_CHEATS));
     AppendMenuW(settingsMenu, MF_SEPARATOR, 0, NULL);
 
     appendMenuItem(languageMenu, MENU_SETTINGS_LANGUAGE_CHINESE, L"\u4e2d\u6587");
@@ -1135,7 +1237,8 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
     appendMenuItem(debugMenu, MENU_DEBUG_SHOW_CONSOLE, uiText(TXT_DEBUG_CONSOLE));
     appendMenuItem(debugMenu, MENU_DEBUG_PROFILE, uiText(TXT_DEBUG_PROFILE));
     appendMenuItem(debugMenu, MENU_DEBUG_OPEN_LOG, uiText(TXT_DEBUG_OPEN_LOG));
-    appendMenuItem(debugMenu, MENU_DEBUG_CHEAT_FINDER, uiText(TXT_DEBUG_CHEAT_FINDER));
+    appendMenuItem(debugMenu, MENU_DEBUG_RESOURCE_MONITOR, uiText(TXT_DEBUG_RESOURCE_MONITOR));
+    appendMenuItem(debugMenu, MENU_DEBUG_MEMORY_SEARCHER, uiText(TXT_DEBUG_MEMORY_SEARCHER));
     appendMenuItem(debugMenu, MENU_DEBUG_DEBUGGER, uiText(TXT_DEBUG_DEBUGGER));
 
     appendMenuItem(helpMenu, MENU_HELP_ABOUT, uiText(TXT_HELP_ABOUT));
@@ -1165,8 +1268,8 @@ static void rebuildMenu(void)
     if (oldMenu)
     {
         g_cheatMenu = NULL;
-        g_saveStateMenu = NULL;
-        g_loadStateMenu = NULL;
+        g_saveSlotMenu = NULL;
+        g_loadSlotMenu = NULL;
         DestroyMenu(oldMenu);
     }
     frontendMenuAttach(g_menuWindow, g_menuSettings, g_currentAppPath);
@@ -1192,9 +1295,8 @@ void frontendMenuRefresh(void)
     setMenuEnabled(MENU_FILE_PAUSE_RESUME, hasCurrentApp && g_gameRunning);
     setMenuText(MENU_FILE_PAUSE_RESUME, uiText(gamePaused ? TXT_FILE_RESUME : TXT_FILE_PAUSE));
     setMenuEnabled(MENU_FILE_SAVE_SCREENSHOT, hasCurrentApp && g_gameRunning);
-    setMenuEnabled(MENU_DEBUG_CHEAT_FINDER, g_gameRunning);
-    setMenuEnabled(MENU_DEBUG_DEBUGGER, g_gameRunning);
-    refreshSaveStateMenus();
+    refreshSaveLoadSlotMenus();
+    setMenuEnabled(MENU_FILE_SAVE_STATE_MANAGER, hasCurrentApp);
     setMenuCheck(MENU_VIDEO_SCALE_1X, g_menuSettings->windowScale == 1);
     setMenuCheck(MENU_VIDEO_SCALE_2X, g_menuSettings->windowScale == 2);
     setMenuCheck(MENU_VIDEO_SCALE_3X, g_menuSettings->windowScale == 3);
@@ -1247,19 +1349,25 @@ void frontendMenuRefresh(void)
     }
     setMenuCheck(MENU_VIDEO_PORTRAIT, g_menuSettings->portraitMode);
     setMenuCheck(MENU_VIDEO_SHOW_FPS, g_menuSettings->showFps);
-    setMenuCheck(MENU_SETTINGS_AUDIO_VOLUME_0, g_menuSettings->audioVolumePercent == 0);
-    setMenuCheck(MENU_SETTINGS_AUDIO_VOLUME_25, g_menuSettings->audioVolumePercent == 25);
-    setMenuCheck(MENU_SETTINGS_AUDIO_VOLUME_50, g_menuSettings->audioVolumePercent == 50);
-    setMenuCheck(MENU_SETTINGS_AUDIO_VOLUME_75, g_menuSettings->audioVolumePercent == 75);
-    setMenuCheck(MENU_SETTINGS_AUDIO_VOLUME_100, g_menuSettings->audioVolumePercent == 100);
-    setMenuCheck(MENU_SETTINGS_AUDIO_VOLUME_125, g_menuSettings->audioVolumePercent == 125);
-    setMenuCheck(MENU_SETTINGS_AUDIO_VOLUME_150, g_menuSettings->audioVolumePercent == 150);
-    setMenuCheck(MENU_SETTINGS_AUDIO_BUFFER_512, g_menuSettings->audioBufferSamples == 512);
-    setMenuCheck(MENU_SETTINGS_AUDIO_BUFFER_1024, g_menuSettings->audioBufferSamples == 1024);
-    setMenuCheck(MENU_SETTINGS_AUDIO_BUFFER_2048, g_menuSettings->audioBufferSamples == 2048);
-    setMenuCheck(MENU_SETTINGS_AUDIO_BUFFER_4096, g_menuSettings->audioBufferSamples == 4096);
-    setMenuCheck(MENU_SETTINGS_AUDIO_BUFFER_8192, g_menuSettings->audioBufferSamples == 8192);
-    setMenuCheck(MENU_SETTINGS_DROP_AUDIO, g_menuSettings->dropAudio);
+    setMenuCheck(MENU_AUDIO_VOLUME_0, g_menuSettings->audioVolumePercent == 0);
+    setMenuCheck(MENU_AUDIO_VOLUME_25, g_menuSettings->audioVolumePercent == 25);
+    setMenuCheck(MENU_AUDIO_VOLUME_50, g_menuSettings->audioVolumePercent == 50);
+    setMenuCheck(MENU_AUDIO_VOLUME_75, g_menuSettings->audioVolumePercent == 75);
+    setMenuCheck(MENU_AUDIO_VOLUME_100, g_menuSettings->audioVolumePercent == 100);
+    setMenuCheck(MENU_AUDIO_VOLUME_125, g_menuSettings->audioVolumePercent == 125);
+    setMenuCheck(MENU_AUDIO_VOLUME_150, g_menuSettings->audioVolumePercent == 150);
+    setMenuCheck(MENU_AUDIO_BUFFER_512, g_menuSettings->audioBufferSamples == 512);
+    setMenuCheck(MENU_AUDIO_BUFFER_1024, g_menuSettings->audioBufferSamples == 1024);
+    setMenuCheck(MENU_AUDIO_BUFFER_2048, g_menuSettings->audioBufferSamples == 2048);
+    setMenuCheck(MENU_AUDIO_BUFFER_4096, g_menuSettings->audioBufferSamples == 4096);
+    setMenuCheck(MENU_AUDIO_BUFFER_8192, g_menuSettings->audioBufferSamples == 8192);
+    const AudioEffectPreset* checkedAudioEffect = audioEffectPresetForEffect(g_menuSettings->audioEffect);
+    for (size_t i = 0; i < sizeof(kAudioEffectPresets) / sizeof(kAudioEffectPresets[0]); ++i)
+    {
+        setMenuCheck(kAudioEffectPresets[i].commandId,
+            checkedAudioEffect && checkedAudioEffect->commandId == kAudioEffectPresets[i].commandId);
+    }
+    setMenuCheck(MENU_AUDIO_DISABLE, g_menuSettings->audioDisabled);
     setMenuCheck(MENU_INPUT_DISABLE_IME, g_menuSettings->disableIme);
     setMenuCheck(MENU_INPUT_SHOW_VIRTUAL_CONTROLS, g_menuSettings->showVirtualControls);
     setMenuCheck(MENU_SETTINGS_BACKEND_AUTO, g_menuSettings->backendName.empty());
@@ -1271,14 +1379,14 @@ void frontendMenuRefresh(void)
     setMenuCheck(MENU_SETTINGS_CPU_CLOCK_370, g_menuSettings->cpuClockHz == "370000000");
     setMenuCheck(MENU_SETTINGS_CPU_CLOCK_400, g_menuSettings->cpuClockHz == "400000000");
     setMenuCheck(MENU_SETTINGS_CPU_CLOCK_430, g_menuSettings->cpuClockHz == "430000000");
-    setMenuCheck(MENU_SETTINGS_SPEED_AUTO, g_menuSettings->runtimeSpeedScale.empty());
+    setMenuCheck(MENU_SETTINGS_RUNTIME_SPEED_AUTO, g_menuSettings->runtimeSpeedScale.empty());
     const ScalePreset* checkedSpeed = runtimeSpeedPresetForValue(g_menuSettings->runtimeSpeedScale);
     for (size_t i = 0; i < sizeof(kRuntimeSpeedPresets) / sizeof(kRuntimeSpeedPresets[0]); ++i)
     {
         setMenuCheck(kRuntimeSpeedPresets[i].commandId,
             checkedSpeed && checkedSpeed->commandId == kRuntimeSpeedPresets[i].commandId);
     }
-    setMenuCheck(MENU_SETTINGS_DELAY_AUTO, g_menuSettings->ostimeDlyScale.empty());
+    setMenuCheck(MENU_SETTINGS_DELAY_SCALE_AUTO, g_menuSettings->ostimeDlyScale.empty());
     const ScalePreset* checkedDelay = delayScalePresetForValue(g_menuSettings->ostimeDlyScale);
     for (size_t i = 0; i < sizeof(kDelayScalePresets) / sizeof(kDelayScalePresets[0]); ++i)
     {
@@ -1286,6 +1394,7 @@ void frontendMenuRefresh(void)
             checkedDelay && checkedDelay->commandId == kDelayScalePresets[i].commandId);
     }
     setMenuCheck(MENU_SETTINGS_ENABLE_CHEATS, g_menuSettings->cheatsEnabled);
+    setMenuEnabled(MENU_SETTINGS_CHEAT_MANAGER, g_gameRunning);
     size_t cheatCount = cheatStatus.entries.size();
     if (cheatCount > MENU_CHEAT_ENTRY_LIMIT)
     {
@@ -1298,7 +1407,12 @@ void frontendMenuRefresh(void)
     setMenuCheck(MENU_SETTINGS_LANGUAGE_CHINESE, g_menuSettings->uiLanguage == UI_LANGUAGE_CHINESE);
     setMenuCheck(MENU_SETTINGS_LANGUAGE_ENGLISH, g_menuSettings->uiLanguage == UI_LANGUAGE_ENGLISH);
     setMenuCheck(MENU_DEBUG_SHOW_CONSOLE, g_menuSettings->showDebugConsole);
-    setMenuCheck(MENU_DEBUG_PROFILE, g_menuSettings->debugProfile);
+    setMenuCheck(MENU_DEBUG_PROFILE,
+        g_menuSettings->debugProfile || runtimeLogProfileEnabled());
+    setMenuEnabled(MENU_DEBUG_RESOURCE_MONITOR, true);
+    setMenuCheck(MENU_DEBUG_RESOURCE_MONITOR, g_menuSettings->resourceMonitorAutoOpen);
+    setMenuEnabled(MENU_DEBUG_MEMORY_SEARCHER, g_gameRunning);
+    setMenuEnabled(MENU_DEBUG_DEBUGGER, g_gameRunning);
 #endif
 }
 
@@ -1332,11 +1446,30 @@ void frontendMenuSetGameRunning(bool running)
 {
     bool changed = g_gameRunning != running;
     g_gameRunning = running;
-    if (changed && !running)
+    if (changed && running)
+    {
+        frontendReleaseIdleResources();
+        g_resourceMonitorAutoOpenedForRun = false;
+        g_resourceMonitorAutoOpenPending = true;
+    }
+    else if (changed && !running)
     {
         frontendClearPauseRequests();
+        g_resourceMonitorAutoOpenedForRun = false;
+        g_resourceMonitorAutoOpenPending = false;
     }
     frontendMenuRefresh();
+}
+
+void frontendMenuProcessDeferredResourceMonitorOpen(void)
+{
+    if (!g_resourceMonitorAutoOpenPending)
+    {
+        return;
+    }
+
+    g_resourceMonitorAutoOpenPending = false;
+    openResourceMonitorForCurrentRun();
 }
 
 static bool handleRecentAppCommand(unsigned int commandId)
@@ -1531,7 +1664,7 @@ static void ensureSaveStateProgressDialog(SaveStateProgressDialog* dialog)
     centerSaveStateProgressDialog(dialog->window);
 
     dialog->label = CreateWindowExW(0, L"STATIC", L"",
-        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        WS_CHILD | WS_VISIBLE | platformWin32NormalizeChildStyle(L"STATIC", SS_LEFT),
         18, 12, 310, 20,
         dialog->window, NULL, GetModuleHandleW(NULL), NULL);
     dialog->progress = CreateWindowExW(0, PROGRESS_CLASSW, L"",
@@ -1543,6 +1676,24 @@ static void ensureSaveStateProgressDialog(SaveStateProgressDialog* dialog)
     SendMessageW(dialog->label, WM_SETFONT, (WPARAM)font, TRUE);
     SendMessageW(dialog->progress, WM_SETFONT, (WPARAM)font, TRUE);
     SendMessageW(dialog->progress, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
+}
+
+static void updateWindowIfValid(HWND window)
+{
+    if (window)
+    {
+        UpdateWindow(window);
+    }
+}
+
+static void pumpWindowMessages(HWND window)
+{
+    MSG msg;
+    while (window && PeekMessageW(&msg, window, 0, 0, PM_REMOVE))
+    {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
 }
 
 static void updateSaveStateProgressDialog(SaveStateProgressDialog* dialog,
@@ -1573,14 +1724,13 @@ static void updateSaveStateProgressDialog(SaveStateProgressDialog* dialog,
         ShowWindow(dialog->window, SW_SHOWNORMAL);
         dialog->visible = true;
     }
-    UpdateWindow(dialog->window);
+    updateWindowIfValid(dialog->window);
+    updateWindowIfValid(dialog->label);
+    updateWindowIfValid(dialog->progress);
 
-    MSG msg;
-    while (PeekMessageW(&msg, dialog->window, 0, 0, PM_REMOVE))
-    {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
+    pumpWindowMessages(dialog->window);
+    pumpWindowMessages(dialog->label);
+    pumpWindowMessages(dialog->progress);
 }
 
 static void saveStateProgressCallback(const SaveStateProgress& progress, void* userData)
@@ -1618,22 +1768,26 @@ static std::wstring saveStateMessage(UiTextId id, const SaveStateDialogSlot& slo
 }
 
 static bool confirmSaveStateAction(UiTextId id, const SaveStateDialogSlot& slotInfo,
-    const wchar_t* title)
+    const wchar_t* title, bool warning)
 {
 #ifdef _WIN32
     std::wstring message = saveStateMessage(id, slotInfo, "");
-    return MessageBoxW(g_menuWindow, message.c_str(), title,
-        MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES;
+    UINT icon = warning ? MB_ICONWARNING : MB_ICONQUESTION;
+    return showModalMessageBox(message.c_str(), title,
+        MB_YESNO | icon | MB_DEFBUTTON2) == IDYES;
 #else
     (void)id;
     (void)slotInfo;
     (void)title;
+    (void)warning;
     return true;
 #endif
 }
 
 static bool waitForSaveStatePause(const char* action, uint32_t* expectedOut, uint32_t* waitersOut)
 {
+    static const uint32_t kPauseTimeoutMs = 5000;
+    static const uint32_t kPausePollMs = 25;
     uint32_t expected = emulatorRuntimeActiveThreadCount();
     if (expected == 0)
     {
@@ -1641,7 +1795,26 @@ static bool waitForSaveStatePause(const char* action, uint32_t* expectedOut, uin
     }
 
     // Save/load must observe all guest runtimes at a pause point before copying memory and registers.
-    bool paused = frontendWaitForRuntimePausedWaiters(2000, expected);
+    bool paused = false;
+    std::chrono::steady_clock::time_point deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(kPauseTimeoutMs);
+    while (!paused)
+    {
+        emulatorRuntimeNotifyPauseRequested();
+        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+        if (now >= deadline)
+        {
+            break;
+        }
+        uint32_t waitMs = kPausePollMs;
+        uint32_t remainingMs = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - now).count();
+        if (remainingMs < waitMs)
+        {
+            waitMs = remainingMs;
+        }
+        paused = frontendWaitForRuntimePausedWaiters(waitMs, expected);
+    }
     uint32_t waiters = frontendRuntimePausedWaiterCount();
     printf("frontend: %s state pause waiters=%u expected=%u %s\n",
         action ? action : "save",
@@ -1688,7 +1861,7 @@ static bool validateSaveStateRuntimeCount(const SaveStateSlotInfo& info,
 
 static bool saveStateSlotNow(int slot, std::string* errorOut, bool showProgress)
 {
-    ScopedGamePauseForDialog pauseWhileSaving(true);
+    ScopedFrontendModalPause pauseWhileSaving(true);
     EmulatorRuntimeState state;
     std::string error;
 #ifdef _WIN32
@@ -1714,6 +1887,16 @@ static bool saveStateSlotNow(int slot, std::string* errorOut, bool showProgress)
 
     printf("frontend: save state slot %d %s%s%s\n", slot, ok ? "saved" : "failed",
         error.empty() ? "" : ": ", error.c_str());
+    if (ok)
+    {
+        std::string thumbnailPath = saveStateThumbnailPathForSlot(g_currentAppPath, slot);
+        if (!thumbnailPath.empty() &&
+            !frontendSaveScreenshotThumbnail(thumbnailPath.c_str(), 160, 120))
+        {
+            printf("frontend: save state slot %d thumbnail failed: %s\n",
+                slot, thumbnailPath.c_str());
+        }
+    }
     if (errorOut)
     {
         *errorOut = error;
@@ -1724,7 +1907,7 @@ static bool saveStateSlotNow(int slot, std::string* errorOut, bool showProgress)
 
 static bool loadStateSlotNow(int slot, std::string* errorOut, bool showProgress)
 {
-    ScopedGamePauseForDialog pauseWhileLoading(true);
+    ScopedFrontendModalPause pauseWhileLoading(true);
     EmulatorRuntimeState state;
     std::string error;
 #ifdef _WIN32
@@ -1740,16 +1923,37 @@ static bool loadStateSlotNow(int slot, std::string* errorOut, bool showProgress)
     bool paused = waitForSaveStatePause("load", &expected, NULL);
     SaveStateSlotInfo info = saveStateSlotInfo(g_currentAppPath, slot);
     bool runtimeCountMatches = paused && validateSaveStateRuntimeCount(info, expected, &error);
-    bool ok = runtimeCountMatches &&
+    std::chrono::steady_clock::time_point readBegin = std::chrono::steady_clock::now();
+    bool readOk = runtimeCountMatches &&
         saveStateReadSlot(g_currentAppPath, slot, &state, &error,
-            progressCallback, progressUserData) &&
-        emulatorRuntimeRestoreState(state);
+            progressCallback, progressUserData);
+    uint32_t readMs = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - readBegin).count();
 #ifdef _WIN32
     destroySaveStateProgressDialog(&progressDialog);
 #endif
+    printf("frontend: load state slot %d decompress %s in %u ms\n",
+        slot, readOk ? "done" : "failed", readMs);
+    std::chrono::steady_clock::time_point restoreBegin = std::chrono::steady_clock::now();
+    bool restoreOk = readOk && emulatorRuntimeRestoreState(state);
+    uint32_t restoreMs = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - restoreBegin).count();
+    if (readOk)
+    {
+        printf("frontend: load state slot %d restore %s in %u ms\n",
+            slot, restoreOk ? "done" : "failed", restoreMs);
+    }
+    bool ok = readOk && restoreOk;
     if (!ok && error.empty())
     {
         error = paused ? "runtime state is not available" : "runtime did not pause in time";
+    }
+    if (ok)
+    {
+        frontendResetInputAfterStateRestore();
+        pauseWhileLoading.dismiss();
+        frontendResetInputAfterStateRestore();
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
     }
 
     printf("frontend: load state slot %d %s%s%s\n", slot, ok ? "loaded" : "failed",
@@ -1762,18 +1966,45 @@ static bool loadStateSlotNow(int slot, std::string* errorOut, bool showProgress)
     return ok;
 }
 
-static bool handleSaveStateCommand(unsigned int commandId)
+static bool validateSaveStateSlotContext(int slot, std::string* errorOut)
 {
-    if (commandId < MENU_SAVE_STATE_SLOT_BASE ||
-        commandId >= MENU_SAVE_STATE_SLOT_BASE + kSaveStateSlotCount)
+    if (slot < 1 || slot > kSaveStateSlotCount || g_currentAppPath.empty() || !g_gameRunning)
     {
+        if (errorOut)
+        {
+            *errorOut = "no running game";
+        }
         return false;
     }
+    return true;
+}
 
-    int slot = (int)(commandId - MENU_SAVE_STATE_SLOT_BASE) + 1;
-    if (g_currentAppPath.empty() || !g_gameRunning)
+static bool automationSaveStateProgressEnabled(void)
+{
+    const char* value = getenv("DINGOO_PIE_AUTOTEST_STATE_PROGRESS");
+    return value && value[0] && strcmp(value, "0") != 0;
+}
+
+static void showSaveStateFailureMessage(UiTextId messageId, UiTextId titleId,
+    int slot, const std::string& error)
+{
+#ifdef _WIN32
+    std::wstring message = saveStateMessage(messageId,
+        makeSaveStateDialogSlot(slot, true, 0), error);
+    showModalMessageBox(message.c_str(), uiText(titleId), MB_OK | MB_ICONERROR);
+#else
+    (void)messageId;
+    (void)titleId;
+    (void)slot;
+    (void)error;
+#endif
+}
+
+static bool confirmAndSaveStateSlot(int slot, std::string* errorOut)
+{
+    if (!validateSaveStateSlotContext(slot, errorOut))
     {
-        return true;
+        return false;
     }
 
     SaveStateSlotInfo info = saveStateSlotInfo(g_currentAppPath, slot);
@@ -1781,48 +2012,56 @@ static bool handleSaveStateCommand(unsigned int commandId)
     UiTextId confirmText = info.exists ?
         TXT_DIALOG_STATE_CONFIRM_OVERWRITE :
         TXT_DIALOG_STATE_CONFIRM_SAVE;
-    if (!confirmSaveStateAction(confirmText, dialogSlot, uiText(TXT_DIALOG_STATE_SAVE_TITLE)))
+    if (!confirmSaveStateAction(confirmText, dialogSlot,
+        uiText(TXT_DIALOG_STATE_SAVE_TITLE), info.exists))
     {
-        return true;
+        if (errorOut)
+        {
+            errorOut->clear();
+        }
+        return false;
     }
 
-    std::string error;
-    bool ok = saveStateSlotNow(slot, &error, true);
+    bool ok = saveStateSlotNow(slot, errorOut, true);
 
-#ifdef _WIN32
     if (!ok)
     {
-        std::wstring message = saveStateMessage(TXT_DIALOG_STATE_SAVE_FAILED,
-            makeSaveStateDialogSlot(slot, true, 0), error);
-        MessageBoxW(g_menuWindow, message.c_str(), uiText(TXT_DIALOG_STATE_SAVE_TITLE),
-            MB_OK | MB_ICONERROR);
+        std::string error = errorOut ? *errorOut : "";
+        showSaveStateFailureMessage(TXT_DIALOG_STATE_SAVE_FAILED,
+            TXT_DIALOG_STATE_SAVE_TITLE, slot, error);
     }
-#endif
+    return ok;
+}
+
+static bool handleSaveSlotCommand(unsigned int commandId)
+{
+    if (commandId < MENU_SAVE_SLOT_BASE ||
+        commandId >= MENU_SAVE_SLOT_BASE + kSaveStateSlotCount)
+    {
+        return false;
+    }
+
+    int slot = (int)(commandId - MENU_SAVE_SLOT_BASE) + 1;
+    std::string error;
+    confirmAndSaveStateSlot(slot, &error);
     return true;
 }
 
 bool frontendMenuSaveStateSlotForAutomation(int slot)
 {
-    if (slot < 1 || slot > kSaveStateSlotCount || g_currentAppPath.empty() || !g_gameRunning)
+    if (!validateSaveStateSlotContext(slot, NULL))
     {
         return false;
     }
 
-    return saveStateSlotNow(slot, NULL, false);
+    return saveStateSlotNow(slot, NULL, automationSaveStateProgressEnabled());
 }
 
-static bool handleLoadStateCommand(unsigned int commandId)
+static bool confirmAndLoadStateSlot(int slot, std::string* errorOut)
 {
-    if (commandId < MENU_LOAD_STATE_SLOT_BASE ||
-        commandId >= MENU_LOAD_STATE_SLOT_BASE + kSaveStateSlotCount)
+    if (!validateSaveStateSlotContext(slot, errorOut))
     {
         return false;
-    }
-
-    int slot = (int)(commandId - MENU_LOAD_STATE_SLOT_BASE) + 1;
-    if (g_currentAppPath.empty() || !g_gameRunning)
-    {
-        return true;
     }
 
     SaveStateSlotInfo info = saveStateSlotInfo(g_currentAppPath, slot);
@@ -1831,36 +2070,55 @@ static bool handleLoadStateCommand(unsigned int commandId)
 #ifdef _WIN32
         std::wstring message = saveStateMessage(TXT_DIALOG_STATE_EMPTY,
             makeSaveStateDialogSlot(slot, false, 0), "");
-        MessageBoxW(g_menuWindow, message.c_str(), uiText(TXT_DIALOG_STATE_LOAD_TITLE),
+        showModalMessageBox(message.c_str(), uiText(TXT_DIALOG_STATE_LOAD_TITLE),
             MB_OK | MB_ICONINFORMATION);
 #endif
-        return true;
+        if (errorOut)
+        {
+            *errorOut = "state slot is empty";
+        }
+        return false;
     }
 
     SaveStateDialogSlot dialogSlot = makeSaveStateDialogSlot(slot, info);
-    if (!confirmSaveStateAction(TXT_DIALOG_STATE_CONFIRM_LOAD, dialogSlot, uiText(TXT_DIALOG_STATE_LOAD_TITLE)))
+    if (!confirmSaveStateAction(TXT_DIALOG_STATE_CONFIRM_LOAD, dialogSlot,
+        uiText(TXT_DIALOG_STATE_LOAD_TITLE), false))
     {
-        return true;
+        if (errorOut)
+        {
+            errorOut->clear();
+        }
+        return false;
     }
 
-    std::string error;
-    bool ok = loadStateSlotNow(slot, &error, true);
+    bool ok = loadStateSlotNow(slot, errorOut, true);
 
-#ifdef _WIN32
     if (!ok)
     {
-        std::wstring message = saveStateMessage(TXT_DIALOG_STATE_LOAD_FAILED,
-            makeSaveStateDialogSlot(slot, true, 0), error);
-        MessageBoxW(g_menuWindow, message.c_str(), uiText(TXT_DIALOG_STATE_LOAD_TITLE),
-            MB_OK | MB_ICONERROR);
+        std::string error = errorOut ? *errorOut : "";
+        showSaveStateFailureMessage(TXT_DIALOG_STATE_LOAD_FAILED,
+            TXT_DIALOG_STATE_LOAD_TITLE, slot, error);
     }
-#endif
+    return ok;
+}
+
+static bool handleLoadSlotCommand(unsigned int commandId)
+{
+    if (commandId < MENU_LOAD_SLOT_BASE ||
+        commandId >= MENU_LOAD_SLOT_BASE + kSaveStateSlotCount)
+    {
+        return false;
+    }
+
+    int slot = (int)(commandId - MENU_LOAD_SLOT_BASE) + 1;
+    std::string error;
+    confirmAndLoadStateSlot(slot, &error);
     return true;
 }
 
 bool frontendMenuLoadStateSlotForAutomation(int slot)
 {
-    if (slot < 1 || slot > kSaveStateSlotCount || g_currentAppPath.empty() || !g_gameRunning)
+    if (!validateSaveStateSlotContext(slot, NULL))
     {
         return false;
     }
@@ -1872,8 +2130,44 @@ bool frontendMenuLoadStateSlotForAutomation(int slot)
         return false;
     }
 
-    return loadStateSlotNow(slot, NULL, false);
+    return loadStateSlotNow(slot, NULL, automationSaveStateProgressEnabled());
 }
+
+#ifdef _WIN32
+static bool saveStateManagerSaveSlot(int slot, std::string* errorOut, void* userData)
+{
+    (void)userData;
+    return confirmAndSaveStateSlot(slot, errorOut);
+}
+
+static bool saveStateManagerLoadSlot(int slot, std::string* errorOut, void* userData)
+{
+    (void)userData;
+    return confirmAndLoadStateSlot(slot, errorOut);
+}
+
+static void saveStateManagerChanged(void* userData)
+{
+    (void)userData;
+    frontendMenuRefresh();
+}
+
+static void openSaveStateManagerWindow(void)
+{
+    if (g_currentAppPath.empty())
+    {
+        return;
+    }
+
+    SaveStateManagerCallbacks callbacks = {};
+    callbacks.saveSlot = saveStateManagerSaveSlot;
+    callbacks.loadSlot = saveStateManagerLoadSlot;
+    callbacks.changed = saveStateManagerChanged;
+    callbacks.userData = NULL;
+    saveStateManagerOpenWindow(g_menuWindow, g_menuSettings->uiLanguage,
+        g_currentAppPath, g_gameRunning, callbacks);
+}
+#endif
 
 static void clearRecentAppMenu(void)
 {
@@ -1906,11 +2200,11 @@ bool frontendMenuHandleCommand(unsigned int commandId)
     {
         return true;
     }
-    if (handleSaveStateCommand(commandId))
+    if (handleSaveSlotCommand(commandId))
     {
         return true;
     }
-    if (handleLoadStateCommand(commandId))
+    if (handleLoadSlotCommand(commandId))
     {
         return true;
     }
@@ -1919,7 +2213,7 @@ bool frontendMenuHandleCommand(unsigned int commandId)
     {
     case MENU_FILE_OPEN:
     {
-        ScopedGamePauseForDialog pauseWhileChoosing(true);
+        ScopedFrontendModalPause pauseWhileChoosing(true);
         std::string appPath = platformSelectAppPathLocalized(uiText(TXT_DIALOG_APP_TITLE), uiText(TXT_DIALOG_APP_FILTER));
         if (!appPath.empty())
         {
@@ -1955,6 +2249,11 @@ bool frontendMenuHandleCommand(unsigned int commandId)
         {
             saveScreenshotWithDialog();
         }
+#endif
+        return true;
+    case MENU_FILE_SAVE_STATE_MANAGER:
+#ifdef _WIN32
+        openSaveStateManagerWindow();
 #endif
         return true;
     case MENU_FILE_EXIT:
@@ -2130,37 +2429,37 @@ bool frontendMenuHandleCommand(unsigned int commandId)
             g_menuSettings->showFps ? 1u : 0u);
         frontendMenuRefresh();
         return true;
-    case MENU_SETTINGS_AUDIO_VOLUME_0:
-    case MENU_SETTINGS_AUDIO_VOLUME_25:
-    case MENU_SETTINGS_AUDIO_VOLUME_50:
-    case MENU_SETTINGS_AUDIO_VOLUME_75:
-    case MENU_SETTINGS_AUDIO_VOLUME_100:
-    case MENU_SETTINGS_AUDIO_VOLUME_125:
-    case MENU_SETTINGS_AUDIO_VOLUME_150:
+    case MENU_AUDIO_VOLUME_0:
+    case MENU_AUDIO_VOLUME_25:
+    case MENU_AUDIO_VOLUME_50:
+    case MENU_AUDIO_VOLUME_75:
+    case MENU_AUDIO_VOLUME_100:
+    case MENU_AUDIO_VOLUME_125:
+    case MENU_AUDIO_VOLUME_150:
         g_menuSettings->audioVolumePercent = percentForAudioVolumeCommand(commandId);
         frontendApplyAudioSettings(*g_menuSettings);
         emulatorSaveSettings(*g_menuSettings);
         printf("frontend: master volume setting saved as %d%%\n", g_menuSettings->audioVolumePercent);
         frontendMenuRefresh();
         return true;
-    case MENU_SETTINGS_AUDIO_BUFFER_512:
-    case MENU_SETTINGS_AUDIO_BUFFER_1024:
-    case MENU_SETTINGS_AUDIO_BUFFER_2048:
-    case MENU_SETTINGS_AUDIO_BUFFER_4096:
-    case MENU_SETTINGS_AUDIO_BUFFER_8192:
-        if (commandId == MENU_SETTINGS_AUDIO_BUFFER_512)
+    case MENU_AUDIO_BUFFER_512:
+    case MENU_AUDIO_BUFFER_1024:
+    case MENU_AUDIO_BUFFER_2048:
+    case MENU_AUDIO_BUFFER_4096:
+    case MENU_AUDIO_BUFFER_8192:
+        if (commandId == MENU_AUDIO_BUFFER_512)
         {
             g_menuSettings->audioBufferSamples = 512;
         }
-        else if (commandId == MENU_SETTINGS_AUDIO_BUFFER_1024)
+        else if (commandId == MENU_AUDIO_BUFFER_1024)
         {
             g_menuSettings->audioBufferSamples = 1024;
         }
-        else if (commandId == MENU_SETTINGS_AUDIO_BUFFER_2048)
+        else if (commandId == MENU_AUDIO_BUFFER_2048)
         {
             g_menuSettings->audioBufferSamples = 2048;
         }
-        else if (commandId == MENU_SETTINGS_AUDIO_BUFFER_4096)
+        else if (commandId == MENU_AUDIO_BUFFER_4096)
         {
             g_menuSettings->audioBufferSamples = 4096;
         }
@@ -2173,13 +2472,31 @@ bool frontendMenuHandleCommand(unsigned int commandId)
         printf("frontend: audio buffer setting saved as %d samples\n", g_menuSettings->audioBufferSamples);
         frontendMenuRefresh();
         return true;
-    case MENU_SETTINGS_DROP_AUDIO:
-        g_menuSettings->dropAudio = !g_menuSettings->dropAudio;
+    case MENU_AUDIO_EFFECT_OFF:
+    case MENU_AUDIO_EFFECT_SOFT:
+    case MENU_AUDIO_EFFECT_CLEAR:
+    case MENU_AUDIO_EFFECT_BASS_BOOST:
+    case MENU_AUDIO_EFFECT_MONO:
+    {
+        const AudioEffectPreset* preset = audioEffectPresetForCommand(commandId);
+        if (preset)
+        {
+            g_menuSettings->audioEffect = preset->effect;
+            frontendApplyAudioSettings(*g_menuSettings);
+            emulatorSaveSettings(*g_menuSettings);
+            printf("frontend: audio effect setting saved as %s\n",
+                emulatorAudioEffectName(g_menuSettings->audioEffect));
+            frontendMenuRefresh();
+        }
+        return true;
+    }
+    case MENU_AUDIO_DISABLE:
+        g_menuSettings->audioDisabled = !g_menuSettings->audioDisabled;
         emulatorApplyRuntimeSettings(*g_menuSettings);
         frontendApplyAudioSettings(*g_menuSettings);
         emulatorSaveSettings(*g_menuSettings);
         printf("frontend: disable-audio setting applied as %u\n",
-            g_menuSettings->dropAudio ? 1u : 0u);
+            g_menuSettings->audioDisabled ? 1u : 0u);
         frontendMenuRefresh();
         return true;
     case MENU_INPUT_DISABLE_IME:
@@ -2241,24 +2558,24 @@ bool frontendMenuHandleCommand(unsigned int commandId)
             g_menuSettings->cpuClockHz.empty() ? "auto" : g_menuSettings->cpuClockHz.c_str());
         frontendMenuRefresh();
         return true;
-    case MENU_SETTINGS_SPEED_AUTO:
-    case MENU_SETTINGS_SPEED_100:
-    case MENU_SETTINGS_SPEED_095:
-    case MENU_SETTINGS_SPEED_090:
-    case MENU_SETTINGS_SPEED_085:
-    case MENU_SETTINGS_SPEED_080:
-    case MENU_SETTINGS_SPEED_075:
-    case MENU_SETTINGS_SPEED_070:
-    case MENU_SETTINGS_SPEED_065:
-    case MENU_SETTINGS_SPEED_060:
-    case MENU_SETTINGS_SPEED_055:
-    case MENU_SETTINGS_SPEED_050:
-    case MENU_SETTINGS_SPEED_045:
-    case MENU_SETTINGS_SPEED_040:
-    case MENU_SETTINGS_SPEED_035:
-    case MENU_SETTINGS_SPEED_030:
-    case MENU_SETTINGS_SPEED_025:
-    case MENU_SETTINGS_SPEED_020:
+    case MENU_SETTINGS_RUNTIME_SPEED_AUTO:
+    case MENU_SETTINGS_RUNTIME_SPEED_100:
+    case MENU_SETTINGS_RUNTIME_SPEED_095:
+    case MENU_SETTINGS_RUNTIME_SPEED_090:
+    case MENU_SETTINGS_RUNTIME_SPEED_085:
+    case MENU_SETTINGS_RUNTIME_SPEED_080:
+    case MENU_SETTINGS_RUNTIME_SPEED_075:
+    case MENU_SETTINGS_RUNTIME_SPEED_070:
+    case MENU_SETTINGS_RUNTIME_SPEED_065:
+    case MENU_SETTINGS_RUNTIME_SPEED_060:
+    case MENU_SETTINGS_RUNTIME_SPEED_055:
+    case MENU_SETTINGS_RUNTIME_SPEED_050:
+    case MENU_SETTINGS_RUNTIME_SPEED_045:
+    case MENU_SETTINGS_RUNTIME_SPEED_040:
+    case MENU_SETTINGS_RUNTIME_SPEED_035:
+    case MENU_SETTINGS_RUNTIME_SPEED_030:
+    case MENU_SETTINGS_RUNTIME_SPEED_025:
+    case MENU_SETTINGS_RUNTIME_SPEED_020:
     {
         const ScalePreset* speedPreset = runtimeSpeedPresetForCommand(commandId);
         g_menuSettings->runtimeSpeedScale = speedPreset ? speedPreset->iniValue : "";
@@ -2268,24 +2585,24 @@ bool frontendMenuHandleCommand(unsigned int commandId)
         frontendMenuRefresh();
         return true;
     }
-    case MENU_SETTINGS_DELAY_AUTO:
-    case MENU_SETTINGS_DELAY_100:
-    case MENU_SETTINGS_DELAY_095:
-    case MENU_SETTINGS_DELAY_090:
-    case MENU_SETTINGS_DELAY_085:
-    case MENU_SETTINGS_DELAY_080:
-    case MENU_SETTINGS_DELAY_075:
-    case MENU_SETTINGS_DELAY_070:
-    case MENU_SETTINGS_DELAY_065:
-    case MENU_SETTINGS_DELAY_060:
-    case MENU_SETTINGS_DELAY_055:
-    case MENU_SETTINGS_DELAY_050:
-    case MENU_SETTINGS_DELAY_045:
-    case MENU_SETTINGS_DELAY_040:
-    case MENU_SETTINGS_DELAY_035:
-    case MENU_SETTINGS_DELAY_030:
-    case MENU_SETTINGS_DELAY_025:
-    case MENU_SETTINGS_DELAY_020:
+    case MENU_SETTINGS_DELAY_SCALE_AUTO:
+    case MENU_SETTINGS_DELAY_SCALE_100:
+    case MENU_SETTINGS_DELAY_SCALE_095:
+    case MENU_SETTINGS_DELAY_SCALE_090:
+    case MENU_SETTINGS_DELAY_SCALE_085:
+    case MENU_SETTINGS_DELAY_SCALE_080:
+    case MENU_SETTINGS_DELAY_SCALE_075:
+    case MENU_SETTINGS_DELAY_SCALE_070:
+    case MENU_SETTINGS_DELAY_SCALE_065:
+    case MENU_SETTINGS_DELAY_SCALE_060:
+    case MENU_SETTINGS_DELAY_SCALE_055:
+    case MENU_SETTINGS_DELAY_SCALE_050:
+    case MENU_SETTINGS_DELAY_SCALE_045:
+    case MENU_SETTINGS_DELAY_SCALE_040:
+    case MENU_SETTINGS_DELAY_SCALE_035:
+    case MENU_SETTINGS_DELAY_SCALE_030:
+    case MENU_SETTINGS_DELAY_SCALE_025:
+    case MENU_SETTINGS_DELAY_SCALE_020:
     {
         const ScalePreset* delayPreset = delayScalePresetForCommand(commandId);
         g_menuSettings->ostimeDlyScale = delayPreset ? delayPreset->iniValue : "";
@@ -2314,6 +2631,15 @@ bool frontendMenuHandleCommand(unsigned int commandId)
         frontendMenuRefresh();
         return true;
     }
+    case MENU_SETTINGS_CHEAT_MANAGER:
+#ifdef _WIN32
+        if (g_gameRunning)
+        {
+            cheatManagerOpenWindow(g_menuWindow, g_menuSettings->uiLanguage,
+                g_menuSettings, g_currentAppPath);
+        }
+#endif
+        return true;
     case MENU_SETTINGS_LANGUAGE_CHINESE:
     case MENU_SETTINGS_LANGUAGE_ENGLISH:
         g_menuSettings->uiLanguage = commandId == MENU_SETTINGS_LANGUAGE_CHINESE ?
@@ -2363,7 +2689,12 @@ bool frontendMenuHandleCommand(unsigned int commandId)
         frontendMenuRefresh();
         return true;
     case MENU_DEBUG_PROFILE:
-        g_menuSettings->debugProfile = !g_menuSettings->debugProfile;
+        g_menuSettings->debugProfile =
+            !(g_menuSettings->debugProfile || runtimeLogProfileEnabled());
+        if (!g_menuSettings->debugProfile)
+        {
+            runtimeLogSetExternalProfileEnabled(false);
+        }
         if (g_menuSettings->debugProfile)
         {
             if (!debugLogOpen())
@@ -2379,14 +2710,23 @@ bool frontendMenuHandleCommand(unsigned int commandId)
         return true;
     case MENU_DEBUG_OPEN_LOG:
 #ifdef _WIN32
-        openTextFileNearExe(L"DingooPie-debug.log");
+        openTextFileNearExe(debugLogFileNameWide());
 #endif
         return true;
-    case MENU_DEBUG_CHEAT_FINDER:
+    case MENU_DEBUG_RESOURCE_MONITOR:
+        g_menuSettings->resourceMonitorAutoOpen = !g_menuSettings->resourceMonitorAutoOpen;
+        g_resourceMonitorAutoOpenedForRun = false;
+        emulatorSaveSettings(*g_menuSettings);
+        printf("frontend: resource monitor auto-open setting applied as %u\n",
+            g_menuSettings->resourceMonitorAutoOpen ? 1u : 0u);
+        frontendMenuRefresh();
+        openResourceMonitorForCurrentRun();
+        return true;
+    case MENU_DEBUG_MEMORY_SEARCHER:
 #ifdef _WIN32
         if (g_gameRunning)
         {
-            frontendOpenCheatFinderWindow();
+            frontendOpenMemorySearcherWindow();
         }
 #endif
         return true;
@@ -2400,7 +2740,7 @@ bool frontendMenuHandleCommand(unsigned int commandId)
         return true;
     case MENU_HELP_ABOUT:
 #ifdef _WIN32
-        MessageBoxW(g_menuWindow,
+        showModalMessageBox(
             uiText(TXT_ABOUT_BODY),
             uiText(TXT_ABOUT_TITLE),
             MB_OK | MB_ICONINFORMATION);

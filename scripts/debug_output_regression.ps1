@@ -1,7 +1,7 @@
 param(
     [string]$BuildDir = "",
     [string]$OutputDir = "",
-    [int]$Seconds = 2
+    [int]$Seconds = 5
 )
 
 $ErrorActionPreference = "Stop"
@@ -100,12 +100,20 @@ function Test-Patterns {
     }
 }
 
+function Get-LatestDebugLog {
+    param([Parameter(Mandatory = $true)][string]$Directory)
+
+    Get-ChildItem -LiteralPath $Directory -Filter "DingooPie-debug-*.log" -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+}
+
 function Invoke-LogCase {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Name,
         [string]$IniText = "",
-        [bool]$EnableEnvLog = $false,
+        [bool]$EnableDebugLogFileEnv = $false,
         [bool]$ExpectDebugLog = $true,
         [string[]]$RequiredPatterns = @(),
         [string[]]$RejectedPatterns = @()
@@ -116,16 +124,18 @@ function Invoke-LogCase {
         Remove-Item -LiteralPath $runDir -Recurse -Force
     }
     Copy-RuntimeFiles $script:BuildDir $runDir
+    Get-ChildItem -LiteralPath $runDir -Filter "DingooPie-debug-*.log" -File -ErrorAction SilentlyContinue |
+        Remove-Item -Force
 
     if (![string]::IsNullOrWhiteSpace($IniText)) {
         Set-Content -LiteralPath (Join-Path $runDir "DingooPie.ini") -Value $IniText -Encoding ASCII
     }
 
-    $rawLog = Join-Path $runDir "DingooPie-debug.log"
-    $previousLogEnv = [Environment]::GetEnvironmentVariable("DINGOO_PIE_LOG_FILE", "Process")
+    $rawLogPattern = Join-Path $runDir "DingooPie-debug-*.log"
+    $previousDebugLogFileEnv = [Environment]::GetEnvironmentVariable("DINGOO_PIE_LOG_FILE", "Process")
     $process = $null
     try {
-        Set-TestEnv "DINGOO_PIE_LOG_FILE" $(if ($EnableEnvLog) { "1" } else { "" })
+        Set-TestEnv "DINGOO_PIE_LOG_FILE" $(if ($EnableDebugLogFileEnv) { "1" } else { "" })
         $process = Start-Process -FilePath (Join-Path $runDir "DingooPie.exe") `
             -WorkingDirectory $runDir `
             -WindowStyle Hidden `
@@ -134,10 +144,12 @@ function Invoke-LogCase {
     }
     finally {
         Stop-TestProcess $process
-        Set-TestEnv "DINGOO_PIE_LOG_FILE" $previousLogEnv
+        Set-TestEnv "DINGOO_PIE_LOG_FILE" $previousDebugLogFileEnv
     }
 
-    $logExists = Test-Path -LiteralPath $rawLog -PathType Leaf
+    $logFile = Get-LatestDebugLog $runDir
+    $rawLog = if ($logFile) { $logFile.FullName } else { $rawLogPattern }
+    $logExists = $null -ne $logFile
     $lines = if ($logExists) { Get-Content -LiteralPath $rawLog } else { @() }
     $patternResult = Test-Patterns $lines $RequiredPatterns $RejectedPatterns
     $passed = ($logExists -eq $ExpectDebugLog) -and
@@ -175,7 +187,7 @@ function Invoke-RedirectCase {
 
     $stdoutLog = Join-Path $runDir "stdout.log"
     $stderrLog = Join-Path $runDir "stderr.log"
-    $previousLogEnv = [Environment]::GetEnvironmentVariable("DINGOO_PIE_LOG_FILE", "Process")
+    $previousDebugLogFileEnv = [Environment]::GetEnvironmentVariable("DINGOO_PIE_LOG_FILE", "Process")
     $process = $null
     try {
         Set-TestEnv "DINGOO_PIE_LOG_FILE" ""
@@ -189,7 +201,7 @@ function Invoke-RedirectCase {
     }
     finally {
         Stop-TestProcess $process
-        Set-TestEnv "DINGOO_PIE_LOG_FILE" $previousLogEnv
+        Set-TestEnv "DINGOO_PIE_LOG_FILE" $previousDebugLogFileEnv
     }
 
     $lines = if (Test-Path -LiteralPath $stdoutLog -PathType Leaf) {
@@ -231,39 +243,39 @@ $baseRequired = @(
 
 $results = @()
 $results += Invoke-LogCase `
-    -Name "env-log-only" `
-    -EnableEnvLog $true `
+    -Name "open-debug-log-env-only" `
+    -EnableDebugLogFileEnv $true `
     -RequiredPatterns ($baseRequired + @(
-        '^debug-log: opened path=DingooPie-debug\.log routing=pipe$',
+        '^debug-log:opened file=DingooPie-debug-\d{8}-\d{6}-\d+\.log routing=pipe mutex=(primary|unavailable)$',
         '^main: settings loaded .*debug\.show_console=0 debug\.profile=0 external_log=1$',
-        '^settings-trace: loaded debug\.show_console=0 debug\.profile=0$'
+        '^settings-trace:loaded debug\.show_console=0 debug\.profile=0 debug\.resource_monitor_auto_open=0$'
     )) `
-    -RejectedPatterns @('^debug-console: opened ')
+    -RejectedPatterns @('^debug-console:opened ')
 
 $results += Invoke-LogCase `
     -Name "ini-performance-log" `
-    -IniText "[debug]`r`nshow_console=0`r`nprofile=1`r`n" `
+    -IniText "[debug]`r`nshow_console=0`r`nprofile=1`r`nresource_monitor_auto_open=0`r`n" `
     -RequiredPatterns ($baseRequired + @(
-        '^debug-log: opened path=DingooPie-debug\.log routing=pipe$',
+        '^debug-log:opened file=DingooPie-debug-\d{8}-\d{6}-\d+\.log routing=pipe mutex=(primary|unavailable)$',
         '^main: settings loaded .*debug\.show_console=0 debug\.profile=1 external_log=0$',
-        '^settings-trace: loaded debug\.show_console=0 debug\.profile=1$'
+        '^settings-trace:loaded debug\.show_console=0 debug\.profile=1 debug\.resource_monitor_auto_open=0$'
     )) `
-    -RejectedPatterns @('^debug-console: opened ')
+    -RejectedPatterns @('^debug-console:opened ')
 
 $results += Invoke-LogCase `
-    -Name "console-and-log" `
-    -IniText "[debug]`r`nshow_console=1`r`nprofile=0`r`n" `
-    -EnableEnvLog $true `
+    -Name "debug-console-and-open-debug-log" `
+    -IniText "[debug]`r`nshow_console=1`r`nprofile=0`r`nresource_monitor_auto_open=0`r`n" `
+    -EnableDebugLogFileEnv $true `
     -RequiredPatterns ($baseRequired + @(
-        '^debug-log: opened path=DingooPie-debug\.log routing=pipe$',
-        '^debug-console: opened encoding=utf-8 log=1$',
+        '^debug-log:opened file=DingooPie-debug-\d{8}-\d{6}-\d+\.log routing=pipe mutex=(primary|unavailable)$',
+        '^debug-console:opened encoding=UTF-8 log=1$',
         '^main: settings loaded .*debug\.show_console=1 debug\.profile=0 external_log=1$',
-        '^settings-trace: loaded debug\.show_console=1 debug\.profile=0$'
+        '^settings-trace:loaded debug\.show_console=1 debug\.profile=0 debug\.resource_monitor_auto_open=0$'
     ))
 
 $results += Invoke-LogCase `
-    -Name "console-only" `
-    -IniText "[debug]`r`nshow_console=1`r`nprofile=0`r`n" `
+    -Name "debug-console-only" `
+    -IniText "[debug]`r`nshow_console=1`r`nprofile=0`r`nresource_monitor_auto_open=0`r`n" `
     -ExpectDebugLog $false
 
 $results += Invoke-RedirectCase `
@@ -272,7 +284,7 @@ $results += Invoke-RedirectCase `
         '^main: settings loaded .*debug\.show_console=0 debug\.profile=0 external_log=0$',
         '^frontend: video settings '
     )) `
-    -RejectedPatterns @('^debug-log: opened ', '^debug-console: opened ')
+    -RejectedPatterns @('^debug-log:opened ', '^debug-console:opened ')
 
 $failed = @($results | Where-Object { -not $_.passed })
 $summary = [ordered]@{

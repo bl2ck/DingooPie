@@ -5,20 +5,24 @@
 #include <stdlib.h>
 #include <string.h>
 
+static const uint32_t kQueueBackpressureLogIntervalMs = 1000;
+static const uint32_t kAudioQueueDropDisabledMs = 0;
+static const uint32_t kAudioQueueDropMaxMs = 60000;
+static const int kAudioEffectStateChannels = 8;
+
 static SDL_AudioDeviceID g_audioDevice = 0;
 static SDL_AudioSpec g_audioSpec;
 static SDL_mutex* g_audioMutex = NULL;
 static uint32_t g_volume = 100;
 static int g_masterVolumePercent = 100;
 static int g_bufferSamples = 2048;
+static AudioEffectMode g_audioEffect = AUDIO_EFFECT_OFF;
+static int32_t g_audioEffectState[kAudioEffectStateChannels] = {};
+static bool g_audioEffectStateValid[kAudioEffectStateChannels] = {};
 static bool g_guestMuteRequested = false;
 static bool g_frontendPauseRequested = false;
-static bool g_dropAudio = false;
+static bool g_audioOutputUnavailable = false;
 static uint64_t g_lastQueueBackpressureLogTicks = 0;
-
-static const uint32_t kQueueBackpressureLogIntervalMs = 1000;
-static const uint32_t kAudioQueueDropDisabledMs = 0;
-static const uint32_t kAudioQueueDropMaxMs = 60000;
 
 enum AudioQueueWaitResult
 {
@@ -233,6 +237,21 @@ static int normalizeBufferSamples(int samples)
     }
 }
 
+static AudioEffectMode normalizeAudioEffect(AudioEffectMode effect)
+{
+    switch (effect)
+    {
+    case AUDIO_EFFECT_OFF:
+    case AUDIO_EFFECT_SOFT:
+    case AUDIO_EFFECT_CLEAR:
+    case AUDIO_EFFECT_BASS_BOOST:
+    case AUDIO_EFFECT_MONO:
+        return effect;
+    default:
+        return AUDIO_EFFECT_OFF;
+    }
+}
+
 static int effectiveVolumePercentLocked(void)
 {
     uint32_t guestVolume = g_volume > 255 ? 255 : g_volume;
@@ -243,10 +262,10 @@ static int effectiveVolumePercentLocked(void)
     return (guestPercent * masterVolume + 50) / 100;
 }
 
-static bool dropAudioEnvEnabled(void)
+static bool audioDisabledEnvEnabled(void)
 {
-    const char* dropAudio = getenv("DINGOO_PIE_DROP_AUDIO");
-    return dropAudio && dropAudio[0] && dropAudio[0] != '0';
+    const char* audioDisabled = getenv("DINGOO_PIE_AUDIO_DISABLED");
+    return audioDisabled && audioDisabled[0] && audioDisabled[0] != '0';
 }
 
 static int clampS16(int value)
@@ -260,6 +279,148 @@ static int clampS16(int value)
         return 32767;
     }
     return value;
+}
+
+static void resetAudioEffectStateLocked(void)
+{
+    memset(g_audioEffectState, 0, sizeof(g_audioEffectState));
+    memset(g_audioEffectStateValid, 0, sizeof(g_audioEffectStateValid));
+}
+
+static int audioFrameChannelsLocked(void)
+{
+    int channels = g_audioSpec.channels > 0 ? (int)g_audioSpec.channels : 1;
+    return channels > 0 ? channels : 1;
+}
+
+static int16_t applyAudioEffectSampleLocked(int16_t sample, int channel)
+{
+    const int stateChannel = channel % kAudioEffectStateChannels;
+    if (!g_audioEffectStateValid[stateChannel])
+    {
+        g_audioEffectState[stateChannel] = sample;
+        g_audioEffectStateValid[stateChannel] = true;
+    }
+
+    const int32_t previous = g_audioEffectState[stateChannel];
+    int32_t output = sample;
+    switch (g_audioEffect)
+    {
+    case AUDIO_EFFECT_SOFT:
+        output = (previous * 3 + sample) / 4;
+        g_audioEffectState[stateChannel] = output;
+        break;
+    case AUDIO_EFFECT_CLEAR:
+    {
+        const int32_t low = (previous * 3 + sample) / 4;
+        output = sample + (sample - low) / 2;
+        g_audioEffectState[stateChannel] = low;
+        break;
+    }
+    case AUDIO_EFFECT_BASS_BOOST:
+    {
+        const int32_t low = (previous * 15 + sample) / 16;
+        output = sample + low / 4;
+        g_audioEffectState[stateChannel] = low;
+        break;
+    }
+    default:
+        break;
+    }
+    return (int16_t)clampS16((int)output);
+}
+
+static void applyMonoEffectS16Locked(int16_t* samples, int sampleCount, int channels)
+{
+    if (!samples || sampleCount <= 0 || channels < 2)
+    {
+        return;
+    }
+
+    for (int frame = 0; frame + channels <= sampleCount; frame += channels)
+    {
+        int32_t sum = 0;
+        for (int channel = 0; channel < channels; ++channel)
+        {
+            sum += samples[frame + channel];
+        }
+        const int16_t mixed = (int16_t)clampS16((int)(sum / channels));
+        for (int channel = 0; channel < channels; ++channel)
+        {
+            samples[frame + channel] = mixed;
+        }
+    }
+}
+
+static void applyMonoEffectU8Locked(uint8_t* samples, int sampleCount, int channels)
+{
+    if (!samples || sampleCount <= 0 || channels < 2)
+    {
+        return;
+    }
+
+    for (int frame = 0; frame + channels <= sampleCount; frame += channels)
+    {
+        int32_t sum = 0;
+        for (int channel = 0; channel < channels; ++channel)
+        {
+            sum += (int)samples[frame + channel] - 128;
+        }
+        const int mixed = clampIntLocal(128 + (int)(sum / channels), 0, 255);
+        for (int channel = 0; channel < channels; ++channel)
+        {
+            samples[frame + channel] = (uint8_t)mixed;
+        }
+    }
+}
+
+static void applyAudioEffectInPlaceLocked(char* buffer, int count)
+{
+    if (!buffer || count <= 0 || g_audioEffect == AUDIO_EFFECT_OFF)
+    {
+        return;
+    }
+
+    const int channels = audioFrameChannelsLocked();
+    switch (g_audioSpec.format)
+    {
+    case AUDIO_U8:
+    {
+        uint8_t* samples = (uint8_t*)buffer;
+        const int sampleCount = count;
+        if (g_audioEffect == AUDIO_EFFECT_MONO)
+        {
+            applyMonoEffectU8Locked(samples, sampleCount, channels);
+            return;
+        }
+
+        for (int i = 0; i < sampleCount; ++i)
+        {
+            const int16_t centered = (int16_t)(((int)samples[i] - 128) << 8);
+            const int16_t processed = applyAudioEffectSampleLocked(centered, i % channels);
+            samples[i] = (uint8_t)clampIntLocal(128 + ((int)processed >> 8), 0, 255);
+        }
+        return;
+    }
+    case AUDIO_S16LSB:
+    {
+        const int sampleCount = count / 2;
+        int16_t* samples = (int16_t*)buffer;
+        if (g_audioEffect == AUDIO_EFFECT_MONO)
+        {
+            applyMonoEffectS16Locked(samples, sampleCount, channels);
+            return;
+        }
+
+        for (int i = 0; i < sampleCount; ++i)
+        {
+            samples[i] = applyAudioEffectSampleLocked(samples[i], i % channels);
+        }
+        break;
+    }
+    default:
+        break;
+    }
 }
 
 static void applyVolumeInPlaceLocked(char* buffer, int count)
@@ -315,10 +476,13 @@ uint32_t MixerOpen(waveout_args* args)
     }
 
     g_volume = args->volume;
-    g_dropAudio = false;
+    g_audioOutputUnavailable = false;
+    resetAudioEffectStateLocked();
     resetAudioBackpressureLog();
     int bufferSamples = normalizeBufferSamples(g_bufferSamples);
-    SDL_Log("Audio waveout open requested sample_rate=%u format=%u channels=%u buffer_samples=%d guest_volume=%u master_volume=%d%% effective_volume=%d%%",
+    SDL_Log(
+        "Audio waveout open requested sample_rate=%u format=%u channels=%u "
+        "buffer_samples=%d guest_volume=%u master_volume=%d%% effective_volume=%d%%",
         (unsigned int)args->sample_rate,
         (unsigned int)args->format,
         (unsigned int)args->channel,
@@ -340,7 +504,7 @@ uint32_t MixerOpen(waveout_args* args)
     {
         SDL_Log("Couldn't open audio: %s", SDL_GetError());
         SDL_Log("Audio output disabled; guest audio buffers will be dropped");
-        g_dropAudio = true;
+        g_audioOutputUnavailable = true;
         unlockAudio();
         return 1;
     }
@@ -363,7 +527,8 @@ uint32_t MixerClose()
         g_audioDevice = 0;
         SDL_Log("Closed audio");
     }
-    g_dropAudio = false;
+    g_audioOutputUnavailable = false;
+    resetAudioEffectStateLocked();
     resetAudioBackpressureLog();
     unlockAudio();
     return 1;
@@ -377,7 +542,7 @@ uint32_t MixerWriteBuff(char* buffer, int count)
         return 0;
     }
 
-    if (dropAudioEnvEnabled() || g_dropAudio || !g_audioDevice)
+    if (audioDisabledEnvEnabled() || g_audioOutputUnavailable || !g_audioDevice)
     {
         free(buffer);
         return 1;
@@ -399,6 +564,7 @@ uint32_t MixerWriteBuff(char* buffer, int count)
         return 1;
     }
 
+    applyAudioEffectInPlaceLocked(buffer, count);
     applyVolumeInPlaceLocked(buffer, count);
     int queued = g_audioDevice ? SDL_QueueAudio(g_audioDevice, buffer, (Uint32)count) : 0;
     unlockAudio();
@@ -410,7 +576,7 @@ uint32_t MixerPlaying()
 {
     lockAudio();
     uint32_t canWrite = 1;
-    if (dropAudioEnvEnabled() || g_dropAudio)
+    if (audioDisabledEnvEnabled() || g_audioOutputUnavailable)
     {
         canWrite = 1;
     }
@@ -426,17 +592,17 @@ uint32_t MixerPlaying()
     return canWrite;
 }
 
-bool MixerDropsAudio()
+bool MixerSkipsAudioOutput()
 {
-    if (dropAudioEnvEnabled())
+    if (audioDisabledEnvEnabled())
     {
         return true;
     }
 
     lockAudio();
-    bool dropsAudio = g_dropAudio || outputMutedLocked() || !g_audioDevice;
+    bool skipsAudioOutput = g_audioOutputUnavailable || outputMutedLocked() || !g_audioDevice;
     unlockAudio();
-    return dropsAudio;
+    return skipsAudioOutput;
 }
 
 void MixerSetVolume(uint32_t vol)
@@ -486,6 +652,7 @@ void MixerSetFrontendPaused(bool paused)
         {
             // Avoid replaying stale guest audio when gameplay resumes.
             SDL_ClearQueuedAudio(g_audioDevice);
+            resetAudioEffectStateLocked();
         }
     }
     SDL_Log("Audio frontend pause %s", g_frontendPauseRequested ? "on" : "off");
@@ -511,5 +678,22 @@ void MixerSetBufferSamples(int samples)
     lockAudio();
     g_bufferSamples = normalizeBufferSamples(samples);
     SDL_Log("Audio buffer samples set to %d", g_bufferSamples);
+    unlockAudio();
+}
+
+void MixerSetAudioEffect(AudioEffectMode effect)
+{
+    lockAudio();
+    effect = normalizeAudioEffect(effect);
+    if (g_audioEffect != effect)
+    {
+        g_audioEffect = effect;
+        resetAudioEffectStateLocked();
+        if (g_audioDevice)
+        {
+            SDL_ClearQueuedAudio(g_audioDevice);
+        }
+    }
+    SDL_Log("Audio effect set to %s", emulatorAudioEffectName(g_audioEffect));
     unlockAudio();
 }

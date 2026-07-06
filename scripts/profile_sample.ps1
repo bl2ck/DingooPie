@@ -48,7 +48,6 @@ if (!(Test-Path -LiteralPath $AppPath)) {
 }
 
 $safeName = $Name -replace '[^A-Za-z0-9_.-]', '_'
-$rawLog = Join-Path $BuildDir "DingooPie-debug.log"
 $savedLog = Join-Path $BuildDir "$safeName.debug.log"
 $resultJson = Join-Path $BuildDir "$safeName.profile.json"
 $resolvedDumpFramePattern = $DumpFramePattern
@@ -76,7 +75,9 @@ if (!$profileMutexHeld) {
 
 try {
 Get-Process DingooPie,dingoo-pie -ErrorAction SilentlyContinue | Stop-Process -Force
-Remove-Item -LiteralPath $rawLog, $savedLog, $resultJson -ErrorAction SilentlyContinue
+Get-ChildItem -LiteralPath $BuildDir -Filter "DingooPie-debug-*.log" -File -ErrorAction SilentlyContinue |
+    Remove-Item -Force
+Remove-Item -LiteralPath $savedLog, $resultJson -ErrorAction SilentlyContinue
 
 $hadConfig = Test-Path -LiteralPath $ini
 Remove-Item -LiteralPath $backup -ErrorAction SilentlyContinue
@@ -88,6 +89,7 @@ if ($hadConfig) {
 [debug]
 show_console=0
 profile=1
+resource_monitor_auto_open=0
 
 [video]
 show_fps=$([int]$ShowFps.IsPresent)
@@ -148,8 +150,11 @@ try {
         }
     }
 
-    if (Test-Path -LiteralPath $rawLog) {
-        Copy-Item -LiteralPath $rawLog -Destination $savedLog -Force
+    $rawLog = Get-ChildItem -LiteralPath $BuildDir -Filter "DingooPie-debug-*.log" -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($rawLog) {
+        Copy-Item -LiteralPath $rawLog.FullName -Destination $savedLog -Force
     }
 
     $lines = if (Test-Path -LiteralPath $savedLog) { Get-Content -LiteralPath $savedLog } else { @() }
@@ -159,21 +164,21 @@ try {
     $hle = @()
 
     foreach ($line in $lines) {
-        if ($line -match 'profile frontend:.*draws=(\d+)/s.*presented_fps=(\d+).*submitted_fps=(\d+).*content_fps=(\d+)') {
+        if ($line -match '^profile:frontend .*draws=(\d+)/s.*presented_fps=(\d+).*submitted_fps=(\d+).*content_fps=(\d+)') {
             $frontend += [pscustomobject]@{
                 draws = [int]$matches[1]
                 presented_fps = [int]$matches[2]
                 submitted_fps = [int]$matches[3]
                 content_fps = [int]$matches[4]
             }
-        } elseif ($line -match 'profile frontend:.*draws=(\d+)/s.*submitted_fps=(\d+).*content_fps=(\d+)') {
+        } elseif ($line -match '^profile:frontend .*draws=(\d+)/s.*submitted_fps=(\d+).*content_fps=(\d+)') {
             $frontend += [pscustomobject]@{
                 draws = [int]$matches[1]
                 presented_fps = [int]$matches[2]
                 submitted_fps = [int]$matches[2]
                 content_fps = [int]$matches[3]
             }
-        } elseif ($line -match 'profile irjit:.*hooks=(\d+)/s.*fast_lcd=(\d+)/s.*guest_mhz=(\d+).*clock_hz=(\d+).*fb_submit=(\d+).*fb_copy_us=(\d+).*fb_interval_us=(\d+)/(\d+).*over25=(\d+).*over33=(\d+)') {
+        } elseif ($line -match '^profile:irjit .*hooks=(\d+)/s.*fast_lcd=(\d+)/s.*guest_mhz=(\d+).*clock_hz=(\d+).*fb_submit=(\d+).*fb_copy_us=(\d+).*fb_interval_us=(\d+)/(\d+).*over25=(\d+).*over33=(\d+)') {
             $irjit += [pscustomobject]@{
                 hooks = [int]$matches[1]
                 fast_lcd = [int]$matches[2]
@@ -186,7 +191,7 @@ try {
                 over25 = [int]$matches[9]
                 over33 = [int]$matches[10]
             }
-        } elseif ($line -match 'profile interpreter:.*ips=(\d+).*hooks=(\d+)/s.*fb_submit=(\d+).*fb_copy_us=(\d+).*fb_interval_us=(\d+)/(\d+).*over25=(\d+).*over33=(\d+)') {
+        } elseif ($line -match '^profile:interpreter .*ips=(\d+).*hooks=(\d+)/s.*fb_submit=(\d+).*fb_copy_us=(\d+).*fb_interval_us=(\d+)/(\d+).*over25=(\d+).*over33=(\d+)') {
             $interpreter += [pscustomobject]@{
                 ips = [int64]$matches[1]
                 hooks = [int]$matches[2]
@@ -197,7 +202,7 @@ try {
                 over25 = [int]$matches[7]
                 over33 = [int]$matches[8]
             }
-        } elseif ($line -match 'profile hle:.*time=(\d+).*ostimedly=(\d+)/(\d+)ticks') {
+        } elseif ($line -match '^profile:hle .*time=(\d+).*ostimedly=(\d+)/(\d+)ticks') {
             $hle += [pscustomobject]@{
                 time = [int]$matches[1]
                 ostimedly = [int]$matches[2]

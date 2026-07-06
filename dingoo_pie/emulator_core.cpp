@@ -3,6 +3,7 @@
 #include "app_loader.h"
 #include "app_paths.h"
 #include "cheat_runtime.h"
+#include "crash_log.h"
 #include "debug_console.h"
 #include "emulator_settings.h"
 #include "sdk_hle.h"
@@ -15,6 +16,7 @@
 #include "emulated_memory.h"
 #include "ppsspp_irjit_backend.h"
 #include "runtime_debug.h"
+#include "runtime_resource_monitor.h"
 #include "sdl_frontend.h"
 #include "task_scheduler.h"
 #include "guest_filesystem.h"
@@ -39,6 +41,7 @@
 
 static std::string g_appLoadPath;
 static std::string g_appMainPath;
+static std::string g_currentAppSha256;
 static std::vector<std::string> g_enabledCheatFeatureKeys;
 static EmulatorOptions g_options;
 static bool g_clearRecentOnStartupFailure = false;
@@ -73,8 +76,30 @@ struct RuntimeDebugHookEntry
 };
 
 static pthread_mutex_t g_debuggerMutex = PTHREAD_MUTEX_INITIALIZER;
-static std::list<RuntimeDebugHookEntry> g_debugBreakpoints;
-static std::list<RuntimeDebugHookEntry> g_debugWriteWatches;
+static std::list<RuntimeDebugHookEntry> g_debugPcHits;
+static std::list<RuntimeDebugHookEntry> g_debugWriteHits;
+
+static bool debuggerAutotestEnabled(void)
+{
+    static int enabled = -1;
+    if (enabled < 0)
+    {
+        const char* value = getenv("DINGOO_PIE_DEBUGGER_AUTOTEST");
+        enabled = value && value[0] && strcmp(value, "0") != 0 ? 1 : 0;
+    }
+    return enabled != 0;
+}
+
+static bool memorySearcherAutotestEnabled(void)
+{
+    static int enabled = -1;
+    if (enabled < 0)
+    {
+        const char* value = getenv("DINGOO_PIE_MEMORY_SEARCHER_AUTOTEST");
+        enabled = value && value[0] && strcmp(value, "0") != 0 ? 1 : 0;
+    }
+    return enabled != 0;
+}
 
 static bool rangesOverlap(uint32_t aStart, uint32_t aSize, uint32_t bStart, uint32_t bSize)
 {
@@ -149,6 +174,11 @@ static void debuggerCodeHook(NativeRuntime* runtime, uint64_t address, uint32_t 
         entry->lastAddress = (uint32_t)address;
         entry->lastSize = 4;
         entry->lastValue = 0;
+        if (debuggerAutotestEnabled() && entry->hits == 1)
+        {
+            printf("debugger-autotest: pc-hit address=0x%08x pc=0x%08x hits=%llu\n",
+                entry->address, entry->lastPc, (unsigned long long)entry->hits);
+        }
     }
     pthread_mutex_unlock(&g_debuggerMutex);
 }
@@ -171,9 +201,31 @@ static bool debuggerWriteHook(NativeRuntime* runtime, RuntimeMemoryAccess type, 
         entry->lastAddress = (uint32_t)address;
         entry->lastSize = (uint32_t)size;
         entry->lastValue = (uint64_t)value;
+        if (debuggerAutotestEnabled() && entry->hits == 1)
+        {
+            printf("debugger-autotest: write-hit range=0x%08x+0x%x pc=0x%08x write=0x%08x/%u value=0x%llx hits=%llu\n",
+                entry->address, entry->size, entry->lastPc, entry->lastAddress,
+                entry->lastSize, (unsigned long long)entry->lastValue,
+                (unsigned long long)entry->hits);
+        }
     }
     pthread_mutex_unlock(&g_debuggerMutex);
     return matched;
+}
+
+static void installDebuggerAutotestHooks(uint32_t pcHitAddress, uint32_t writeHitAddress, uint32_t writeHitSize)
+{
+    if (!debuggerAutotestEnabled())
+    {
+        return;
+    }
+
+    emulatorRuntimeClearPcHits();
+    emulatorRuntimeClearWriteHits();
+    bool pcHitOk = emulatorRuntimeAddPcHit(pcHitAddress);
+    bool writeHitOk = emulatorRuntimeAddWriteHit(writeHitAddress, writeHitSize);
+    printf("debugger-autotest: installed pc_hit=0x%08x ok=%u write_hit=0x%08x+0x%x ok=%u\n",
+        pcHitAddress, pcHitOk ? 1u : 0u, writeHitAddress, writeHitSize, writeHitOk ? 1u : 0u);
 }
 
 static void uninstallDebuggerHooksLocked(NativeRuntime* runtime)
@@ -182,8 +234,8 @@ static void uninstallDebuggerHooksLocked(NativeRuntime* runtime)
     {
         return;
     }
-    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugBreakpoints.begin();
-        it != g_debugBreakpoints.end(); ++it)
+    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugPcHits.begin();
+        it != g_debugPcHits.end(); ++it)
     {
         if (it->hook)
         {
@@ -191,8 +243,8 @@ static void uninstallDebuggerHooksLocked(NativeRuntime* runtime)
             it->hook = 0;
         }
     }
-    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugWriteWatches.begin();
-        it != g_debugWriteWatches.end(); ++it)
+    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugWriteHits.begin();
+        it != g_debugWriteHits.end(); ++it)
     {
         if (it->hook)
         {
@@ -208,32 +260,32 @@ static void installDebuggerHooksLocked(NativeRuntime* runtime)
     {
         return;
     }
-    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugBreakpoints.begin();
-        it != g_debugBreakpoints.end();)
+    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugPcHits.begin();
+        it != g_debugPcHits.end();)
     {
         if (!it->enabled && !it->hook)
         {
-            it = g_debugBreakpoints.erase(it);
+            it = g_debugPcHits.erase(it);
         }
         else
         {
             ++it;
         }
     }
-    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugWriteWatches.begin();
-        it != g_debugWriteWatches.end();)
+    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugWriteHits.begin();
+        it != g_debugWriteHits.end();)
     {
         if (!it->enabled && !it->hook)
         {
-            it = g_debugWriteWatches.erase(it);
+            it = g_debugWriteHits.erase(it);
         }
         else
         {
             ++it;
         }
     }
-    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugBreakpoints.begin();
-        it != g_debugBreakpoints.end(); ++it)
+    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugPcHits.begin();
+        it != g_debugPcHits.end(); ++it)
     {
         RuntimeDebugHookEntry& entry = *it;
         if (entry.enabled && !entry.hook)
@@ -242,8 +294,8 @@ static void installDebuggerHooksLocked(NativeRuntime* runtime)
                 (void*)debuggerCodeHook, &entry, entry.address, entry.address);
         }
     }
-    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugWriteWatches.begin();
-        it != g_debugWriteWatches.end(); ++it)
+    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugWriteHits.begin();
+        it != g_debugWriteHits.end(); ++it)
     {
         RuntimeDebugHookEntry& entry = *it;
         if (entry.enabled && !entry.hook)
@@ -284,6 +336,7 @@ static void clearMainRuntimeIfCurrent(NativeRuntime* runtime)
         uninstallDebuggerHooksLocked(runtime);
         pthread_mutex_unlock(&g_debuggerMutex);
         g_mainRuntime = NULL;
+        g_currentAppSha256.clear();
         shouldUnbindCheats = true;
     }
     pthread_mutex_unlock(&g_runtimeThreadMutex);
@@ -410,6 +463,87 @@ static void storeStateLe32(uint8_t* p, uint32_t value)
     p[1] = (uint8_t)((value >> 8) & 0xff);
     p[2] = (uint8_t)((value >> 16) & 0xff);
     p[3] = (uint8_t)((value >> 24) & 0xff);
+}
+
+static bool addressInRange32(uint32_t address, uint32_t rangeStart, uint32_t rangeSize)
+{
+    return rangeSize != 0 &&
+        address >= rangeStart &&
+        address - rangeStart < rangeSize;
+}
+
+static bool addressInMappedAppCode(uint32_t address)
+{
+    if (s_AppDataBuffSize == 0)
+    {
+        return false;
+    }
+
+    uint32_t aliasStart = s_AppDataAddr & 0x1fffffffu;
+    return addressInRange32(address, s_AppDataAddr, s_AppDataBuffSize) ||
+        addressInRange32(address, aliasStart, s_AppDataBuffSize);
+}
+
+struct RestoredIrJitMarkerReplacement
+{
+    size_t offset;
+    uint32_t original;
+};
+
+static uint32_t collectRestoredIrJitMarkerReplacements(
+    const RuntimeMemoryRegion& target,
+    const EmulatorRuntimeStateRegion& region,
+    std::vector<RestoredIrJitMarkerReplacement>* replacements,
+    uint32_t* unresolvedOut)
+{
+    if (!replacements)
+    {
+        return 0;
+    }
+    replacements->clear();
+    if (unresolvedOut)
+    {
+        *unresolvedOut = 0;
+    }
+    if (!target.data || region.data.size() != region.size ||
+        region.start < target.start || region.size > target.size ||
+        region.start - target.start > target.size - region.size)
+    {
+        return 0;
+    }
+
+    size_t targetOffset = (size_t)(region.start - target.start);
+    uint32_t markerCount = 0;
+    for (size_t offset = 0; offset + sizeof(uint32_t) <= region.data.size(); offset += sizeof(uint32_t))
+    {
+        uint32_t value = loadStateLe32(region.data.data() + offset);
+        if (!isPpssppRunBlockMarkerValue(value))
+        {
+            continue;
+        }
+
+        markerCount++;
+        uint32_t original = 0;
+        bool resolved = ppssppShimResolveEmuHack(region.start + (uint32_t)offset, value, &original) &&
+            !isPpssppRunBlockMarkerValue(original);
+        if (!resolved && addressInMappedAppCode(region.start + (uint32_t)offset))
+        {
+            original = loadStateLe32(target.data + targetOffset + offset);
+            resolved = !isPpssppRunBlockMarkerValue(original);
+        }
+        if (resolved)
+        {
+            RestoredIrJitMarkerReplacement replacement;
+            replacement.offset = offset;
+            replacement.original = original;
+            replacements->push_back(replacement);
+        }
+        else if (unresolvedOut)
+        {
+            (*unresolvedOut)++;
+        }
+    }
+    return markerCount;
 }
 
 static void stripIrJitMarkersFromCapturedRegion(EmulatorRuntimeStateRegion* region)
@@ -671,68 +805,18 @@ static bool installCoreHooks(NativeRuntime* runtime, app* loadedApp, uint32_t ap
     return true;
 }
 
-static void logEmulationFailure(NativeRuntime* runtime, RuntimeError err)
+static void logEmulationFailure(NativeRuntime* runtime, RuntimeError err, const CrashLogContext& context)
 {
     printf("DingooPie: native runtime failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
-    FILE* debugLog = debugLogFile();
-    if (debugLog)
+    std::string crashLogFileName;
+    if (crashLogWriteGuestFailure(runtime, err, context, &crashLogFileName))
     {
-        fprintf(debugLog, "native runtime failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
-        dumpREG2File(runtime, debugLog);
-        fflush(debugLog);
+        printf("crash-log:wrote file=%s reason=guest-runtime-failure\n", crashLogFileName.c_str());
     }
-
-    dumpREG(runtime);
-
-    uint32_t failPc = 0;
-    uint32_t failRa = 0;
-    uint32_t failS4 = 0;
-    uint32_t failV0 = 0;
-    nativeRuntimeReadRegister(runtime, RUNTIME_REG_PC, &failPc);
-    nativeRuntimeReadRegister(runtime, RUNTIME_REG_RA, &failRa);
-    nativeRuntimeReadRegister(runtime, RUNTIME_REG_S4, &failS4);
-    nativeRuntimeReadRegister(runtime, RUNTIME_REG_V0, &failV0);
-    printf("DingooPie: fail object s4=0x%08x callback=0x%08x\n", failS4, failV0);
-    if (failPc >= 0x20)
+    else
     {
-        dumpAsmRange(runtime, failPc - 0x20, 0x80);
+        printf("crash-log:failed reason=guest-runtime-failure\n");
     }
-    if (failRa >= 0x20)
-    {
-        dumpAsmRange(runtime, failRa - 0x20, 0x80);
-    }
-    if (failS4)
-    {
-        printf("DingooPie: object dump:\n");
-        dumpMem(toHostPtr(failS4), 0x40);
-    }
-    if (failV0)
-    {
-        printf("DingooPie: callback target dump:\n");
-        dumpMem(toHostPtr(failV0), 0x80);
-    }
-    if (getenv("DINGOO_PIE_TRACE_FAIL_MODULE") && failS4)
-    {
-        uint32_t moduleHeader = failS4 + 0x58;
-        uint32_t moduleRaw = 0;
-        uint32_t moduleEntry = 0;
-        uint32_t moduleRawSize = 0;
-        uint32_t moduleProgSize = 0;
-        void* header = toHostPtr(moduleHeader);
-        if (header)
-        {
-            uint8_t* bytes = (uint8_t*)header;
-            moduleEntry = *(uint32_t*)(bytes + 0x60 + 0x14);
-            moduleRaw = *(uint32_t*)(bytes + 0x60 + 0x18);
-            moduleProgSize = *(uint32_t*)(bytes + 0x60 + 0x1c);
-            moduleRawSize = *(uint32_t*)(bytes + 0x60 + 0x0c);
-            printf("DingooPie: fail module header at 0x%08x:\n", moduleHeader);
-            dumpMem(header, 0xa0);
-            printf("DingooPie: fail module raw=0x%08x entry=0x%08x raw_size=0x%08x prog_size=0x%08x\n",
-                moduleRaw, moduleEntry, moduleRawSize, moduleProgSize);
-        }
-    }
-    dumpAsm(runtime);
 }
 
 static CompatGuestExitDecision noGuestExitDecision(void)
@@ -755,6 +839,108 @@ static CompatGuestExitDecision runtimeExceptionGuestExitDecision(NativeRuntime* 
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_V0, &context.v0);
 
     return compatRuntimeExceptionGuestExitDecision(appSha256.c_str(), &context);
+}
+
+static void storeRuntimeSearchTestValue(uint8_t* bytes, uint32_t value)
+{
+    bytes[0] = (uint8_t)(value & 0xffu);
+    bytes[1] = (uint8_t)((value >> 8) & 0xffu);
+    bytes[2] = (uint8_t)((value >> 16) & 0xffu);
+    bytes[3] = (uint8_t)((value >> 24) & 0xffu);
+}
+
+static bool writeRuntimeSearchTestValue(uint32_t address, uint32_t value)
+{
+    uint8_t bytes[4] = {};
+    storeRuntimeSearchTestValue(bytes, value);
+    return emulatorRuntimeWriteMemory(address, bytes, sizeof(bytes));
+}
+
+static bool candidatesContainAddress(
+    const std::vector<EmulatorRuntimeMemorySearchCandidate>& candidates,
+    uint32_t address)
+{
+    for (size_t i = 0; i < candidates.size(); ++i)
+    {
+        if (candidates[i].address == address)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool singleCandidateFilterPass(
+    uint32_t address,
+    uint32_t previous,
+    uint32_t target,
+    EmulatorRuntimeMemorySearchFilter filter)
+{
+    std::vector<EmulatorRuntimeMemorySearchCandidate> candidates;
+    EmulatorRuntimeMemorySearchCandidate candidate;
+    candidate.address = address;
+    candidate.previous = previous;
+    candidates.push_back(candidate);
+    if (!emulatorRuntimeFilterMemorySearchCandidates(4, target, filter, &candidates))
+    {
+        return false;
+    }
+    return candidates.size() == 1 && candidates[0].address == address;
+}
+
+static void runMemorySearcherAutotest(uint32_t probeAddress)
+{
+    if (!memorySearcherAutotestEnabled())
+    {
+        return;
+    }
+
+    probeAddress &= ~3u;
+    uint32_t original = 0;
+    bool readOriginal = emulatorRuntimeReadMemory(probeAddress, &original, sizeof(original));
+    if (!readOriginal)
+    {
+        printf("cheat-finder-autotest: result=fail read_original=0 address=0x%08x\n", probeAddress);
+        return;
+    }
+
+    const uint32_t baseValue = 0x10203040u;
+    const uint32_t increasedValue = 0x10203050u;
+    const uint32_t decreasedValue = 0x10203048u;
+    uint32_t pageBegin = probeAddress & ~0xfffu;
+    uint32_t pageEnd = pageBegin <= 0xffffefffu ? pageBegin + 0x1000u : 0xffffffffu;
+
+    bool writeBase = writeRuntimeSearchTestValue(probeAddress, baseValue);
+    std::vector<EmulatorRuntimeMemorySearchCandidate> found;
+    bool capped = false;
+    bool searchOk = writeBase && emulatorRuntimeSearchMemoryValue(
+        pageBegin, pageEnd, 4, baseValue, 4096, &found, &capped);
+    bool contains = searchOk && candidatesContainAddress(found, probeAddress);
+    bool unchanged = contains && singleCandidateFilterPass(
+        probeAddress, baseValue, baseValue, EMULATOR_RUNTIME_MEMORY_SEARCH_UNCHANGED);
+
+    bool writeIncreased = unchanged && writeRuntimeSearchTestValue(probeAddress, increasedValue);
+    bool increased = writeIncreased && singleCandidateFilterPass(
+        probeAddress, baseValue, 0, EMULATOR_RUNTIME_MEMORY_SEARCH_INCREASED);
+
+    bool writeDecreased = increased && writeRuntimeSearchTestValue(probeAddress, decreasedValue);
+    bool decreased = writeDecreased && singleCandidateFilterPass(
+        probeAddress, increasedValue, 0, EMULATOR_RUNTIME_MEMORY_SEARCH_DECREASED);
+
+    bool equal = decreased && singleCandidateFilterPass(
+        probeAddress, decreasedValue, decreasedValue, EMULATOR_RUNTIME_MEMORY_SEARCH_EQUAL);
+
+    bool restored = writeRuntimeSearchTestValue(probeAddress, original);
+    bool pass = readOriginal && writeBase && searchOk && contains && !capped &&
+        unchanged && writeIncreased && increased && writeDecreased && decreased &&
+        equal && restored;
+
+    printf("cheat-finder-autotest: probe=0x%08x original=0x%08x search_ok=%u candidates=%u contains=%u capped=%u\n",
+        probeAddress, original, searchOk ? 1u : 0u, (unsigned)found.size(),
+        contains ? 1u : 0u, capped ? 1u : 0u);
+    printf("cheat-finder-autotest: unchanged=%u increased=%u decreased=%u equal=%u restored=%u result=%s\n",
+        unchanged ? 1u : 0u, increased ? 1u : 0u, decreased ? 1u : 0u,
+        equal ? 1u : 0u, restored ? 1u : 0u, pass ? "pass" : "fail");
 }
 
 static NativeRuntime* initDingooPie(void)
@@ -783,6 +969,9 @@ static NativeRuntime* initDingooPie(void)
         return NULL;
     }
     std::string appSha256 = sha256Hex(loadedApp->file_data, loadedApp->file_size);
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    g_currentAppSha256 = appSha256;
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
     bridge_set_app_identity(appSha256.c_str());
     fsys_set_app_identity(appSha256.c_str());
     cheatRuntimeLoadForApp(
@@ -834,6 +1023,7 @@ static NativeRuntime* initDingooPie(void)
         return NULL;
     }
     printf("DingooPie: init vm memory done\n");
+    runMemorySearcherAutotest(loadedApp->bin_entry);
 
     printf("DingooPie: init framebuffer begin\n");
     if (InitFb(runtime))
@@ -865,6 +1055,7 @@ static NativeRuntime* initDingooPie(void)
         return NULL;
     }
     printf("DingooPie: install core hooks done\n");
+    installDebuggerAutotestHooks(loadedApp->bin_entry, 0x00000000u, 0xffffffffu);
     cheatRuntimeApplyStartup(runtime);
 
     err = nativeRuntimeWriteRegister(runtime, RUNTIME_REG_RA, &appMainEntry);
@@ -892,6 +1083,28 @@ static NativeRuntime* initDingooPie(void)
         return NULL;
     }
 
+    CrashLogContext crashContext;
+    memset(&crashContext, 0, sizeof(crashContext));
+    crashContext.appPath = g_appLoadPath.c_str();
+    crashContext.appMainPath = g_appMainPath.c_str();
+    crashContext.appSha256 = appSha256.c_str();
+    crashContext.compatProfile = compatProfileName(appSha256.c_str());
+    crashContext.backend = effectiveBackend;
+    crashContext.appEntry = appMainEntry;
+    crashContext.bootEntry = loadedApp->bin_entry;
+    crashContext.origin = loadedApp->origin;
+    crashContext.appSize = loadedApp->bin_size;
+
+    if (getenv("DINGOO_PIE_FORCE_GUEST_CRASH"))
+    {
+        nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &loadedApp->bin_entry);
+        printf("DingooPie: forcing guest crash for diagnostics\n");
+        g_lastRunExitedNormally.store(false, std::memory_order_release);
+        logEmulationFailure(runtime, RUNTIME_ERROR_EXCEPTION, crashContext);
+        frontendRequestQuit();
+        return runtime;
+    }
+
     printf("DingooPie: native runtime start pc=0x%08x until=0xffffffff\n", loadedApp->bin_entry);
     err = nativeRuntimeStart(runtime, loadedApp->bin_entry, 0xFFFFFFFF, 0, 0);
     printf("DingooPie: native runtime returned err=%u (%s)\n", err, nativeRuntimeErrorString(err));
@@ -910,7 +1123,7 @@ static NativeRuntime* initDingooPie(void)
             return runtime;
         }
         g_lastRunExitedNormally.store(false, std::memory_order_release);
-        logEmulationFailure(runtime, err);
+        logEmulationFailure(runtime, err, crashContext);
         frontendRequestQuit();
         return runtime;
     }
@@ -946,6 +1159,11 @@ bool startDingooPie(
     g_runtimeStopRequested.store(false, std::memory_order_release);
     g_lastRunExitedNormally.store(false, std::memory_order_release);
     g_lastRunAppPath.clear();
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    g_appMainEntry = 0;
+    g_appMainInitCheckAddress = 0;
+    g_currentAppSha256.clear();
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
     g_options = options;
     g_clearRecentOnStartupFailure = clearRecentOnStartupFailure;
     g_enabledCheatFeatureKeys = enabledCheatFeatureKeys;
@@ -1130,6 +1348,7 @@ bool emulatorRuntimeCaptureState(EmulatorRuntimeState* out)
     }
     out->regions.clear();
     out->taskRegisters.clear();
+    out->hleSemaphoreCounts.clear();
     memset(&out->registers, 0, sizeof(out->registers));
     memset(&out->heap, 0, sizeof(out->heap));
     out->osTicks = 0;
@@ -1144,6 +1363,9 @@ bool emulatorRuntimeCaptureState(EmulatorRuntimeState* out)
 
     readRuntimeRegisterSnapshotLocked(runtime, &out->registers);
     out->osTicks = bridge_capture_os_ticks();
+    uint32_t semaphoreCount = bridge_semaphore_state_count();
+    out->hleSemaphoreCounts.resize(semaphoreCount);
+    bridge_capture_semaphore_counts(out->hleSemaphoreCounts.data(), semaphoreCount);
     if (!vmHeapCaptureSnapshot(&out->heap))
     {
         pthread_mutex_unlock(&g_runtimeThreadMutex);
@@ -1269,7 +1491,25 @@ bool emulatorRuntimeRestoreState(const EmulatorRuntimeState& state)
             pthread_mutex_unlock(&g_runtimeThreadMutex);
             return false;
         }
+        std::vector<RestoredIrJitMarkerReplacement> markerReplacements;
+        uint32_t unresolvedMarkers = 0;
+        uint32_t restoredMarkers = collectRestoredIrJitMarkerReplacements(
+            *target, region, &markerReplacements, &unresolvedMarkers);
         memcpy(target->data, region.data.data(), region.data.size());
+        size_t targetOffset = (size_t)(region.start - target->start);
+        for (size_t j = 0; j < markerReplacements.size(); ++j)
+        {
+            const RestoredIrJitMarkerReplacement& replacement = markerReplacements[j];
+            storeStateLe32(target->data + targetOffset + replacement.offset, replacement.original);
+        }
+        if (restoredMarkers && getenv("DINGOO_PIE_IRJIT_TRACE"))
+        {
+            printf("save-state: restored region 0x%08x replaced %u/%u IRJIT marker(s), unresolved=%u\n",
+                region.start,
+                (unsigned)markerReplacements.size(),
+                restoredMarkers,
+                unresolvedMarkers);
+        }
     }
 
     bool ok = vmHeapRestoreSnapshot(state.heap) &&
@@ -1277,6 +1517,9 @@ bool emulatorRuntimeRestoreState(const EmulatorRuntimeState& state)
     if (ok)
     {
         bridge_restore_os_ticks(state.osTicks);
+        ok = bridge_restore_semaphore_counts(
+            state.hleSemaphoreCounts.empty() ? NULL : state.hleSemaphoreCounts.data(),
+            (uint32_t)state.hleSemaphoreCounts.size());
     }
     if (ok)
     {
@@ -1292,10 +1535,23 @@ bool emulatorRuntimeRestoreState(const EmulatorRuntimeState& state)
     if (ok)
     {
         nativeRuntimeFlushCodeCache(runtime);
+        framebufferPresentRestoredFrame();
+        bridge_notify_state_restored();
         pauseGateMarkRuntimeRestored();
     }
     pthread_mutex_unlock(&g_runtimeThreadMutex);
     return ok;
+}
+
+void emulatorRuntimeNotifyPauseRequested(void)
+{
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    NativeRuntime* runtime = g_mainRuntime;
+    if (runtime)
+    {
+        ppssppShimRequestPause(runtime);
+    }
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
 }
 
 uint32_t emulatorRuntimeActiveThreadCount(void)
@@ -1404,6 +1660,277 @@ bool emulatorRuntimeMemoryRegions(std::vector<EmulatorRuntimeMemoryRegionInfo>* 
     return true;
 }
 
+bool emulatorRuntimeGetAppInfo(EmulatorRuntimeAppInfo* out)
+{
+    if (!out)
+    {
+        return false;
+    }
+    *out = EmulatorRuntimeAppInfo();
+
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    NativeRuntime* runtime = g_mainRuntime;
+    app* loadedApp = s_app;
+    if (!runtime || !loadedApp || g_currentAppSha256.empty())
+    {
+        pthread_mutex_unlock(&g_runtimeThreadMutex);
+        return false;
+    }
+
+    out->running = true;
+    out->path = g_appLoadPath;
+    out->fileName = appFileNameFromPath(g_appLoadPath);
+    out->guestMainPath = g_appMainPath;
+    out->sha256 = g_currentAppSha256;
+    out->compatProfile = compatProfileName(g_currentAppSha256.c_str());
+    out->backend = executionBackendName(nativeRuntimeGetBackend(runtime));
+    out->fileSize = loadedApp->file_size;
+    out->origin = loadedApp->origin;
+    out->binSize = loadedApp->bin_size;
+    out->progSize = loadedApp->prog_size;
+    out->bssSize = loadedApp->bin_bss;
+    out->bootEntry = loadedApp->bin_entry;
+    out->appMainEntry = g_appMainEntry;
+    out->importCount = loadedApp->import_count;
+    out->exportCount = loadedApp->export_count;
+    out->packageResourceCount = loadedApp->package_resource_count;
+    out->resourceCount = loadedApp->resource_count;
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+    return true;
+}
+
+bool emulatorRuntimeEnableResourceMonitor(void)
+{
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    app* loadedApp = s_app;
+    bool running = g_mainRuntime && loadedApp && !g_currentAppSha256.empty();
+    if (running)
+    {
+        app_parse_package_resource_indexes(loadedApp);
+        runtimeResourceMonitorReset(g_appLoadPath.c_str(), g_currentAppSha256.c_str());
+        runtimeResourceMonitorSetAppResources(loadedApp);
+    }
+    else
+    {
+        runtimeResourceMonitorReset(NULL, NULL);
+    }
+    runtimeResourceMonitorSetActive(true);
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+    return running;
+}
+
+static uint32_t runtimeSearchMaskForWidth(int width)
+{
+    if (width == 1)
+    {
+        return 0xffu;
+    }
+    if (width == 2)
+    {
+        return 0xffffu;
+    }
+    return 0xffffffffu;
+}
+
+static uint32_t runtimeSearchReadLeValue(const uint8_t* bytes, int width)
+{
+    uint32_t value = bytes[0];
+    if (width >= 2)
+    {
+        value |= ((uint32_t)bytes[1]) << 8;
+    }
+    if (width >= 4)
+    {
+        value |= ((uint32_t)bytes[2]) << 16;
+        value |= ((uint32_t)bytes[3]) << 24;
+    }
+    return value;
+}
+
+static bool runtimeSearchReadValue(uint32_t address, int width, uint32_t* out)
+{
+    uint8_t bytes[4] = {};
+    if (!out || width != 1 && width != 2 && width != 4 ||
+        !emulatorRuntimeReadMemory(address, bytes, (size_t)width))
+    {
+        return false;
+    }
+    *out = runtimeSearchReadLeValue(bytes, width);
+    return true;
+}
+
+static bool runtimeSearchMatchesFilter(
+    uint32_t previous,
+    uint32_t current,
+    uint32_t target,
+    EmulatorRuntimeMemorySearchFilter filter)
+{
+    switch (filter)
+    {
+    case EMULATOR_RUNTIME_MEMORY_SEARCH_EQUAL:
+        return current == target;
+    case EMULATOR_RUNTIME_MEMORY_SEARCH_INCREASED:
+        return current > previous;
+    case EMULATOR_RUNTIME_MEMORY_SEARCH_DECREASED:
+        return current < previous;
+    case EMULATOR_RUNTIME_MEMORY_SEARCH_UNCHANGED:
+        return current == previous;
+    default:
+        return false;
+    }
+}
+
+bool emulatorRuntimeSearchMemoryValue(
+    uint32_t begin,
+    uint32_t end,
+    int width,
+    uint32_t target,
+    size_t maxCandidates,
+    std::vector<EmulatorRuntimeMemorySearchCandidate>* out,
+    bool* capped)
+{
+    if (!out || (width != 1 && width != 2 && width != 4) || begin >= end)
+    {
+        return false;
+    }
+    out->clear();
+    if (capped)
+    {
+        *capped = false;
+    }
+    if (maxCandidates == 0)
+    {
+        return true;
+    }
+
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    NativeRuntime* runtime = g_mainRuntime;
+    if (!runtime)
+    {
+        pthread_mutex_unlock(&g_runtimeThreadMutex);
+        return false;
+    }
+
+    size_t count = nativeRuntimeMemoryRegionCount(runtime);
+    std::vector<RuntimeMemoryRegion> regions;
+    regions.reserve(count);
+    for (size_t i = 0; i < count; ++i)
+    {
+        RuntimeMemoryRegion region;
+        if (nativeRuntimeGetMemoryRegion(runtime, i, &region) &&
+            (region.perms & RUNTIME_PROT_READ) &&
+            region.size > 0)
+        {
+            regions.push_back(region);
+        }
+    }
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+
+    target &= runtimeSearchMaskForWidth(width);
+    const uint32_t chunkSize = 64 * 1024;
+    std::vector<uint8_t> buffer(chunkSize + 4);
+    for (size_t i = 0; i < regions.size(); ++i)
+    {
+        uint64_t regionBegin = regions[i].start;
+        uint64_t regionEnd = regionBegin + regions[i].size;
+        if (regionBegin < begin)
+        {
+            regionBegin = begin;
+        }
+        if (regionEnd > end)
+        {
+            regionEnd = end;
+        }
+        if (regionBegin >= regionEnd || regionEnd - regionBegin < (uint32_t)width)
+        {
+            continue;
+        }
+
+        uint32_t alignedBegin = (uint32_t)((regionBegin + (uint32_t)width - 1u) & ~(uint64_t)((uint32_t)width - 1u));
+        if (alignedBegin >= regionEnd)
+        {
+            continue;
+        }
+
+        for (uint32_t address = alignedBegin; address < regionEnd;)
+        {
+            uint32_t remaining = (uint32_t)(regionEnd - address);
+            uint32_t readSize = remaining > chunkSize ? chunkSize : remaining;
+            if (readSize < (uint32_t)width)
+            {
+                break;
+            }
+            if (!emulatorRuntimeReadMemory(address, &buffer[0], readSize))
+            {
+                address += readSize;
+                continue;
+            }
+
+            for (uint32_t offset = 0; offset + (uint32_t)width <= readSize; offset += (uint32_t)width)
+            {
+                uint32_t value = runtimeSearchReadLeValue(&buffer[offset], width);
+                if (value == target)
+                {
+                    EmulatorRuntimeMemorySearchCandidate candidate;
+                    candidate.address = address + offset;
+                    candidate.previous = value;
+                    out->push_back(candidate);
+                    if (out->size() >= maxCandidates)
+                    {
+                        if (capped)
+                        {
+                            *capped = true;
+                        }
+                        return true;
+                    }
+                }
+            }
+            address += readSize - (readSize % (uint32_t)width);
+        }
+    }
+    return true;
+}
+
+bool emulatorRuntimeFilterMemorySearchCandidates(
+    int width,
+    uint32_t target,
+    EmulatorRuntimeMemorySearchFilter filter,
+    std::vector<EmulatorRuntimeMemorySearchCandidate>* candidates)
+{
+    if (!candidates || (width != 1 && width != 2 && width != 4))
+    {
+        return false;
+    }
+
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    bool hasRuntime = g_mainRuntime != NULL;
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+    if (!hasRuntime)
+    {
+        return false;
+    }
+
+    target &= runtimeSearchMaskForWidth(width);
+    std::vector<EmulatorRuntimeMemorySearchCandidate> next;
+    next.reserve(candidates->size());
+    for (size_t i = 0; i < candidates->size(); ++i)
+    {
+        EmulatorRuntimeMemorySearchCandidate candidate = (*candidates)[i];
+        uint32_t current = 0;
+        if (!runtimeSearchReadValue(candidate.address, width, &current))
+        {
+            continue;
+        }
+        if (runtimeSearchMatchesFilter(candidate.previous, current, target, filter))
+        {
+            candidate.previous = current;
+            next.push_back(candidate);
+        }
+    }
+    candidates->swap(next);
+    return true;
+}
+
 bool emulatorRuntimeDisassemble(uint32_t address, uint32_t instructionCount, std::vector<EmulatorRuntimeDisassemblyLine>* out)
 {
     if (!out || instructionCount == 0)
@@ -1430,14 +1957,26 @@ bool emulatorRuntimeDisassemble(uint32_t address, uint32_t instructionCount, std
 
     for (uint32_t i = 0; i < instructionCount; ++i)
     {
+        uint64_t lineAddress = (uint64_t)address + (uint64_t)i * 4u;
+        if (lineAddress > 0xffffffffull)
+        {
+            break;
+        }
+
         EmulatorRuntimeDisassemblyLine line;
-        line.address = address + i * 4u;
+        line.address = (uint32_t)lineAddress;
         line.encoding = 0;
         line.text.clear();
         line.valid = false;
 
         if (nativeRuntimeReadRaw(runtime, line.address, &line.encoding, sizeof(line.encoding)))
         {
+            uint32_t originalEncoding = 0;
+            if (ppssppShimResolveEmuHack(line.address, line.encoding, &originalEncoding))
+            {
+                line.encoding = originalEncoding;
+            }
+
             cs_insn* insn = NULL;
             size_t count = cs_disasm(handle, (const uint8_t*)&line.encoding,
                 sizeof(line.encoding), line.address, 1, &insn);
@@ -1474,13 +2013,13 @@ static bool runtimeDebuggerHasRuntimeLocked(void)
     return g_mainRuntime != NULL;
 }
 
-bool emulatorRuntimeAddBreakpoint(uint32_t address)
+bool emulatorRuntimeAddPcHit(uint32_t address)
 {
     address &= ~3u;
     pthread_mutex_lock(&g_runtimeThreadMutex);
     pthread_mutex_lock(&g_debuggerMutex);
-    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugBreakpoints.begin();
-        it != g_debugBreakpoints.end(); ++it)
+    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugPcHits.begin();
+        it != g_debugPcHits.end(); ++it)
     {
         if (it->address == address)
         {
@@ -1505,7 +2044,7 @@ bool emulatorRuntimeAddBreakpoint(uint32_t address)
     entry.address = address;
     entry.size = 4;
     entry.enabled = true;
-    g_debugBreakpoints.push_back(entry);
+    g_debugPcHits.push_back(entry);
     if (runtimeDebuggerHasRuntimeLocked())
     {
         installDebuggerHooksLocked(g_mainRuntime);
@@ -1515,13 +2054,13 @@ bool emulatorRuntimeAddBreakpoint(uint32_t address)
     return true;
 }
 
-bool emulatorRuntimeRemoveBreakpoint(uint32_t address)
+bool emulatorRuntimeRemovePcHit(uint32_t address)
 {
     address &= ~3u;
     pthread_mutex_lock(&g_runtimeThreadMutex);
     pthread_mutex_lock(&g_debuggerMutex);
-    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugBreakpoints.begin();
-        it != g_debugBreakpoints.end(); ++it)
+    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugPcHits.begin();
+        it != g_debugPcHits.end(); ++it)
     {
         if (it->address == address)
         {
@@ -1533,7 +2072,7 @@ bool emulatorRuntimeRemoveBreakpoint(uint32_t address)
             }
             else
             {
-                g_debugBreakpoints.erase(it);
+                g_debugPcHits.erase(it);
             }
             pthread_mutex_unlock(&g_debuggerMutex);
             pthread_mutex_unlock(&g_runtimeThreadMutex);
@@ -1545,14 +2084,14 @@ bool emulatorRuntimeRemoveBreakpoint(uint32_t address)
     return false;
 }
 
-void emulatorRuntimeClearBreakpoints(void)
+void emulatorRuntimeClearPcHits(void)
 {
     pthread_mutex_lock(&g_runtimeThreadMutex);
     pthread_mutex_lock(&g_debuggerMutex);
     if (g_mainRuntime)
     {
-        for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugBreakpoints.begin();
-            it != g_debugBreakpoints.end(); ++it)
+        for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugPcHits.begin();
+            it != g_debugPcHits.end(); ++it)
         {
             if (it->hook)
             {
@@ -1564,19 +2103,19 @@ void emulatorRuntimeClearBreakpoints(void)
     }
     else
     {
-        g_debugBreakpoints.clear();
+        g_debugPcHits.clear();
     }
     pthread_mutex_unlock(&g_debuggerMutex);
     pthread_mutex_unlock(&g_runtimeThreadMutex);
 }
 
-std::vector<EmulatorRuntimeDebugEntry> emulatorRuntimeBreakpoints(void)
+std::vector<EmulatorRuntimeDebugEntry> emulatorRuntimePcHits(void)
 {
     std::vector<EmulatorRuntimeDebugEntry> out;
     pthread_mutex_lock(&g_debuggerMutex);
-    out.reserve(g_debugBreakpoints.size());
-    for (std::list<RuntimeDebugHookEntry>::const_iterator it = g_debugBreakpoints.begin();
-        it != g_debugBreakpoints.end(); ++it)
+    out.reserve(g_debugPcHits.size());
+    for (std::list<RuntimeDebugHookEntry>::const_iterator it = g_debugPcHits.begin();
+        it != g_debugPcHits.end(); ++it)
     {
         if (it->enabled)
         {
@@ -1587,7 +2126,7 @@ std::vector<EmulatorRuntimeDebugEntry> emulatorRuntimeBreakpoints(void)
     return out;
 }
 
-bool emulatorRuntimeAddWriteWatch(uint32_t address, uint32_t size)
+bool emulatorRuntimeAddWriteHit(uint32_t address, uint32_t size)
 {
     uint32_t end = 0;
     if (!debuggerInclusiveRangeEnd(address, size, &end))
@@ -1597,8 +2136,8 @@ bool emulatorRuntimeAddWriteWatch(uint32_t address, uint32_t size)
 
     pthread_mutex_lock(&g_runtimeThreadMutex);
     pthread_mutex_lock(&g_debuggerMutex);
-    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugWriteWatches.begin();
-        it != g_debugWriteWatches.end(); ++it)
+    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugWriteHits.begin();
+        it != g_debugWriteHits.end(); ++it)
     {
         if (it->address == address && it->size == size)
         {
@@ -1623,7 +2162,7 @@ bool emulatorRuntimeAddWriteWatch(uint32_t address, uint32_t size)
     entry.address = address;
     entry.size = size;
     entry.enabled = true;
-    g_debugWriteWatches.push_back(entry);
+    g_debugWriteHits.push_back(entry);
     if (runtimeDebuggerHasRuntimeLocked())
     {
         installDebuggerHooksLocked(g_mainRuntime);
@@ -1633,12 +2172,12 @@ bool emulatorRuntimeAddWriteWatch(uint32_t address, uint32_t size)
     return true;
 }
 
-bool emulatorRuntimeRemoveWriteWatch(uint32_t address, uint32_t size)
+bool emulatorRuntimeRemoveWriteHit(uint32_t address, uint32_t size)
 {
     pthread_mutex_lock(&g_runtimeThreadMutex);
     pthread_mutex_lock(&g_debuggerMutex);
-    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugWriteWatches.begin();
-        it != g_debugWriteWatches.end(); ++it)
+    for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugWriteHits.begin();
+        it != g_debugWriteHits.end(); ++it)
     {
         if (it->address == address && it->size == size)
         {
@@ -1650,7 +2189,7 @@ bool emulatorRuntimeRemoveWriteWatch(uint32_t address, uint32_t size)
             }
             else
             {
-                g_debugWriteWatches.erase(it);
+                g_debugWriteHits.erase(it);
             }
             pthread_mutex_unlock(&g_debuggerMutex);
             pthread_mutex_unlock(&g_runtimeThreadMutex);
@@ -1662,14 +2201,14 @@ bool emulatorRuntimeRemoveWriteWatch(uint32_t address, uint32_t size)
     return false;
 }
 
-void emulatorRuntimeClearWriteWatches(void)
+void emulatorRuntimeClearWriteHits(void)
 {
     pthread_mutex_lock(&g_runtimeThreadMutex);
     pthread_mutex_lock(&g_debuggerMutex);
     if (g_mainRuntime)
     {
-        for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugWriteWatches.begin();
-            it != g_debugWriteWatches.end(); ++it)
+        for (std::list<RuntimeDebugHookEntry>::iterator it = g_debugWriteHits.begin();
+            it != g_debugWriteHits.end(); ++it)
         {
             if (it->hook)
             {
@@ -1681,19 +2220,19 @@ void emulatorRuntimeClearWriteWatches(void)
     }
     else
     {
-        g_debugWriteWatches.clear();
+        g_debugWriteHits.clear();
     }
     pthread_mutex_unlock(&g_debuggerMutex);
     pthread_mutex_unlock(&g_runtimeThreadMutex);
 }
 
-std::vector<EmulatorRuntimeDebugEntry> emulatorRuntimeWriteWatches(void)
+std::vector<EmulatorRuntimeDebugEntry> emulatorRuntimeWriteHits(void)
 {
     std::vector<EmulatorRuntimeDebugEntry> out;
     pthread_mutex_lock(&g_debuggerMutex);
-    out.reserve(g_debugWriteWatches.size());
-    for (std::list<RuntimeDebugHookEntry>::const_iterator it = g_debugWriteWatches.begin();
-        it != g_debugWriteWatches.end(); ++it)
+    out.reserve(g_debugWriteHits.size());
+    for (std::list<RuntimeDebugHookEntry>::const_iterator it = g_debugWriteHits.begin();
+        it != g_debugWriteHits.end(); ++it)
     {
         if (it->enabled)
         {
@@ -1761,4 +2300,3 @@ void stopDingooPie(void)
         saveRecentAppPath(g_lastRunAppPath, "normal runtime exit");
     }
 }
-

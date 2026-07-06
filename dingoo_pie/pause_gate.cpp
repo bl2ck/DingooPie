@@ -76,8 +76,22 @@ bool pauseGateWaitForResume(void)
     if (waited)
     {
         s_PauseGateWaiterCount.fetch_sub(1, std::memory_order_acq_rel);
+        s_PauseGateCondition.notify_all();
     }
     return waited;
+}
+
+bool pauseGateWaitForNoWaiters(uint32_t timeoutMs)
+{
+    if (s_PauseGateWaiterCount.load(std::memory_order_acquire) == 0)
+    {
+        return true;
+    }
+
+    std::unique_lock<std::mutex> lock(s_PauseGateMutex);
+    return s_PauseGateCondition.wait_for(lock, std::chrono::milliseconds(timeoutMs), [] {
+        return s_PauseGateWaiterCount.load(std::memory_order_acquire) == 0;
+    });
 }
 
 uint32_t pauseGateWaiterCount(void)

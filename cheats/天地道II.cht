@@ -1,0 +1,22 @@
+# Tiandi Dao II / 天地道II.app
+# SHA256:
+# 0739C0D6F6C82EE4333D6B627EFFC7F827EC84150C6859AE1F1572118AFDC897
+#
+# Notes:
+# - Skips player hurt/HP loss.
+# - Shows player HP as max; enemies remain killable.
+
+app_sha256=0739C0D6F6C82EE4333D6B627EFFC7F827EC84150C6859AE1F1572118AFDC897
+
+on|无敌/Invincible：跳过玩家受击流程|u32|0x80A589B4|0x10000191|0x14400191
+on|无敌/Invincible：跳过固定扣血辅助流程|u32|0x80A4B9A8|0x10000008|0x14400008
+on|无敌/Invincible：跳过脚本负数扣血|u32|0x80A2B420|0x0440001E|0x00000000
+on|无敌/Invincible：跳过周期负数扣血|u32|0x80A4B40C|0x04600008|0x00000000
+on|无敌/Invincible：跳过脚本直接设低血量分支|u32|0x80A2B3DC|0x10000007|0x14600007
+on|无敌/Invincible：跳过脚本直接写低血量|u32|0x80A2B3E0|0x00000000|0xAC430780
+on|无敌/Invincible：血条第1段读取最大血量|u32|0x80A36A10|0x8C830788|0x8C830780
+on|无敌/Invincible：血条第2段读取最大血量|u32|0x80A36A70|0x8C830788|0x8C830780
+on|无敌/Invincible：血条第3段读取最大血量|u32|0x80A36AD0|0x8C830788|0x8C830780
+on|无敌/Invincible：低血量检查读取最大血量|u32|0x80A36B44|0x8C420788|0x8C420780
+on|无敌/Invincible：玩家状态导出读取最大血量|u32|0x80A20B50|0x8E250788|0x8E250780
+on|无敌/Invincible：脚本查询玩家血量读取最大血量|u32|0x80A2B33C|0x8C510788|0x8C510780

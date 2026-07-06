@@ -44,10 +44,10 @@ const wchar_t* uiText(UiLanguage language, UiTextId id)
     case TXT_DIALOG_SCREENSHOT_FAILED:
         return zh ? L"\u4fdd\u5b58\u622a\u56fe\u5931\u8d25\u3002\u8bf7\u786e\u8ba4\u6e38\u620f\u753b\u9762\u5df2\u663e\u793a\u4e14\u8def\u5f84\u53ef\u5199\u3002" :
             L"Failed to save screenshot. Make sure a game frame is visible and the path is writable.";
-    case TXT_FILE_SAVE_STATE:
-        return zh ? L"\u5373\u65f6\u5b58\u6863(&T)" : L"Save State(&T)";
+    case TXT_FILE_SAVE_SLOT:
+        return zh ? L"\u4fdd\u5b58\u5b58\u6863(&T)" : L"Save Slot(&T)";
     case TXT_DIALOG_STATE_SAVE_TITLE:
-        return zh ? L"\u5373\u65f6\u5b58\u6863" : L"Save State";
+        return zh ? L"\u4fdd\u5b58\u5b58\u6863" : L"Save Slot";
     case TXT_DIALOG_STATE_CONFIRM_SAVE:
         return zh ? L"\u662f\u5426\u4fdd\u5b58\u5230\u8be5\u5373\u65f6\u5b58\u6863\u6863\u4f4d\uff1f" : L"Save to this state slot?";
     case TXT_DIALOG_STATE_CONFIRM_OVERWRITE:
@@ -58,10 +58,10 @@ const wchar_t* uiText(UiLanguage language, UiTextId id)
         return zh ? L"\u5373\u65f6\u5b58\u6863\u5df2\u4fdd\u5b58\u3002" : L"Save state saved.";
     case TXT_DIALOG_STATE_SAVE_FAILED:
         return zh ? L"\u4fdd\u5b58\u5373\u65f6\u5b58\u6863\u5931\u8d25\u3002" : L"Failed to save state.";
-    case TXT_FILE_LOAD_STATE:
-        return zh ? L"\u8bfb\u53d6\u5b58\u6863(&L)" : L"Load State(&L)";
+    case TXT_FILE_LOAD_SLOT:
+        return zh ? L"\u8bfb\u53d6\u5b58\u6863(&L)" : L"Load Slot(&L)";
     case TXT_DIALOG_STATE_LOAD_TITLE:
-        return zh ? L"\u8bfb\u53d6\u5b58\u6863" : L"Load State";
+        return zh ? L"\u8bfb\u53d6\u5b58\u6863" : L"Load Slot";
     case TXT_DIALOG_STATE_EMPTY:
         return zh ? L"\u8be5\u6863\u4f4d\u8fd8\u6ca1\u6709\u5b58\u6863\u3002" : L"This state slot is empty.";
     case TXT_DIALOG_STATE_CONFIRM_LOAD:
@@ -77,6 +77,8 @@ const wchar_t* uiText(UiLanguage language, UiTextId id)
         return zh ?
             L"\u5f53\u524d\u6e38\u620f\u9636\u6bb5\u4e0e\u5b58\u6863\u4e0d\u4e00\u81f4\u3002\u8bf7\u5148\u8fdb\u5165\u4e0e\u5b58\u6863\u76f8\u540c\u7684\u573a\u666f\uff0c\u518d\u8bfb\u53d6\u8be5\u6863\u4f4d\u3002" :
             L"The current game stage does not match this state. Enter the same scene as the saved state, then load this slot again.";
+    case TXT_FILE_SAVE_STATE_MANAGER:
+        return zh ? L"\u5b58\u6863\u7ba1\u7406\u5668(&M)..." : L"Save Manager(&M)...";
     case TXT_FILE_EXIT:
         return zh ? L"\u9000\u51fa(&X)" : L"Exit(&X)";
     case TXT_CONFIRM_EXIT_TITLE:
@@ -143,11 +145,23 @@ const wchar_t* uiText(UiLanguage language, UiTextId id)
         return zh ? L"\u663e\u793a FPS(&F)" : L"Show FPS(&F)";
     case TXT_ROOT_AUDIO:
         return zh ? L"\u97f3\u9891(&A)" : L"Audio(&A)";
-    case TXT_SETTINGS_AUDIO_VOLUME:
+    case TXT_AUDIO_VOLUME:
         return zh ? L"\u4e3b\u97f3\u91cf(&V)" : L"Master Volume(&V)";
-    case TXT_SETTINGS_AUDIO_BUFFER:
+    case TXT_AUDIO_BUFFER:
         return zh ? L"\u97f3\u9891\u7f13\u51b2(&B)" : L"Audio Buffer(&B)";
-    case TXT_SETTINGS_DROP_AUDIO:
+    case TXT_AUDIO_EFFECT:
+        return zh ? L"\u97f3\u9891\u6548\u679c(&E)" : L"Audio Effect(&E)";
+    case TXT_AUDIO_EFFECT_OFF:
+        return zh ? L"\u5173\u95ed" : L"Off";
+    case TXT_AUDIO_EFFECT_SOFT:
+        return zh ? L"\u67d4\u548c" : L"Soft";
+    case TXT_AUDIO_EFFECT_CLEAR:
+        return zh ? L"\u6e05\u4eae" : L"Clear";
+    case TXT_AUDIO_EFFECT_BASS_BOOST:
+        return zh ? L"\u4f4e\u97f3\u589e\u5f3a" : L"Bass Boost";
+    case TXT_AUDIO_EFFECT_MONO:
+        return zh ? L"\u5355\u58f0\u9053" : L"Mono";
+    case TXT_AUDIO_DISABLE:
         return zh ? L"\u7981\u7528\u97f3\u9891(&A)" : L"Disable Audio(&A)";
     case TXT_ROOT_INPUT:
         return zh ? L"\u8f93\u5165(&I)" : L"Input(&I)";
@@ -169,18 +183,18 @@ const wchar_t* uiText(UiLanguage language, UiTextId id)
         return L"Interpreter";
     case TXT_SETTINGS_CPU_CLOCK:
         return zh ? L"CPU \u65f6\u949f(&H)" : L"CPU Clock(&H)";
-    case TXT_SETTINGS_SPEED_AUTO:
+    case TXT_SETTINGS_AUTO:
         return zh ? L"\u81ea\u52a8" : L"Auto";
     case TXT_SETTINGS_RUNTIME_SPEED:
         return zh ? L"\u8fd0\u884c\u901f\u5ea6(&R)" : L"Runtime Speed(&R)";
-    case TXT_SETTINGS_DELAY:
+    case TXT_SETTINGS_DELAY_SCALE:
         return zh ? L"\u5ef6\u8fdf\u6bd4\u4f8b(&D)" : L"Delay Scale(&D)";
-    case TXT_SETTINGS_DELAY_AUTO:
-        return zh ? L"\u81ea\u52a8" : L"Auto";
+    case TXT_SETTINGS_CHEATS:
+        return zh ? L"\u91d1\u624b\u6307(&C)" : L"Cheats(&C)";
     case TXT_SETTINGS_ENABLE_CHEATS:
         return zh ? L"\u542f\u7528\u91d1\u624b\u6307(&T)" : L"Enable Cheats(&T)";
-    case TXT_SETTINGS_CHEAT_LIST:
-        return zh ? L"\u91d1\u624b\u6307(&C)" : L"Cheats(&C)";
+    case TXT_SETTINGS_CHEAT_MANAGER:
+        return zh ? L"\u91d1\u624b\u6307\u7ba1\u7406\u5668(&M)..." : L"Cheat Manager(&M)...";
     case TXT_DIALOG_CHEATS_TITLE:
         return zh ? L"\u91d1\u624b\u6307" : L"Cheats";
     case TXT_CHEATS_NO_FILE:
@@ -199,15 +213,17 @@ const wchar_t* uiText(UiLanguage language, UiTextId id)
         return zh ? L"\u542f\u7528\u6027\u80fd\u65e5\u5fd7(&P)" : L"Enable Performance Log(&P)";
     case TXT_DEBUG_OPEN_LOG:
         return zh ? L"\u6253\u5f00\u8c03\u8bd5\u65e5\u5fd7(&L)" : L"Open Debug Log(&L)";
-    case TXT_DEBUG_CHEAT_FINDER:
-        return zh ? L"\u5185\u5b58\u641c\u7d22\u5668(&F)..." : L"Cheat Finder(&F)...";
-    case TXT_DEBUG_DEBUGGER:
-        return zh ? L"\u8c03\u8bd5\u5668(&G)..." : L"Debugger(&G)...";
     case TXT_DEBUG_LOG_MISSING_TITLE:
         return zh ? L"\u65e5\u5fd7\u4e0d\u5b58\u5728" : L"Log Not Found";
     case TXT_DEBUG_LOG_MISSING_BODY:
-        return zh ? L"\u5c1a\u672a\u751f\u6210 DingooPie-debug.log\u3002\u8fd0\u884c\u6e38\u620f\u6216\u542f\u7528\u8c03\u8bd5\u8f93\u51fa\u540e\u518d\u6253\u5f00\u3002" :
-            L"DingooPie-debug.log has not been created yet. Run a game or enable debug output, then try again.";
+        return zh ? L"\u5c1a\u672a\u751f\u6210 DingooPie-debug-*.log\u3002\u8fd0\u884c\u6e38\u620f\u6216\u542f\u7528\u8c03\u8bd5\u8f93\u51fa\u540e\u518d\u6253\u5f00\u3002" :
+            L"DingooPie-debug-*.log has not been created yet. Run a game or enable debug output, then try again.";
+    case TXT_DEBUG_RESOURCE_MONITOR:
+        return zh ? L"\u8d44\u6e90\u76d1\u89c6\u5668(&R)..." : L"Resource Monitor(&R)...";
+    case TXT_DEBUG_MEMORY_SEARCHER:
+        return zh ? L"\u5185\u5b58\u641c\u7d22\u5668(&F)..." : L"Memory Searcher(&F)...";
+    case TXT_DEBUG_DEBUGGER:
+        return zh ? L"\u8c03\u8bd5\u5668(&G)..." : L"Debugger(&G)...";
     case TXT_ROOT_HELP:
         return zh ? L"\u5e2e\u52a9(&H)" : L"Help(&H)";
     case TXT_HELP_ABOUT:

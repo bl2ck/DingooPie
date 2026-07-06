@@ -6,6 +6,7 @@
 #include "native_runtime.h"
 #include "execution_backend.h"
 #include "framebuffer.h"
+#include "runtime_log.h"
 #include "sdk_hle.h"
 #include "app_loader.h"
 #include <cstdlib>
@@ -155,12 +156,13 @@ static void hook_task_profile(NativeRuntime* runtime, uint64_t address, uint32_t
 
     instructionCount++;
     uint64_t now = SDL_GetTicks64();
-    if (now - lastTicks >= 1000)
+    uint64_t elapsedMs = now - lastTicks;
+    if (elapsedMs >= runtimeLogProfileIntervalMs())
     {
-        printf("profile task: entry=0x%08x priority=%u instr=%llu/s\n",
+        printf("profile:task entry=0x%08x priority=%u instr=%llu/s\n",
             taskStruct ? taskStruct->taskFuncAddr : 0,
             taskStruct ? taskStruct->priority : 0,
-            (unsigned long long)instructionCount);
+            (unsigned long long)runtimeLogRatePerSecond(instructionCount, elapsedMs));
         instructionCount = 0;
         lastTicks = now;
     }
@@ -168,7 +170,7 @@ static void hook_task_profile(NativeRuntime* runtime, uint64_t address, uint32_t
 
 static bool hook_mem_invalid(NativeRuntime* runtime, RuntimeMemoryAccess type, uint64_t address, int size, int64_t value, void* user_data)
 {
-    printf(">>> Tracing mem_invalid mem_type:%s at 0x%" PRIx64 ", size:0x%x, value:0x%" PRIx64 "\n",
+    printf(">>> mem_invalid type:%s addr:0x%" PRIx64 " size:0x%x value:0x%" PRIx64 "\n",
         memTypeStr(type), address, size, value);
     dumpREG(runtime);
     dumpAsm(runtime);
@@ -185,10 +187,10 @@ void* subTaskRun(void* data)
     RuntimeError err;
     RuntimeHook trace;
 
-    printf("subTaskRun start:entry 0x%08x, priority %d\n", entry, taskStruct->priority);
+    printf("task: subTaskRun start entry=0x%08x priority=%d\n", entry, taskStruct->priority);
     if (taskSchedulerIsShutdownRequested())
     {
-        printf("subTaskRun ignored during shutdown: entry 0x%08x, priority %d\n",
+        printf("task: subTaskRun ignored during shutdown entry=0x%08x priority=%d\n",
             entry, taskStruct->priority);
         free(taskStruct);
         return NULL;
@@ -197,7 +199,7 @@ void* subTaskRun(void* data)
     err = nativeRuntimeCreate(&runtime);
     if (err)
     {
-        printf("Failed on nativeRuntimeCreate() with error returned: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("task: nativeRuntimeCreate failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
         return NULL;
     }
     taskSchedulerRegisterRuntime(runtime);
@@ -206,18 +208,18 @@ void* subTaskRun(void* data)
     err = nativeRuntimeSetBackend(runtime, backend);
     if (err)
     {
-        printf("Failed on nativeRuntimeSetBackend() with error returned: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("task: nativeRuntimeSetBackend failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
         taskSchedulerUnregisterRuntime(runtime);
         nativeRuntimeDestroy(runtime);
         free(taskStruct);
         return NULL;
     }
-    printf("subTaskRun backend: %s\n", executionBackendName(backend));
+    printf("task: subTaskRun backend=%s\n", executionBackendName(backend));
 
     err = nativeRuntimeMapMemory(runtime, s_AppDataAddr, s_AppDataBuffSize, RUNTIME_PROT_ALL, s_AppDataBuff);
     if (err)
     {
-        printf("Failed mem map app: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("task: failed to map app memory: %u (%s)\n", err, nativeRuntimeErrorString(err));
         exit(1);
     }
 
@@ -225,26 +227,26 @@ void* subTaskRun(void* data)
     err = nativeRuntimeMapMemory(runtime, appAliasAddr, s_AppDataBuffSize, RUNTIME_PROT_ALL, s_AppDataBuff);
     if (err)
     {
-        printf("Failed alias mem map: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("task: failed to map app alias: %u (%s)\n", err, nativeRuntimeErrorString(err));
         exit(1);
     }
 
     if (InitVmMemSubTask(runtime))
     {
-        printf("Failed on InitVmMemSubTask\n");
+        printf("task: InitVmMemSubTask failed\n");
         exit(1);
     }
 
     if (InitFb(runtime))
     {
-        printf("Failed on InitFb\n");
+        printf("task: InitFb failed\n");
         exit(1);
     }
 
     err = bridge_init_task(runtime, s_app, false);
     if (err)
     {
-        printf("Failed bridge_init(): %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("task: bridge_init failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
         exit(1);
     }
 
@@ -268,12 +270,12 @@ void* subTaskRun(void* data)
     {
         if (taskSchedulerIsShutdownRequested())
         {
-            printf("subTaskRun stopped during shutdown: entry 0x%08x, error %u (%s)\n",
+            printf("task: subTaskRun stopped during shutdown entry=0x%08x error=%u (%s)\n",
                 entry, err, nativeRuntimeErrorString(err));
         }
         else
         {
-            printf("Failed on nativeRuntimeStart() with error returned: %u (%s)\n", err, nativeRuntimeErrorString(err));
+            printf("task: nativeRuntimeStart failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
         }
         taskSchedulerUnregisterRuntime(runtime);
         nativeRuntimeDestroy(runtime);
@@ -291,7 +293,7 @@ uint32_t OSTaskCreate(uint32_t taskFuncAddr, uint32_t dataPtr, uint32_t stackPtr
 {
     if (taskSchedulerIsShutdownRequested())
     {
-        printf("OSTaskCreate ignored during shutdown: entry 0x%08x, priority %u\n",
+        printf("task: OSTaskCreate ignored during shutdown entry=0x%08x priority=%u\n",
             taskFuncAddr, priority);
         return OS_NO_ERR;
     }
@@ -299,7 +301,7 @@ uint32_t OSTaskCreate(uint32_t taskFuncAddr, uint32_t dataPtr, uint32_t stackPtr
     struct TaskStruct* taskStruct =(struct TaskStruct*)malloc(sizeof(struct TaskStruct));
     if (taskStruct == NULL)
     {
-        printf("OSTaskCreate malloc failed\n");
+        printf("task: OSTaskCreate malloc failed\n");
         return -1;
     }
     taskStruct->dataPtr = dataPtr;
@@ -310,10 +312,9 @@ uint32_t OSTaskCreate(uint32_t taskFuncAddr, uint32_t dataPtr, uint32_t stackPtr
     int ret = pthread_create(&taskStruct->tid, NULL, subTaskRun, taskStruct);
     if (ret)
     {
-        printf("pthread_create subTaskRun failed\n");
+        printf("task: pthread_create subTaskRun failed\n");
         assert(0);
     }
 
     return OS_NO_ERR;
 }
-

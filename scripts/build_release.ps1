@@ -161,7 +161,7 @@ function New-DingooPieRelease {
         "$hash  $fileName"
     }
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllLines($ManifestPath, [string[]]$HashLines, $utf8NoBom)
+    [System.IO.File]::WriteAllText($ManifestPath, (($HashLines -join "`n") + "`n"), $utf8NoBom)
 
     $keepFiles = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($fileName in $releaseFiles) {

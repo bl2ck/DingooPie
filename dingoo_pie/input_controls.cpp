@@ -767,6 +767,26 @@ void inputClearSyntheticControls(void)
     }
 }
 
+void inputResetTransientControls(void)
+{
+    lockInput();
+    InputState before = g_inputState;
+    uint32_t syntheticBefore = g_syntheticStatus;
+    g_syntheticStatus = 0;
+    memset(&g_inputState, 0, sizeof(g_inputState));
+    unlockInput();
+
+    if (inputTraceEnabled() &&
+        (before.status || before.pressed || before.released || before.systemEventPending || syntheticBefore))
+    {
+        printf("input: reset transient controls status=0x%08lX pressed=0x%08lX released=0x%08lX synthetic=0x%08X\n",
+            (unsigned long)before.status,
+            (unsigned long)before.pressed,
+            (unsigned long)before.released,
+            (unsigned int)syntheticBefore);
+    }
+}
+
 void inputHandleHostScancode(SDL_Scancode scancode, bool pressed)
 {
     updateBindingFromScancode(pressed, scancode);
@@ -878,4 +898,3 @@ void inputPollKeyboardState(void)
             (unsigned long)after.released);
     }
 }
-

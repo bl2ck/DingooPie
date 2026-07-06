@@ -18,7 +18,7 @@
 #include <sys/types.h>
 #endif
 
-static const uint32_t kSaveStateMagic = 0x53504744u; // DGPS
+static const uint32_t kSaveStateMagic = 0x53534744u; // DGSS
 static const uint32_t kSaveStateAppIdLength = 64;
 static const uint8_t kSaveStateTokenRaw = 0;
 static const uint8_t kSaveStateTokenFill = 1;
@@ -28,9 +28,10 @@ static const size_t kSaveStateMaxRawBlock = 0xffffu;
 static std::string g_cachedAppPath;
 static std::string g_cachedAppId;
 
-// On disk: fixed header followed by the current compressed payload format.
-// The payload stores heap state, registers, task registers, and writable memory
-// regions. appId verifies the save still belongs to the running game.
+// On disk: fixed header followed by the current compressed payload layout.
+// The payload stores small runtime records first, then a compact writable
+// memory region table followed by contiguous region data. appId verifies the
+// save still belongs to the running game.
 struct SaveStateHeader
 {
     uint32_t magic;
@@ -39,6 +40,7 @@ struct SaveStateHeader
     uint32_t payloadCompressedSize;
     uint32_t regionCount;
     uint32_t taskRegisterCount;
+    uint32_t semaphoreCount;
     uint32_t osTicks;
     char appId[kSaveStateAppIdLength];
 };
@@ -427,6 +429,22 @@ static uint32_t saveStatePercent(size_t done, size_t total)
     return (uint32_t)((done * 100u) / total);
 }
 
+static size_t estimateCompressedPayloadCapacity(size_t size)
+{
+    if (size == 0)
+    {
+        return 0;
+    }
+
+    size_t rawBlocks = ((size - 1) / kSaveStateMaxRawBlock) + 1;
+    size_t overhead = rawBlocks * 3u;
+    if (size > ((size_t)-1) - overhead)
+    {
+        return size;
+    }
+    return size + overhead;
+}
+
 static bool compressSaveStatePayload(const std::vector<uint8_t>& bytes,
     std::vector<uint8_t>* out, SaveStateProgressCallback progressCallback,
     void* progressUserData)
@@ -437,7 +455,7 @@ static bool compressSaveStatePayload(const std::vector<uint8_t>& bytes,
     }
 
     out->clear();
-    out->reserve(bytes.size() / 2);
+    out->reserve(estimateCompressedPayloadCapacity(bytes.size()));
     reportSaveStateProgress(progressCallback, progressUserData,
         SAVE_STATE_PROGRESS_COMPRESS, 0);
 
@@ -573,6 +591,244 @@ static bool readRecord(const std::vector<uint8_t>& bytes, size_t* offset, T* out
     return true;
 }
 
+static bool addPayloadSize(size_t* total, size_t amount)
+{
+    if (!total || *total > ((size_t)-1) - amount)
+    {
+        return false;
+    }
+
+    *total += amount;
+    return true;
+}
+
+static bool addPayloadArraySize(size_t* total, size_t count, size_t recordSize)
+{
+    if (recordSize != 0 && count > ((size_t)-1) / recordSize)
+    {
+        return false;
+    }
+    return addPayloadSize(total, count * recordSize);
+}
+
+static bool estimateSaveStatePayloadSize(const EmulatorRuntimeState& state,
+    size_t* out)
+{
+    if (!out)
+    {
+        return false;
+    }
+
+    size_t size = 0;
+    if (!addPayloadSize(&size, sizeof(SaveStateHeapHeader)) ||
+        !addPayloadSize(&size, sizeof(SaveStateRegisterHeader)) ||
+        !addPayloadArraySize(&size, state.taskRegisters.size(),
+            sizeof(SaveStateRegisterHeader)) ||
+        !addPayloadArraySize(&size, state.hleSemaphoreCounts.size(),
+            sizeof(uint32_t)) ||
+        !addPayloadArraySize(&size, state.regions.size(),
+            sizeof(SaveStateRegionHeader)))
+    {
+        return false;
+    }
+
+    for (size_t i = 0; i < state.regions.size(); ++i)
+    {
+        if (!addPayloadSize(&size, state.regions[i].data.size()))
+        {
+            return false;
+        }
+    }
+
+    *out = size;
+    return true;
+}
+
+static bool buildSaveStatePayload(const EmulatorRuntimeState& state,
+    std::vector<uint8_t>* payload, std::string* error)
+{
+    if (!payload)
+    {
+        return false;
+    }
+    if (state.taskRegisters.size() > 0xffffffffu ||
+        state.hleSemaphoreCounts.size() > 0xffffffffu ||
+        state.regions.size() > 0xffffffffu)
+    {
+        if (error) *error = "runtime state has too many records";
+        return false;
+    }
+    for (size_t i = 0; i < state.regions.size(); ++i)
+    {
+        const EmulatorRuntimeStateRegion& region = state.regions[i];
+        if (region.size == 0 || region.data.size() != region.size)
+        {
+            if (error) *error = "invalid state region";
+            return false;
+        }
+    }
+
+    size_t estimatedSize = 0;
+    if (!estimateSaveStatePayloadSize(state, &estimatedSize))
+    {
+        if (error) *error = "save-state payload is too large";
+        return false;
+    }
+
+    payload->clear();
+    payload->reserve(estimatedSize);
+
+    SaveStateHeapHeader heapHeader;
+    writeHeapHeader(&heapHeader, state.heap);
+    appendBytes(payload, &heapHeader, sizeof(heapHeader));
+
+    SaveStateRegisterHeader mainRegisterHeader;
+    writeRegisterHeader(&mainRegisterHeader, state.registers);
+    appendBytes(payload, &mainRegisterHeader, sizeof(mainRegisterHeader));
+
+    for (size_t i = 0; i < state.taskRegisters.size(); ++i)
+    {
+        SaveStateRegisterHeader taskHeader;
+        writeRegisterHeader(&taskHeader, state.taskRegisters[i]);
+        appendBytes(payload, &taskHeader, sizeof(taskHeader));
+    }
+
+    appendBytes(payload, state.hleSemaphoreCounts.data(),
+        state.hleSemaphoreCounts.size() * sizeof(state.hleSemaphoreCounts[0]));
+
+    for (size_t i = 0; i < state.regions.size(); ++i)
+    {
+        const EmulatorRuntimeStateRegion& region = state.regions[i];
+        SaveStateRegionHeader regionHeader;
+        regionHeader.start = region.start;
+        regionHeader.size = region.size;
+        regionHeader.perms = region.perms;
+        appendBytes(payload, &regionHeader, sizeof(regionHeader));
+    }
+
+    for (size_t i = 0; i < state.regions.size(); ++i)
+    {
+        const EmulatorRuntimeStateRegion& region = state.regions[i];
+        appendBytes(payload, region.data.data(), region.data.size());
+    }
+
+    if (payload->size() != estimatedSize)
+    {
+        if (error) *error = "save-state payload size mismatch";
+        return false;
+    }
+    return true;
+}
+
+static bool readTaskRegisterRecords(const std::vector<uint8_t>& records,
+    size_t* offset, uint32_t count,
+    std::vector<EmulatorRuntimeRegisterSnapshot>* out, std::string* error)
+{
+    if (!offset || !out ||
+        !recordCountFits(records.size(), *offset, count,
+            sizeof(SaveStateRegisterHeader)))
+    {
+        if (error) *error = "save-state task register table is truncated";
+        return false;
+    }
+
+    out->clear();
+    out->reserve(count);
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        SaveStateRegisterHeader taskHeader;
+        if (!readRecord(records, offset, &taskHeader))
+        {
+            if (error) *error = "save-state task register table is truncated";
+            return false;
+        }
+
+        EmulatorRuntimeRegisterSnapshot taskSnapshot;
+        readRegisterHeader(taskHeader, &taskSnapshot);
+        out->push_back(taskSnapshot);
+    }
+    return true;
+}
+
+static bool readSemaphoreRecords(const std::vector<uint8_t>& records,
+    size_t* offset, uint32_t count, std::vector<uint32_t>* out,
+    std::string* error)
+{
+    if (!offset || !out || count == 0 ||
+        !recordCountFits(records.size(), *offset, count, sizeof(uint32_t)))
+    {
+        if (error) *error = "save-state semaphore table is truncated";
+        return false;
+    }
+
+    out->resize(count);
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        if (!readRecord(records, offset, &(*out)[i]))
+        {
+            if (error) *error = "save-state semaphore table is truncated";
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool readRegionRecords(const std::vector<uint8_t>& records,
+    size_t* offset, uint32_t count,
+    std::vector<EmulatorRuntimeStateRegion>* out, std::string* error)
+{
+    if (!offset || !out || count == 0 ||
+        !recordCountFits(records.size(), *offset, count,
+            sizeof(SaveStateRegionHeader)))
+    {
+        if (error) *error = "save-state region table is truncated";
+        return false;
+    }
+
+    std::vector<SaveStateRegionHeader> regionHeaders;
+    regionHeaders.resize(count);
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        if (!readRecord(records, offset, &regionHeaders[i]) ||
+            regionHeaders[i].size == 0)
+        {
+            if (error) *error = "save-state region table is truncated";
+            return false;
+        }
+    }
+
+    size_t totalDataSize = 0;
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        if (!addPayloadSize(&totalDataSize, regionHeaders[i].size))
+        {
+            if (error) *error = "save-state region data is too large";
+            return false;
+        }
+    }
+    if (!hasBytes(records.size(), *offset, totalDataSize))
+    {
+        if (error) *error = "save-state region data is truncated";
+        return false;
+    }
+
+    out->clear();
+    out->reserve(count);
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        const SaveStateRegionHeader& regionHeader = regionHeaders[i];
+        EmulatorRuntimeStateRegion region;
+        region.start = regionHeader.start;
+        region.size = regionHeader.size;
+        region.perms = regionHeader.perms;
+        region.data.assign(records.begin() + *offset,
+            records.begin() + *offset + regionHeader.size);
+        *offset += regionHeader.size;
+        out->push_back(region);
+    }
+    return true;
+}
+
 static size_t boundedStringLength(const char* text, size_t maxLength)
 {
     size_t length = 0;
@@ -636,6 +892,23 @@ std::string saveStatePathForSlot(const std::string& appPath, int slot)
     return dir + "\\" + saveStateFileStemForPath(appPath) + slotSuffix;
 }
 
+std::string saveStateThumbnailPathForSlot(const std::string& appPath, int slot)
+{
+    std::string path = saveStatePathForSlot(appPath, slot);
+    if (path.empty())
+    {
+        return "";
+    }
+
+    size_t dot = path.find_last_of('.');
+    if (dot != std::string::npos)
+    {
+        path.resize(dot);
+    }
+    path += ".thumb.bmp";
+    return path;
+}
+
 SaveStateSlotInfo saveStateSlotInfo(const std::string& appPath, int slot)
 {
     SaveStateSlotInfo info;
@@ -667,7 +940,7 @@ bool saveStateWriteSlot(const std::string& appPath, int slot,
     const EmulatorRuntimeState& state, std::string* error,
     SaveStateProgressCallback progressCallback, void* progressUserData)
 {
-    if (!state.registers.running || state.regions.empty())
+    if (!state.registers.running || state.regions.empty() || state.hleSemaphoreCounts.empty())
     {
         if (error) *error = "runtime state is not available";
         return false;
@@ -685,34 +958,10 @@ bool saveStateWriteSlot(const std::string& appPath, int slot,
         return false;
     }
 
-    SaveStateHeapHeader heapHeader;
-    writeHeapHeader(&heapHeader, state.heap);
-    SaveStateRegisterHeader mainRegisterHeader;
-    writeRegisterHeader(&mainRegisterHeader, state.registers);
-
     std::vector<uint8_t> payload;
-    appendBytes(&payload, &heapHeader, sizeof(heapHeader));
-    appendBytes(&payload, &mainRegisterHeader, sizeof(mainRegisterHeader));
-    for (size_t i = 0; i < state.taskRegisters.size(); ++i)
+    if (!buildSaveStatePayload(state, &payload, error))
     {
-        SaveStateRegisterHeader taskHeader;
-        writeRegisterHeader(&taskHeader, state.taskRegisters[i]);
-        appendBytes(&payload, &taskHeader, sizeof(taskHeader));
-    }
-    for (size_t i = 0; i < state.regions.size(); ++i)
-    {
-        const EmulatorRuntimeStateRegion& region = state.regions[i];
-        if (region.data.size() != region.size)
-        {
-            if (error) *error = "invalid state region";
-            return false;
-        }
-        SaveStateRegionHeader regionHeader;
-        regionHeader.start = region.start;
-        regionHeader.size = region.size;
-        regionHeader.perms = region.perms;
-        appendBytes(&payload, &regionHeader, sizeof(regionHeader));
-        appendBytes(&payload, region.data.data(), region.data.size());
+        return false;
     }
 
     std::vector<uint8_t> compressedPayload;
@@ -736,6 +985,7 @@ bool saveStateWriteSlot(const std::string& appPath, int slot,
     header.payloadCompressedSize = (uint32_t)compressedPayload.size();
     header.regionCount = (uint32_t)state.regions.size();
     header.taskRegisterCount = (uint32_t)state.taskRegisters.size();
+    header.semaphoreCount = (uint32_t)state.hleSemaphoreCounts.size();
     header.osTicks = state.osTicks;
 
     std::string appId = saveStateAppIdForPath(appPath);
@@ -743,6 +993,7 @@ bool saveStateWriteSlot(const std::string& appPath, int slot,
         appId.size() < sizeof(header.appId) ? appId.size() : sizeof(header.appId));
 
     std::vector<uint8_t> bytes;
+    bytes.reserve(sizeof(header) + compressedPayload.size());
     appendBytes(&bytes, &header, sizeof(header));
     appendBytes(&bytes, compressedPayload.data(), compressedPayload.size());
 
@@ -784,6 +1035,7 @@ bool saveStateReadSlot(const std::string& appPath, int slot,
     }
     state->regions.clear();
     state->taskRegisters.clear();
+    state->hleSemaphoreCounts.clear();
     memset(&state->registers, 0, sizeof(state->registers));
     memset(&state->heap, 0, sizeof(state->heap));
     state->osTicks = 0;
@@ -855,57 +1107,14 @@ bool saveStateReadSlot(const std::string& appPath, int slot,
     }
     readRegisterHeader(mainRegisterHeader, &state->registers);
 
-    if (!recordCountFits(records.size(), offset, header.taskRegisterCount,
-        sizeof(SaveStateRegisterHeader)))
+    if (!readTaskRegisterRecords(records, &offset, header.taskRegisterCount,
+        &state->taskRegisters, error) ||
+        !readSemaphoreRecords(records, &offset, header.semaphoreCount,
+            &state->hleSemaphoreCounts, error) ||
+        !readRegionRecords(records, &offset, header.regionCount,
+            &state->regions, error))
     {
-        if (error) *error = "save-state task register table is truncated";
         return false;
-    }
-
-    state->taskRegisters.reserve(header.taskRegisterCount);
-    for (uint32_t i = 0; i < header.taskRegisterCount; ++i)
-    {
-        SaveStateRegisterHeader taskHeader;
-        if (!readRecord(records, &offset, &taskHeader))
-        {
-            if (error) *error = "save-state task register table is truncated";
-            return false;
-        }
-
-        EmulatorRuntimeRegisterSnapshot taskSnapshot;
-        readRegisterHeader(taskHeader, &taskSnapshot);
-        state->taskRegisters.push_back(taskSnapshot);
-    }
-
-    if (!recordCountFits(records.size(), offset, header.regionCount,
-        sizeof(SaveStateRegionHeader) + 1))
-    {
-        if (error) *error = "save-state region table is truncated";
-        return false;
-    }
-
-    state->regions.reserve(header.regionCount);
-    for (uint32_t i = 0; i < header.regionCount; ++i)
-    {
-        SaveStateRegionHeader regionHeader;
-        if (!readRecord(records, &offset, &regionHeader))
-        {
-            if (error) *error = "save-state region table is truncated";
-            return false;
-        }
-        if (regionHeader.size == 0 || !hasBytes(records.size(), offset, regionHeader.size))
-        {
-            if (error) *error = "save-state region data is truncated";
-            return false;
-        }
-
-        EmulatorRuntimeStateRegion region;
-        region.start = regionHeader.start;
-        region.size = regionHeader.size;
-        region.perms = regionHeader.perms;
-        region.data.assign(records.begin() + offset, records.begin() + offset + regionHeader.size);
-        offset += regionHeader.size;
-        state->regions.push_back(region);
     }
     if (offset != records.size())
     {

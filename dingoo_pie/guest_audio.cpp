@@ -4,8 +4,8 @@
 
 uint32_t waveout_open(waveout_args* args)
 {
-	printf("args channel %d format %d sample_rate %d volume %d, channel %d\n",
-		args->channel, args->format, args->sample_rate, args->volume, args->channel);
+	printf("audio: waveout_open channel=%d format=%d sample_rate=%d volume=%d\n",
+		args->channel, args->format, args->sample_rate, args->volume);
 
     uint32_t ret = MixerOpen(args);
     free(args);
@@ -22,9 +22,9 @@ uint32_t waveout_can_write()
     return MixerPlaying();
 }
 
-bool waveout_drops_audio()
+bool waveout_skips_audio_output()
 {
-    return MixerDropsAudio();
+    return MixerSkipsAudioOutput();
 }
 
 uint32_t waveout_set_volume(uint32_t vol)
@@ -44,4 +44,3 @@ uint32_t waveout_mute(uint32_t muted)
     MixerSetMuted(muted != 0);
     return 1;
 }
-
