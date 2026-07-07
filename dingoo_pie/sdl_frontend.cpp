@@ -694,6 +694,25 @@ static double idleSymbolUnit(uint32_t seed)
     return (double)(idleSymbolHash(seed) & 0xffffu) / 65535.0;
 }
 
+static uint32_t idleSymbolRunSeed(void)
+{
+    static uint32_t seed = 0;
+    if (!seed)
+    {
+        uint64_t counter = SDL_GetPerformanceCounter();
+        seed = idleSymbolHash(
+            (uint32_t)counter ^
+            (uint32_t)(counter >> 32) ^
+            (uint32_t)time(NULL) ^
+            (uint32_t)(uintptr_t)&seed);
+        if (!seed)
+        {
+            seed = 1;
+        }
+    }
+    return seed;
+}
+
 static double clampDouble(double value, double minValue, double maxValue)
 {
     if (value < minValue)
@@ -931,6 +950,12 @@ struct IdleSymbolSample
     double angle;
 };
 
+struct IdleBackgroundGradient
+{
+    SDL_Color top;
+    SDL_Color bottom;
+};
+
 struct IdleAnimationClock
 {
     uint64_t timeMs = 0;
@@ -984,7 +1009,7 @@ static int idleSymbolCount(int width, int height, bool smallLayer)
 
 static IdleSymbolSpec buildIdleSymbolSpec(int width, int height, int index, bool smallLayer)
 {
-    uint32_t seed = smallLayer ? (uint32_t)index + 1009u : (uint32_t)index + 17u;
+    uint32_t seed = idleSymbolRunSeed() ^ (smallLayer ? (uint32_t)index + 1009u : (uint32_t)index + 17u);
     double sizeBase = (double)(height < width ? height : width);
     double size = smallLayer ?
         sizeBase * (0.050 + idleSymbolUnit(seed * 19u + 301u) * 0.035) :
@@ -1085,6 +1110,24 @@ static void drawIdleFloatingSymbols(int width, int height, double t)
 
     drawIdleFloatingSymbolLayer(width, height, t, smallCount, true);
     drawIdleFloatingSymbolLayer(width, height, t, mainCount, false);
+}
+
+static IdleBackgroundGradient idleBackgroundGradient(void)
+{
+    static const IdleBackgroundGradient kGradients[] =
+    {
+        { { 56, 110, 160, 255 }, { 22, 58, 92, 255 } },
+        { { 76, 92, 158, 255 }, { 30, 42, 92, 255 } },
+        { { 42, 124, 118, 255 }, { 18, 66, 76, 255 } },
+        { { 114, 78, 130, 255 }, { 48, 34, 78, 255 } },
+        { { 128, 78, 94, 255 }, { 58, 36, 60, 255 } },
+        { { 54, 116, 90, 255 }, { 24, 64, 62, 255 } },
+        { { 98, 96, 132, 255 }, { 42, 48, 82, 255 } },
+        { { 118, 92, 62, 255 }, { 56, 44, 58, 255 } }
+    };
+    uint32_t index = idleSymbolHash(idleSymbolRunSeed() ^ 0x9e3779b9u) %
+        (uint32_t)(sizeof(kGradients) / sizeof(kGradients[0]));
+    return kGradients[index];
 }
 
 static void resetIdleTitleTexture(void)
@@ -1295,15 +1338,14 @@ static bool drawIdleScreen(uint64_t animationTimeMs)
     }
 
     SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_NONE);
-    SDL_Color bgTop = { 56, 110, 160, 255 };
-    SDL_Color bgBottom = { 22, 58, 92, 255 };
-    SDL_SetRenderDrawColor(g_renderer, bgTop.r, bgTop.g, bgTop.b, bgTop.a);
+    IdleBackgroundGradient bg = idleBackgroundGradient();
+    SDL_SetRenderDrawColor(g_renderer, bg.top.r, bg.top.g, bg.top.b, bg.top.a);
     if (SDL_RenderClear(g_renderer) != 0)
     {
         printf("frontend: idle SDL_RenderClear failed: %s\n", SDL_GetError());
         return false;
     }
-    drawVerticalGradientRect(0, 0, width, height, bgTop, bgBottom);
+    drawVerticalGradientRect(0, 0, width, height, bg.top, bg.bottom);
     g_lastDisplayFrameValid = false;
 
     SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
