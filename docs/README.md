@@ -10,7 +10,7 @@
 Windows 版本信息：
 
 - 文件说明：Dingoo Game Emulator
-- 文件版本：1.5
+- 文件版本：1.6
 - 产品名称：丁果派 DingooPie
 - Powered by：BL2CK Software
 - 版权：Copyright (c) 2026 BL2CK
@@ -199,7 +199,7 @@ does not ship game samples; users must provide legally obtained files.
 Windows version information:
 
 - File description: Dingoo Game Emulator
-- File version: 1.5
+- File version: 1.6
 - Product name: DingooPie
 - Powered by: BL2CK Software
 - Copyright: Copyright (c) 2026 BL2CK

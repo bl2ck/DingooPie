@@ -158,5 +158,5 @@ when the same game starts again, and applied immediately when selected.
 - `Debug > Memory Searcher`: searches u8/u16/u32 memory values and narrows candidates by value changes; selected addresses can be refreshed, written once, or copied as `.cht` cheat lines.
 - `Debug > Debugger`: shows live disassembly, registers, memory bytes, PC hit counters, and write hits. PC hits and write hits only record hits and do not pause the CPU.
 
-Version: 1.5
+Version: 1.6
 Powered by BL2CK Software

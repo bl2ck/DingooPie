@@ -8,7 +8,7 @@ DingooPie
 及兼容歌美 X760+ 掌机游戏。`.app` 格式文件归丁果科技所有；本项目和发布包
 不包含游戏样本，请使用自行合法取得的文件。
 
-版本：1.5
+版本：1.6
 Powered by BL2CK Software
 版权：Copyright (c) 2026 BL2CK
 
@@ -151,7 +151,7 @@ Gemei X760+ handheld games. The `.app` package format belongs to Dingoo
 Technology. This project and its releases do not include game samples; use
 legally obtained files.
 
-Version: 1.5
+Version: 1.6
 Powered by BL2CK Software
 Copyright (c) 2026 BL2CK
 
