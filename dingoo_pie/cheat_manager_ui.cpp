@@ -209,17 +209,6 @@ static std::vector<std::string> cheatManagerEnabledFeatureKeys(const CheatRuntim
     return keys;
 }
 
-static void setCheatManagerListText(HWND list, int row, int column, const wchar_t* text)
-{
-    LVITEMW item;
-    memset(&item, 0, sizeof(item));
-    item.mask = LVIF_TEXT;
-    item.iItem = row;
-    item.iSubItem = column;
-    item.pszText = (LPWSTR)text;
-    SendMessageW(list, LVM_SETITEMW, 0, (LPARAM)&item);
-}
-
 static void saveCheatManagerSelection(const CheatRuntimeStatus& status)
 {
     if (!g_cheatManagerSettings)
@@ -269,7 +258,6 @@ static void refreshCheatManagerWindow(void)
     for (size_t i = 0; i < status.entries.size(); ++i)
     {
         std::wstring name = cheatManagerDisplayName(status.entries[i]);
-        std::wstring key = platformUtf8ToWide(status.entries[i].name);
         LVITEMW item;
         memset(&item, 0, sizeof(item));
         item.mask = LVIF_TEXT;
@@ -278,7 +266,6 @@ static void refreshCheatManagerWindow(void)
         item.pszText = (LPWSTR)name.c_str();
         SendMessageW(g_cheatManagerList, LVM_INSERTITEMW, 0, (LPARAM)&item);
         ListView_SetCheckState(g_cheatManagerList, (int)i, status.entries[i].enabled ? TRUE : FALSE);
-        setCheatManagerListText(g_cheatManagerList, (int)i, 1, key.c_str());
     }
 
     std::wstring fileText = cheatManagerChinese() ? L"\u6587\u4ef6: " : L"File: ";
@@ -394,21 +381,13 @@ static void setupCheatManagerList(HWND list)
         LVS_EX_DOUBLEBUFFER | LVS_EX_CHECKBOXES;
     ListView_SetExtendedListViewStyle(list, exStyle);
 
-    const wchar_t* headers[] = {
-        cheatManagerChinese() ? L"\u529f\u80fd" : L"Feature",
-        cheatManagerChinese() ? L"\u952e" : L"Key"
-    };
-    const int widths[] = { 280, 290 };
-    for (int i = 0; i < 2; ++i)
-    {
-        LVCOLUMNW column;
-        memset(&column, 0, sizeof(column));
-        column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
-        column.pszText = (LPWSTR)headers[i];
-        column.cx = widths[i];
-        column.iSubItem = i;
-        SendMessageW(list, LVM_INSERTCOLUMNW, (WPARAM)i, (LPARAM)&column);
-    }
+    LVCOLUMNW column;
+    memset(&column, 0, sizeof(column));
+    column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+    column.pszText = (LPWSTR)(cheatManagerChinese() ? L"\u529f\u80fd" : L"Feature");
+    column.cx = 570;
+    column.iSubItem = 0;
+    SendMessageW(list, LVM_INSERTCOLUMNW, 0, (LPARAM)&column);
 }
 
 static void createCheatManagerContents(void)

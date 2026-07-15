@@ -190,8 +190,8 @@ enum FrontendMenuCommand
     MENU_SETTINGS_DELAY_SCALE_030,
     MENU_SETTINGS_DELAY_SCALE_025,
     MENU_SETTINGS_DELAY_SCALE_020,
-    MENU_SETTINGS_ENABLE_CHEATS,
     MENU_SETTINGS_CHEAT_MANAGER,
+    MENU_SETTINGS_ENABLE_CHEATS,
     MENU_SETTINGS_LANGUAGE_CHINESE,
     MENU_SETTINGS_LANGUAGE_ENGLISH,
     MENU_SETTINGS_RESET,
@@ -723,7 +723,6 @@ static void refreshCheatMenu(const CheatRuntimeStatus& status)
 
     appendCheckedMenuItem(g_cheatMenu, MENU_SETTINGS_ENABLE_CHEATS,
         uiText(TXT_SETTINGS_ENABLE_CHEATS), g_menuSettings && g_menuSettings->cheatsEnabled);
-    appendMenuItem(g_cheatMenu, MENU_SETTINGS_CHEAT_MANAGER, uiText(TXT_SETTINGS_CHEAT_MANAGER));
     AppendMenuW(g_cheatMenu, MF_SEPARATOR, 0, NULL);
 
     if (!status.loaded)
@@ -1225,6 +1224,7 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
     g_cheatMenu = cheatMenu;
     refreshCheatMenu(cheatRuntimeGetStatus());
     AppendMenuW(settingsMenu, MF_POPUP, (UINT_PTR)cheatMenu, uiText(TXT_SETTINGS_CHEATS));
+    appendMenuItem(settingsMenu, MENU_SETTINGS_CHEAT_MANAGER, uiText(TXT_SETTINGS_CHEAT_MANAGER));
     AppendMenuW(settingsMenu, MF_SEPARATOR, 0, NULL);
 
     appendMenuItem(languageMenu, MENU_SETTINGS_LANGUAGE_CHINESE, L"\u4e2d\u6587");
@@ -1393,8 +1393,8 @@ void frontendMenuRefresh(void)
         setMenuCheck(kDelayScalePresets[i].commandId,
             checkedDelay && checkedDelay->commandId == kDelayScalePresets[i].commandId);
     }
-    setMenuCheck(MENU_SETTINGS_ENABLE_CHEATS, g_menuSettings->cheatsEnabled);
     setMenuEnabled(MENU_SETTINGS_CHEAT_MANAGER, g_gameRunning);
+    setMenuCheck(MENU_SETTINGS_ENABLE_CHEATS, g_menuSettings->cheatsEnabled);
     size_t cheatCount = cheatStatus.entries.size();
     if (cheatCount > MENU_CHEAT_ENTRY_LIMIT)
     {
@@ -2612,6 +2612,15 @@ bool frontendMenuHandleCommand(unsigned int commandId)
         frontendMenuRefresh();
         return true;
     }
+    case MENU_SETTINGS_CHEAT_MANAGER:
+#ifdef _WIN32
+        if (g_gameRunning)
+        {
+            cheatManagerOpenWindow(g_menuWindow, g_menuSettings->uiLanguage,
+                g_menuSettings, g_currentAppPath);
+        }
+#endif
+        return true;
     case MENU_SETTINGS_ENABLE_CHEATS:
     {
         CheatRuntimeStatus cheatStatus = cheatRuntimeGetStatus();
@@ -2631,15 +2640,6 @@ bool frontendMenuHandleCommand(unsigned int commandId)
         frontendMenuRefresh();
         return true;
     }
-    case MENU_SETTINGS_CHEAT_MANAGER:
-#ifdef _WIN32
-        if (g_gameRunning)
-        {
-            cheatManagerOpenWindow(g_menuWindow, g_menuSettings->uiLanguage,
-                g_menuSettings, g_currentAppPath);
-        }
-#endif
-        return true;
     case MENU_SETTINGS_LANGUAGE_CHINESE:
     case MENU_SETTINGS_LANGUAGE_ENGLISH:
         g_menuSettings->uiLanguage = commandId == MENU_SETTINGS_LANGUAGE_CHINESE ?
