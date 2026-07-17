@@ -1207,7 +1207,7 @@ static void createMemorySearcherIntro(bool zh)
 
     createMemorySearcherLabel(zh ?
         L"\u6b65\u9aa4\uff1a\u9996\u6b21\u641c\u7d22 -> \u6e38\u620f\u4e2d\u6539\u53d8\u6570\u503c -> \u7528\u53d8\u5927/\u53d8\u5c0f/\u4e0d\u53d8\u7f29\u5c0f\u7ed3\u679c" :
-        L"Steps: New Scan -> change the in-game value -> narrow with Bigger/Smaller/Unchanged",
+        L"Steps: New Scan -> change the in-game value -> narrow with Increased/Decreased/Unchanged",
         kMemorySearcherMarginX, 14, kMemorySearcherTopTextWidth, 22);
     createMemorySearcherLabel(zh ?
         L"\u627e\u5230\u53ef\u80fd\u5730\u5740\u540e\uff1a\u4fdd\u5b58\u5230\u4e0b\u65b9\u5217\u8868\uff0c\u518d\u5237\u65b0\u5f53\u524d\u503c\u6216\u590d\u5236 .cht \u884c\u3002" :
@@ -1263,8 +1263,8 @@ static void createMemorySearcherFilterControls(bool zh)
         kMemorySearcherSectionX, 136, 120, 22);
     const MemorySearcherButtonSpec buttons[] = {
         { zh ? L"\u7b49\u4e8e" : L"Equal", kMemorySearcherIdEqual },
-        { zh ? L"\u53d8\u5927" : L"Bigger", kMemorySearcherIdIncreased },
-        { zh ? L"\u53d8\u5c0f" : L"Smaller", kMemorySearcherIdDecreased },
+        { zh ? L"\u53d8\u5927" : L"Increased", kMemorySearcherIdIncreased },
+        { zh ? L"\u53d8\u5c0f" : L"Decreased", kMemorySearcherIdDecreased },
         { zh ? L"\u4e0d\u53d8" : L"Unchanged", kMemorySearcherIdUnchanged },
     };
     createMemorySearcherButtonRow(buttons, 4, kMemorySearcherControlX, 132,

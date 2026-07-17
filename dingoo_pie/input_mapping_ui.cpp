@@ -601,7 +601,7 @@ void inputMappingUiOpenWindow(
         createInputMappingChild(g_inputMappingWindow, L"EDIT", L"",
             WS_EX_CLIENTEDGE, ES_READONLY | ES_AUTOHSCROLL,
             controllerX, y, controllerWidth, 24, kInputMappingIdControllerTextBase + i);
-        createInputMappingChild(g_inputMappingWindow, L"BUTTON", zh ? L"\u8bbe\u7f6e\u624b\u67c4" : L"Set Pad",
+        createInputMappingChild(g_inputMappingWindow, L"BUTTON", zh ? L"\u8bbe\u7f6e\u624b\u67c4" : L"Set Gamepad",
             0, 0, controllerButtonX, y - 1, controllerButtonWidth, 26, kInputMappingIdControllerBase + i);
     }
 
@@ -618,7 +618,7 @@ void inputMappingUiOpenWindow(
     inputMappingUiRefresh();
     inputMappingUiSetStatus(zh ?
         L"\u70b9\u51fb\u8bbe\u7f6e\u952e\u76d8\u6216\u8bbe\u7f6e\u624b\u67c4\u540e\u6309\u4e0b\u76ee\u6807\u6309\u952e\u3002" :
-        L"Choose Set Key or Set Pad, then press the target input.");
+        L"Choose Set Key or Set Gamepad, then press the target input.");
     ShowWindow(g_inputMappingWindow, SW_SHOWNOACTIVATE);
     UpdateWindow(g_inputMappingWindow);
 }

@@ -312,8 +312,10 @@ uint32_t OSTaskCreate(uint32_t taskFuncAddr, uint32_t dataPtr, uint32_t stackPtr
     int ret = pthread_create(&taskStruct->tid, NULL, subTaskRun, taskStruct);
     if (ret)
     {
-        printf("task: pthread_create subTaskRun failed\n");
+        printf("task: pthread_create subTaskRun failed: %d\n", ret);
+        free(taskStruct);
         assert(0);
+        return (uint32_t)-1;
     }
 
     return OS_NO_ERR;

@@ -394,9 +394,20 @@ static app* loadApp(const char* appPath)
         return NULL;
     }
 
-    fseek(file, 0, SEEK_END);
-    uintptr_t fileSize = ftell(file);
-    fseek(file, 0, SEEK_SET);
+    if (fseek(file, 0, SEEK_END) != 0)
+    {
+        fclose(file);
+        printf("DingooPie: failed to size app: %s\n", path.c_str());
+        return NULL;
+    }
+
+    long fileSize = ftell(file);
+    if (fileSize <= 0 || (uint64_t)fileSize > UINT32_MAX || fseek(file, 0, SEEK_SET) != 0)
+    {
+        fclose(file);
+        printf("DingooPie: invalid app size: %s\n", path.c_str());
+        return NULL;
+    }
 
     app* loadedApp = app_create(file, (uint32_t)fileSize);
     fclose(file);
@@ -740,6 +751,40 @@ static bool mapAppMemory(NativeRuntime* runtime, app* loadedApp)
     return true;
 }
 
+static void seedResourceMonitorForAppLocked(app* loadedApp, bool preserveExistingSnapshot)
+{
+    if (!loadedApp || g_currentAppSha256.empty())
+    {
+        runtimeResourceMonitorReset(NULL, NULL);
+        return;
+    }
+
+    app_parse_package_resource_indexes(loadedApp);
+    // Auto-open can arm capture before app metadata exists; preserve those early
+    // load events once the app identity is known.
+    bool preserve = preserveExistingSnapshot &&
+        runtimeResourceMonitorMatchesApp(
+            g_appLoadPath.c_str(),
+            g_currentAppSha256.c_str());
+    if (!preserve)
+    {
+        runtimeResourceMonitorReset(g_appLoadPath.c_str(), g_currentAppSha256.c_str());
+    }
+    runtimeResourceMonitorSetAppResources(loadedApp);
+}
+
+static void seedResourceMonitorForAppIfCapturing(app* loadedApp)
+{
+    if (!runtimeResourceMonitorIsCapturing())
+    {
+        return;
+    }
+
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    seedResourceMonitorForAppLocked(loadedApp, true);
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+}
+
 static uint32_t findAppMainEntry(app* loadedApp)
 {
     for (uint32_t i = 0; i < loadedApp->export_count; i++)
@@ -1003,6 +1048,7 @@ static NativeRuntime* initDingooPie(void)
         destroyMainRuntime(runtime);
         return NULL;
     }
+    seedResourceMonitorForAppIfCapturing(loadedApp);
     cheatRuntimeBind(runtime);
 
     printf("DingooPie: init bridge begin\n");
@@ -1154,6 +1200,7 @@ bool startDingooPie(
     const char* appPath,
     const EmulatorOptions& options,
     bool clearRecentOnStartupFailure,
+    bool enableResourceMonitor,
     const std::vector<std::string>& enabledCheatFeatureKeys)
 {
     g_runtimeStopRequested.store(false, std::memory_order_release);
@@ -1179,11 +1226,21 @@ bool startDingooPie(
     printf("DingooPie: AppMain path: %s\n", g_appMainPath.c_str());
     printf("DingooPie: execution backend: %s\n", executionBackendName(options.backend));
 
+    if (enableResourceMonitor)
+    {
+        // The runtime thread will seed app metadata after loadApp() succeeds.
+        emulatorRuntimeEnableResourceMonitor();
+    }
+
     pthread_t tid;
     int ret = pthread_create(&tid, NULL, dingoopieRun, NULL);
     if (ret)
     {
         printf("DingooPie: pthread_create failed\n");
+        if (enableResourceMonitor)
+        {
+            runtimeResourceMonitorSetActive(false);
+        }
         assert(0);
         return false;
     }
@@ -1706,9 +1763,7 @@ bool emulatorRuntimeEnableResourceMonitor(void)
     bool running = g_mainRuntime && loadedApp && !g_currentAppSha256.empty();
     if (running)
     {
-        app_parse_package_resource_indexes(loadedApp);
-        runtimeResourceMonitorReset(g_appLoadPath.c_str(), g_currentAppSha256.c_str());
-        runtimeResourceMonitorSetAppResources(loadedApp);
+        seedResourceMonitorForAppLocked(loadedApp, runtimeResourceMonitorIsCapturing());
     }
     else
     {

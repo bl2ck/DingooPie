@@ -103,7 +103,7 @@ static void applyStartupDebugSettings(EmulatorSettings* settings, bool externalD
 int main(int argc, char* argv[])
 {
     platformBeginHighResolutionTiming();
-    bool externalDebugLog = getenv("DINGOO_PIE_LOG_FILE") != NULL;
+    bool externalDebugLog = emulatorEnvEnabled("DINGOO_PIE_LOG_FILE");
     if (externalDebugLog)
     {
         debugLogOpen();
@@ -187,6 +187,7 @@ int main(int argc, char* argv[])
             selectedAppPath.c_str(),
             options,
             selectedAppSource == STARTUP_APP_RECENT,
+            settings.resourceMonitorAutoOpen,
             emulatorCheatFeatureKeysForApp(settings, selectedAppPath));
         frontendMenuSetGameRunning(gameStarted);
         if (gameStarted)

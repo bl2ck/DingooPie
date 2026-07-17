@@ -8,7 +8,6 @@
 #include "app_loader.h"
 #include "emulated_memory.h"
 #include "input_controls.h"
-#include "pthread.h"
 #include "semaphore.h"
 #include <assert.h>
 #include "framebuffer.h"
@@ -155,7 +154,11 @@ static void profilePrintAndReset(uint64_t now)
         return;
     }
 
-    printf("profile:hle lcd_set=%llu lcd_flip=%llu fb_write=%llu/%llub time=%llu gettick=%llu delay_ms=%llu/%llums udelay=%llu/%lluus ostimedly=%llu/%lluticks wave_can=%llu wave_write=%llu/%llub sem=%llu/%llu/%llu task=%llu sys_event=%llu kbd=%llu dl_res=%llu/%llu/%llub\n",
+    printf("profile:hle lcd_set=%llu lcd_flip=%llu fb_write=%llu/%llub "
+        "time=%llu gettick=%llu delay_ms=%llu/%llums udelay=%llu/%lluus "
+        "ostimedly=%llu/%lluticks wave_can=%llu wave_write=%llu/%llub "
+        "sem=%llu/%llu/%llu task=%llu sys_event=%llu kbd=%llu "
+        "dl_res=%llu/%llu/%llub\n",
         (unsigned long long)s_hleProfile.lcdSetFrame,
         (unsigned long long)s_hleProfile.lcdFlip,
         (unsigned long long)fbWrites,
@@ -724,7 +727,7 @@ static void br__to_locale_ansi(NativeRuntime* runtime)
 }
 
 static uint64_t s_tempTicks = 0;
-// time ms
+// Returns guest OS ticks elapsed since the current app runtime started.
 uint32_t OSTimeGet(void)
 {
     if (s_tempTicks == 0)

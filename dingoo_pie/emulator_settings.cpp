@@ -866,13 +866,22 @@ static bool readTextFileUtf8(const std::string& path, std::string* out)
     {
         return false;
     }
-    fseek(file, 0, SEEK_END);
-    long size = ftell(file);
-    fseek(file, 0, SEEK_SET);
-    if (size <= 0)
+    if (fseek(file, 0, SEEK_END) != 0)
     {
         fclose(file);
-        return size == 0;
+        return false;
+    }
+
+    long size = ftell(file);
+    if (size < 0 || fseek(file, 0, SEEK_SET) != 0)
+    {
+        fclose(file);
+        return false;
+    }
+    if (size == 0)
+    {
+        fclose(file);
+        return true;
     }
     std::vector<char> bytes((size_t)size);
     bool ok = fread(bytes.data(), 1, bytes.size(), file) == bytes.size();
@@ -1255,7 +1264,7 @@ bool emulatorSaveSettings(const EmulatorSettings& settings)
     ok = writeIniString("debug", "resource_monitor_auto_open", settings.resourceMonitorAutoOpen ? "1" : "0", path) && ok;
 #endif
     if (ok && (settings.showDebugConsole || settings.debugProfile ||
-        getenv("DINGOO_PIE_LOG_FILE")))
+        runtimeLogEnvEnabled("DINGOO_PIE_LOG_FILE")))
     {
         emulatorTraceSettings("saved", settings);
     }

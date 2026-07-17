@@ -190,8 +190,8 @@ enum FrontendMenuCommand
     MENU_SETTINGS_DELAY_SCALE_030,
     MENU_SETTINGS_DELAY_SCALE_025,
     MENU_SETTINGS_DELAY_SCALE_020,
-    MENU_SETTINGS_CHEAT_MANAGER,
     MENU_SETTINGS_ENABLE_CHEATS,
+    MENU_SETTINGS_CHEAT_MANAGER,
     MENU_SETTINGS_LANGUAGE_CHINESE,
     MENU_SETTINGS_LANGUAGE_ENGLISH,
     MENU_SETTINGS_RESET,
@@ -1450,6 +1450,10 @@ void frontendMenuSetGameRunning(bool running)
     {
         frontendReleaseIdleResources();
         g_resourceMonitorAutoOpenedForRun = false;
+        if (g_menuSettings && g_menuSettings->resourceMonitorAutoOpen)
+        {
+            emulatorRuntimeEnableResourceMonitor();
+        }
         g_resourceMonitorAutoOpenPending = true;
     }
     else if (changed && !running)
@@ -2612,15 +2616,6 @@ bool frontendMenuHandleCommand(unsigned int commandId)
         frontendMenuRefresh();
         return true;
     }
-    case MENU_SETTINGS_CHEAT_MANAGER:
-#ifdef _WIN32
-        if (g_gameRunning)
-        {
-            cheatManagerOpenWindow(g_menuWindow, g_menuSettings->uiLanguage,
-                g_menuSettings, g_currentAppPath);
-        }
-#endif
-        return true;
     case MENU_SETTINGS_ENABLE_CHEATS:
     {
         CheatRuntimeStatus cheatStatus = cheatRuntimeGetStatus();
@@ -2640,6 +2635,15 @@ bool frontendMenuHandleCommand(unsigned int commandId)
         frontendMenuRefresh();
         return true;
     }
+    case MENU_SETTINGS_CHEAT_MANAGER:
+#ifdef _WIN32
+        if (g_gameRunning)
+        {
+            cheatManagerOpenWindow(g_menuWindow, g_menuSettings->uiLanguage,
+                g_menuSettings, g_currentAppPath);
+        }
+#endif
+        return true;
     case MENU_SETTINGS_LANGUAGE_CHINESE:
     case MENU_SETTINGS_LANGUAGE_ENGLISH:
         g_menuSettings->uiLanguage = commandId == MENU_SETTINGS_LANGUAGE_CHINESE ?

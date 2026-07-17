@@ -117,7 +117,7 @@ Windows 版本信息：
 - `调试 > 调试控制台`：显示调试输出窗口。
 - `调试 > 性能日志`：记录运行时性能统计。
 - `调试 > 打开调试日志`：打开当前实例的调试日志文件。
-- `调试 > 资源监视器`：查看游戏运行中加载的内部资源和外部文件；勾选后会立即打开，之后启动游戏时也会自动打开。
+- `调试 > 资源监视器`：查看游戏运行中加载的内部资源和外部文件；上方/下方列表分别显示已加载和已卸载条目，状态栏显示读取次数和读取字节；勾选后会立即打开，之后启动游戏时也会自动打开。
 - `调试 > 内存搜索器`：搜索 u8/u16/u32 数值，用变化条件缩小候选；选中地址可刷新当前值、写入一次或复制为同名 `.cht` 文件可用的记录。内存搜索器需要游戏运行中才能打开。
 - `调试 > 调试器`：打开运行时检查窗口，显示反汇编、寄存器、内存字节、断点命中次数和写入监视。断点和写入监视只记录命中，不会暂停或单步 CPU。调试器需要游戏运行中才能打开。
 
@@ -254,7 +254,7 @@ The frontend menu is ordered as `File`, `Options`, `Settings`, `Debug`, and
 - `Options > Video`: 1x, 2x, 3x, windowed fullscreen, anti-aliasing, normal, black and white, invert, soft blur, sharpen, vivid, sepia, pixel grid, LCD scanline, light CRT, brightness, contrast, gamma, saturation, minimized behavior, portrait mode, and FPS overlay.
 - `Options > Audio`: master volume, audio buffer, audio effect, and disable audio.
 - `Options > Input`: disable IME, show virtual controls, and input mapping.
-- `Settings`: CPU Backend, CPU Clock, Runtime Speed, Delay Scale, Cheats, Language, and Restore Default Settings.
+- `Settings`: CPU Backend, CPU Clock, Runtime Speed, Delay Scale, Cheats, Cheat Manager, Language, and Restore Default Settings.
 - `Debug`: Debug Console, Performance Log, Open Debug Log, Resource Monitor, Memory Searcher, and Debugger.
 - `Help`: About DingooPie.
 
@@ -271,7 +271,7 @@ game and runtime-state layout. If the game is still at a title or selection
 stage, enter the same scene as the saved state before loading.
 
 `Options > Input > Input Mapping` opens a standalone keyboard/controller mapping
-window. Choose `Set Key` or `Set Pad` on a control row, then press the target
+window. Choose `Set Key` or `Set Gamepad` on a control row, then press the target
 keyboard key, controller button, stick direction, or trigger. Restore defaults
 clears the custom mapping for that device.
 
@@ -318,7 +318,7 @@ an additional diagnostic log.
 - `Debug > Debug Console`: shows the debug output window.
 - `Debug > Performance Log`: records runtime performance counters.
 - `Debug > Open Debug Log`: opens the current debug log file.
-- `Debug > Resource Monitor`: shows internal resources and external files while a game is running; when checked, it opens immediately and automatically for later games.
+- `Debug > Resource Monitor`: shows internal resources and external files while a game is running; upper/lower lists show loaded and unloaded entries, and the status line reports read count and read bytes. When checked, it opens immediately and automatically for later games.
 - `Debug > Memory Searcher`: searches u8/u16/u32 values and narrows candidates by value changes; selected addresses can be refreshed, written once, or copied as `.cht` records. Memory Searcher is available while a game is running.
 - `Debug > Debugger`: opens a live inspection panel with disassembly, registers, memory bytes, PC hit counters, and write hits. PC hits and write hits only record hits and do not pause or single-step the CPU. Debugger is available while a game is running.
 

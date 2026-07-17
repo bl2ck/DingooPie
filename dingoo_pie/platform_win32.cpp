@@ -165,9 +165,13 @@ bool platformProbeAppHeader(const std::string& path)
         return false;
     }
 
-    fseek(file, 0, SEEK_END);
-    long size = ftell(file);
-    bool ok = size > 0 && app_probe_file_header(file, (uint32_t)size);
+    bool ok = false;
+    if (fseek(file, 0, SEEK_END) == 0)
+    {
+        long size = ftell(file);
+        ok = size > 0 && (uint64_t)size <= UINT32_MAX &&
+            app_probe_file_header(file, (uint32_t)size);
+    }
     fclose(file);
     return ok;
 }

@@ -1209,8 +1209,8 @@ static void refreshResourceMonitorWindow(bool force)
     {
         swprintf(status, sizeof(status) / sizeof(status[0]),
             resourceMonitorChinese() ?
-            L"\u5f53\u524d\u6ca1\u6709\u8fd0\u884c\u4e2d\u7684 App\u3002\u4e0a\u4e0b\u5217\u8868\u5206\u522b\u663e\u793a\u5df2\u52a0\u8f7d\u548c\u5df2\u5378\u8f7d\u7684\u8d44\u6e90\u6761\u76ee\u3002" :
-            L"No app is running. The lists show loaded and unloaded resource entries.");
+            L"\u5f53\u524d\u6ca1\u6709\u8fd0\u884c\u4e2d\u7684 App\u3002\u4e0a\u65b9/\u4e0b\u65b9\u5217\u8868\u5206\u522b\u663e\u793a\u5df2\u52a0\u8f7d\u548c\u5df2\u5378\u8f7d\u7684\u8d44\u6e90\u6761\u76ee\u3002" :
+            L"No app is running. The upper/lower lists show loaded and unloaded resource entries.");
     }
     else
     {
@@ -1242,8 +1242,8 @@ static void refreshResourceMonitorWindow(bool force)
                 sizeof(readBytesText) / sizeof(readBytesText[0]));
             swprintf(status, sizeof(status) / sizeof(status[0]),
                 resourceMonitorChinese() ?
-                L"App: %ls | \u5305\u7d22\u5f15: %u | \u8d44\u6e90\u8868: %u | \u5df2\u52a0\u8f7d: %u | \u5df2\u5378\u8f7d: %u | App \u5305/\u5185\u90e8/\u5916\u90e8: %u/%u/%u | \u8bfb\u8c03\u7528: %llu | \u52a0\u8f7d\u5b57\u8282: %ls" :
-                L"App: %ls | package index: %u | table: %u | loaded: %u | unloaded: %u | app/internal/external: %u/%u/%u | read calls: %llu | loaded bytes: %ls",
+                L"App: %ls | \u5305\u7d22\u5f15: %u | \u8d44\u6e90\u8868: %u | \u5df2\u52a0\u8f7d: %u | \u5df2\u5378\u8f7d: %u | App \u5305/\u5185\u90e8/\u5916\u90e8: %u/%u/%u | \u8bfb\u53d6\u6b21\u6570: %llu | \u8bfb\u53d6\u5b57\u8282: %ls" :
+                L"App: %ls | package index: %u | table: %u | loaded: %u | unloaded: %u | app/internal/external: %u/%u/%u | read count: %llu | read bytes: %ls",
                 appName.empty() ? L"(unnamed)" : appName.c_str(),
                 (unsigned)appInfo.packageResourceCount,
                 (unsigned)appInfo.resourceCount,

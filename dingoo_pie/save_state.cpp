@@ -176,10 +176,14 @@ static bool readWholeFile(const std::string& path, std::vector<uint8_t>* out)
     {
         return false;
     }
-    fseek(file, 0, SEEK_END);
+    if (fseek(file, 0, SEEK_END) != 0)
+    {
+        fclose(file);
+        return false;
+    }
+
     long size = ftell(file);
-    fseek(file, 0, SEEK_SET);
-    if (size < 0)
+    if (size < 0 || fseek(file, 0, SEEK_SET) != 0)
     {
         fclose(file);
         return false;

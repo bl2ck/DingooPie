@@ -29,7 +29,7 @@ The menu is ordered as File, Options, Settings, Debug, and Help. Options
 contains Video, Audio, and Input submenus. Video settings are scale, fullscreen,
 anti-aliasing, effect, brightness, contrast, gamma, saturation, minimized
 behavior, portrait mode, and FPS overlay. Audio and input settings follow, then
-runtime settings, the Cheats submenu, UI language, and Debug menu items in this
+runtime settings, the Cheats submenu, Cheat Manager, UI language, and Debug menu items in this
 order:
 Show Debug Console, Performance Log, Open Debug Log, Resource Monitor, Memory
 Searcher, and Debugger. File > Pause Game/Resume Game freezes game execution and
@@ -110,22 +110,24 @@ and `None`.
 The executable is built as a Windows GUI app by default, so no console is
 shown unless `Debug -> Show Debug Console` or `debug.show_console=1` is enabled.
 `Debug -> Open Debug Log` checks the executable directory first and
-shows a localized message if the log file has not been created yet. Performance
-logging and `DINGOO_PIE_LOG_FILE=1` create that file next to `DingooPie.exe`.
-The default file is `DingooPie-debug.log`; concurrent instances in the same
-directory fall back to `DingooPie-debug-<pid>.log`, and the menu opens the
-current instance's file.
+shows a localized message if the log file has not been created yet. The
+persisted Performance Log setting and `DINGOO_PIE_LOG_FILE=1` create that file
+next to `DingooPie.exe`.
+Debug logs are named `DingooPie-debug-<timestamp>-<pid>.log`; the menu opens
+the current instance's file.
 Guest runtime failures also write a separate `DingooPie-crash-<timestamp>-<pid>.log`
 next to the executable. The regular debug log keeps only the failure summary and
 the crash-log file name.
 Structured log lines use compact prefixes and fields, such as
-`profile:frontend loops=60/s` and `debug-log:opened file=DingooPie-debug.log`.
+`profile:frontend loops=60/s` and
+`debug-log:opened file=DingooPie-debug-20260717-120000-1234.log`.
 `Debug -> Resource Monitor` opens the live resource list. It is enabled while a
 game is running, or can be checked before launch to auto-open once the next game
 starts. The persisted setting is `debug.resource_monitor_auto_open`.
-The list shows internal resources and external files in newest-load order.
-First/new loads highlight light green, repeated loads highlight light yellow,
-and closed resources highlight light red before leaving the list.
+The upper list shows loaded entries and the lower list keeps unloaded entries.
+The status line reports read count and read bytes. First/new loads highlight
+light green, repeated loads highlight light yellow, and closed resources
+highlight light red before leaving the list.
 `Debug -> Memory Searcher` searches u8/u16/u32 values, narrows candidates with
 equal, increased, decreased, and unchanged filters, writes a selected address,
 and copies a selected result as a `.cht` record for the matching cheat file.
@@ -144,7 +146,7 @@ Debug menu:
 | --- | --- | --- |
 | Show Debug Console | `debug.show_console=1` | Shows the Win32 debug console for the current run. |
 | Performance Log | `debug.profile=1`, `DINGOO_PIE_PROFILE=1`, `DINGOO_PIE_PROFILE_EMPTY=1`, `DINGOO_PIE_PROFILE_INTERVAL_MS=<ms>` | Enables low-frequency performance counters and optional empty-window output. |
-| Open Debug Log | `DINGOO_PIE_LOG_FILE=1` | Forces creation of `DingooPie-debug-*.log` so the menu has a file to open. |
+| Open Debug Log | `DINGOO_PIE_LOG_FILE=1` | Forces creation of `DingooPie-debug-*.log` so the menu has a file to open; unset or `0` disables it. |
 | Resource Monitor | `debug.resource_monitor_auto_open=1`, `DINGOO_PIE_RESOURCE_MONITOR_AUTOTEST=1` | Persists Resource Monitor auto-open or captures resource events for automated tests. |
 | Memory Searcher | `DINGOO_PIE_MEMORY_SEARCHER_AUTOTEST=1` | Enables Memory Searcher automation hooks. |
 | Debugger | `DINGOO_PIE_DEBUGGER_AUTOTEST=1` | Enables Debugger automation hooks. |
@@ -213,7 +215,7 @@ some games compare that string directly.
 | `DINGOO_PIE_PROFILE` | `1` | Enables the Debug > Performance Log counters without changing `DingooPie.ini`. |
 | `DINGOO_PIE_PROFILE_EMPTY` | `1` | Prints empty profile windows; by default profile logs skip no-activity windows. |
 | `DINGOO_PIE_PROFILE_INTERVAL_MS` | milliseconds | Sets the Performance Log sample interval. |
-| `DINGOO_PIE_LOG_FILE` | `1` | Forces debug-log file creation for Debug > Open Debug Log without enabling the debug console. |
+| `DINGOO_PIE_LOG_FILE` | `1` | Forces debug-log file creation for Debug > Open Debug Log without enabling the debug console; unset or `0` disables it. |
 | `DINGOO_PIE_RESOURCE_MONITOR_AUTOTEST` | `1` | Captures Resource Monitor data during automation without opening the UI. |
 | `DINGOO_PIE_MEMORY_SEARCHER_AUTOTEST` | `1` | Enables Memory Searcher automation hooks. |
 | `DINGOO_PIE_DEBUGGER_AUTOTEST` | `1` | Enables Debugger automation hooks. |

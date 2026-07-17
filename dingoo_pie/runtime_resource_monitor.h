@@ -56,6 +56,7 @@ struct RuntimeResourceMonitorSnapshot
 void runtimeResourceMonitorReset(const char* appPath, const char* appSha256);
 void runtimeResourceMonitorSetActive(bool active);
 bool runtimeResourceMonitorIsCapturing(void);
+bool runtimeResourceMonitorMatchesApp(const char* appPath, const char* appSha256);
 void runtimeResourceMonitorSetAppSha256(const char* appSha256);
 void runtimeResourceMonitorSetAppResources(app* loadedApp);
 void runtimeResourceMonitorRecordOpen(

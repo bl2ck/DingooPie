@@ -329,19 +329,19 @@ static bool app_packed_table_probe(app* inApp, uint32_t base, uint32_t inSize, p
 {
 	// Short-name packed tables have no magic value. Require several independent
 	// signals so arbitrary bytes appended after RAWD are not exposed as files.
-	if (!inApp || !inApp->file_data || base + 2 > inSize)
+	if (!inApp || !inApp->file_data || inSize < 2 || base > inSize - 2)
 	{
 		return false;
 	}
 
 	uint32_t count = app_read_u16(inApp->file_data, base);
-	uint32_t tableEnd = base + 2 + count * APP_PACKED_RECORD_SIZE;
+	uint32_t tableSize = 2 + count * APP_PACKED_RECORD_SIZE;
+	uint64_t tableEnd = (uint64_t)base + tableSize;
 	if (count == 0 || count > 1024 || tableEnd > inSize)
 	{
 		return false;
 	}
 
-	uint32_t tableSize = 2 + count * APP_PACKED_RECORD_SIZE;
 	uint32_t validNames = 0;
 	uint32_t knownNames = 0;
 	uint32_t validOffsets = 0;
@@ -353,7 +353,7 @@ static bool app_packed_table_probe(app* inApp, uint32_t base, uint32_t inSize, p
 		uint32_t rec = base + 2 + i * APP_PACKED_RECORD_SIZE;
 		int nameLen = app_resource_name_len(inApp->file_data + rec, APP_PACKED_NAME_SIZE);
 		uint32_t relOffset = app_read_u32(inApp->file_data, rec + APP_PACKED_NAME_SIZE);
-		if (relOffset >= tableSize && base + relOffset < inSize)
+		if (relOffset >= tableSize && (uint64_t)base + relOffset < inSize)
 		{
 			validOffsets++;
 			if (relOffset >= lastOffset)
@@ -385,7 +385,7 @@ static bool app_packed_table_probe(app* inApp, uint32_t base, uint32_t inSize, p
 
 	out->base = base;
 	out->count = count;
-	out->table_end = tableEnd;
+	out->table_end = (uint32_t)tableEnd;
 	out->score = (int)knownNames;
 	return true;
 }
@@ -414,13 +414,15 @@ static void app_parse_packed_table(app* inApp, const packed_resource_table* tabl
 		uint32_t rec = table->base + 2 + i * APP_PACKED_RECORD_SIZE;
 		int nameLen = app_resource_name_len(inApp->file_data + rec, APP_PACKED_NAME_SIZE);
 		uint32_t relOffset = app_read_u32(inApp->file_data, rec + APP_PACKED_NAME_SIZE);
-		if (nameLen <= 0 || relOffset < (table->table_end - table->base) || table->base + relOffset >= packageEnd)
+		if (nameLen <= 0 ||
+			relOffset < (table->table_end - table->base) ||
+			(uint64_t)table->base + relOffset >= packageEnd)
 		{
 			continue;
 		}
 
 		uint32_t nextOffset = app_packed_next_offset(inApp, table, i, relOffset, packageEnd);
-		if (nextOffset <= relOffset || table->base + nextOffset > packageEnd)
+		if (nextOffset <= relOffset || (uint64_t)table->base + nextOffset > packageEnd)
 		{
 			continue;
 		}
@@ -437,13 +439,19 @@ static void app_parse_packed_resources(app* inApp, uint32_t rawEnd, uint32_t inS
 	uint32_t tableCount = 0;
 	uint32_t scan = ALIGN(rawEnd, APP_PACKED_SCAN_ALIGNMENT);
 
-	for (uint32_t base = scan; base + 2 < inSize && tableCount < APP_PACKED_MAX_TABLES; base += APP_PACKED_SCAN_ALIGNMENT)
+	uint32_t base = scan;
+	while (inSize > 2 && base < inSize - 2 && tableCount < APP_PACKED_MAX_TABLES)
 	{
 		packed_resource_table table;
 		if (app_packed_table_probe(inApp, base, inSize, &table))
 		{
 			tables[tableCount++] = table;
 		}
+		if (base > UINT32_MAX - APP_PACKED_SCAN_ALIGNMENT)
+		{
+			break;
+		}
+		base += APP_PACKED_SCAN_ALIGNMENT;
 	}
 
 	for (uint32_t i = 0; i < tableCount; ++i)
@@ -898,6 +906,11 @@ static const char* app_resource_basename(const char* name)
 
 app* app_create(FILE* tempFile, uint32_t inSize)
 {
+	if (!tempFile || inSize == 0)
+	{
+		return NULL;
+	}
+
 	int i = 0;
 	app* tempApp = (app*)malloc(sizeof(app));
 	if (!tempApp)
@@ -911,11 +924,16 @@ app* app_create(FILE* tempFile, uint32_t inSize)
 	tempApp->file_data = (uint8_t*)malloc(inSize);
 	if (!tempApp->file_data)
 	{
-		assert(0);
+		app_delete(tempApp);
+		return NULL;
 	}
-	fseek(tempFile, 0, SEEK_SET);
-	fread(tempApp->file_data, inSize, 1, tempFile);
-	fseek(tempFile, 0, SEEK_SET);
+	if (fseek(tempFile, 0, SEEK_SET) != 0 ||
+		fread(tempApp->file_data, inSize, 1, tempFile) != 1 ||
+		fseek(tempFile, 0, SEEK_SET) != 0)
+	{
+		app_delete(tempApp);
+		return NULL;
+	}
 
 	_app_ccdl tempCCDL;
 	_app_impt tempIMPT;
@@ -1040,39 +1058,46 @@ app* app_create(FILE* tempFile, uint32_t inSize)
 	tempApp->prog_size = tempRAWD.prog_size;
 	tempApp->package_resource_scan_start = tempRAWD.offset + tempRAWD.size;
 
-	if (memcmp(tempERPT.ident, "ERPT", 4) == 0 && tempERPT.offset + 4 <= inSize)
+	if (memcmp(tempERPT.ident, "ERPT", 4) == 0 && inSize >= 4 && tempERPT.offset <= inSize - 4)
 	{
 		uint32_t count = app_read_u32(tempApp->file_data, tempERPT.offset);
 		const uint32_t recordSize = 0x1fc;
 		const uint32_t nameSize = 0x1f4;
-		uint32_t tableEnd = tempERPT.offset + 4 + count * recordSize;
-		if (count > 0 && count < 4096 && tableEnd <= inSize)
+		if (count > 0 && count < 4096)
 		{
-			for (i = 0; i < (int)count; ++i)
+			uint64_t tableEnd = (uint64_t)tempERPT.offset + 4u + (uint64_t)count * recordSize;
+			if (tableEnd <= inSize)
 			{
-				uint32_t rec = tempERPT.offset + 4 + i * recordSize;
-				uint32_t size = app_read_u32(tempApp->file_data, rec + nameSize);
-				uint32_t relOffset = app_read_u32(tempApp->file_data, rec + nameSize + 4);
-				uint32_t dataOffset = tempERPT.offset + relOffset;
-				char* name = (char*)(tempApp->file_data + rec);
-				size_t nameLen = strnlen(name, nameSize);
-				if (nameLen == 0 || dataOffset > inSize || size > inSize - dataOffset)
+				for (i = 0; i < (int)count; ++i)
 				{
-					continue;
+					uint32_t rec = tempERPT.offset + 4 + i * recordSize;
+					uint32_t size = app_read_u32(tempApp->file_data, rec + nameSize);
+					uint32_t relOffset = app_read_u32(tempApp->file_data, rec + nameSize + 4);
+					if (relOffset > UINT32_MAX - tempERPT.offset)
+					{
+						continue;
+					}
+					uint32_t dataOffset = tempERPT.offset + relOffset;
+					char* name = (char*)(tempApp->file_data + rec);
+					size_t nameLen = strnlen(name, nameSize);
+					if (nameLen == 0 || dataOffset > inSize || size > inSize - dataOffset)
+					{
+						continue;
+					}
+
+					char nameBuf[0x1f5];
+					memset(nameBuf, 0x00, sizeof(nameBuf));
+					memcpy(nameBuf, name, nameLen);
+					app_resource_append(tempApp, nameBuf, dataOffset, size, 0x40);
+					if (app_trace_resources_enabled())
+					{
+						printf("app-loader: trace-resource erpt name=%s offset=0x%08x size=0x%08x xor=0x40\n",
+							nameBuf, dataOffset, size);
+					}
 				}
 
-				char nameBuf[0x1f5];
-				memset(nameBuf, 0x00, sizeof(nameBuf));
-				memcpy(nameBuf, name, nameLen);
-				app_resource_append(tempApp, nameBuf, dataOffset, size, 0x40);
-				if (app_trace_resources_enabled())
-				{
-					printf("app-loader: trace-resource erpt name=%s offset=0x%08x size=0x%08x xor=0x40\n",
-						nameBuf, dataOffset, size);
-				}
+				printf("app-loader: erpt resources=%u\n", tempApp->resource_count);
 			}
-
-			printf("app-loader: erpt resources=%u\n", tempApp->resource_count);
 		}
 	}
 
@@ -1131,7 +1156,11 @@ void app_delete(app* inApp)
 	{
 		for (i = 0; i < inApp->import_count; i++)
 		{
-			free(inApp->import_data[i]);
+			if (inApp->import_data[i])
+			{
+				free(inApp->import_data[i]->name);
+				free(inApp->import_data[i]);
+			}
 		}
 		free(inApp->import_data);
 	}
@@ -1140,7 +1169,11 @@ void app_delete(app* inApp)
 	{
 		for (i = 0; i < inApp->export_count; i++)
 		{
-			free(inApp->export_data[i]);
+			if (inApp->export_data[i])
+			{
+				free(inApp->export_data[i]->name);
+				free(inApp->export_data[i]);
+			}
 		}
 		free(inApp->export_data);
 	}

@@ -105,12 +105,13 @@ enum EmulatorRuntimeMemorySearchFilter
 };
 
 // Starts the guest app on a background native runtime thread.
-// If clearRecentOnStartupFailure is true, an initialization failure clears
-// recent.last_app only when it still points at this app.
+// clearRecentOnStartupFailure only clears recent.last_app if it still points here.
+// enableResourceMonitor arms capture before the runtime thread starts.
 bool startDingooPie(
     const char* appPath,
     const EmulatorOptions& options,
     bool clearRecentOnStartupFailure,
+    bool enableResourceMonitor,
     const std::vector<std::string>& enabledCheatFeatureKeys);
 void stopDingooPie(void);
 void suppressCurrentRunRecentAppSave(void);

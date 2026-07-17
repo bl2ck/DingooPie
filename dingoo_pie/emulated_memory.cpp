@@ -311,6 +311,12 @@ void* my_mallocExt(uint32_t len) {
     {
         return NULL;
     }
+    if (len > UINT32_MAX - 15)
+    {
+        printf("my_mallocExt invalid memory request: len %08x\n", len);
+        return NULL;
+    }
+
     p = my_malloc(len + 8);
     if (p)
     {
@@ -493,7 +499,7 @@ void* toHostPtr(uint32_t addr)
     }
 
     // VM stack and its cached alias.
-    if (addr <= VM_STACK_UPPER_ADDRESS && addr > stackBegin)
+    if (addr >= stackBegin && addr < VM_STACK_UPPER_ADDRESS)
     {
         void* p = (void*)((size_t)addr - (size_t)stackBegin + (size_t)s_StackMemPtr);
         return p;

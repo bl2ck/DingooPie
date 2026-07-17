@@ -339,6 +339,17 @@ bool runtimeResourceMonitorIsCapturing(void)
     return resourceMonitorCaptureEnabled();
 }
 
+bool runtimeResourceMonitorMatchesApp(const char* appPath, const char* appSha256)
+{
+    const char* path = appPath ? appPath : "";
+    const char* sha256 = appSha256 ? appSha256 : "";
+    pthread_mutex_lock(&g_resourceMonitorMutex);
+    bool matches = g_resourceMonitorSnapshot.appPath == path &&
+        g_resourceMonitorSnapshot.appSha256 == sha256;
+    pthread_mutex_unlock(&g_resourceMonitorMutex);
+    return matches;
+}
+
 void runtimeResourceMonitorSetAppSha256(const char* appSha256)
 {
     pthread_mutex_lock(&g_resourceMonitorMutex);

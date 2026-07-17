@@ -116,7 +116,10 @@ static void fsysProfileTick(void)
         return;
     }
 
-    printf("profile:fsys fopen=%llu host=%llu resource=%llu cached=%llu fread=%llu/%llub fseek=%llu fast=%llu/%llub/%llu slow=%llu/%llub/%llu host_io=%llu/%llub/%llu resource_io=%llu/%llub/%llu ftell=%llu feof=%llu fclose=%llu\n",
+    printf("profile:fsys fopen=%llu host=%llu resource=%llu cached=%llu "
+        "fread=%llu/%llub fseek=%llu fast=%llu/%llub/%llu "
+        "slow=%llu/%llub/%llu host_io=%llu/%llub/%llu "
+        "resource_io=%llu/%llub/%llu ftell=%llu feof=%llu fclose=%llu\n",
         (unsigned long long)s_fsys_profile.fopenCalls,
         (unsigned long long)s_fsys_profile.hostOpens,
         (unsigned long long)s_fsys_profile.resourceOpens,
@@ -826,6 +829,28 @@ void fsys_record_load_to_guest(
     }
 }
 
+static bool fsys_checked_read_size(uint32_t size, uint32_t count, uint32_t* requested)
+{
+    if (!requested)
+    {
+        return false;
+    }
+
+    if (size == 0 || count == 0)
+    {
+        *requested = 0;
+        return true;
+    }
+
+    if (count > UINT32_MAX / size)
+    {
+        return false;
+    }
+
+    *requested = size * count;
+    return true;
+}
+
 uint32_t vm_fread(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
 {
     s_fsys_profile.freadCalls++;
@@ -836,12 +861,17 @@ uint32_t vm_fread(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
         return 0;
     }
 
+    uint32_t requested = 0;
+    if (!fsys_checked_read_size(size, count, &requested))
+    {
+        return (uint32_t)-1;
+    }
+
     vfile_entry_t* entry = &s_FILE_Map[stream];
     if (entry->type == vfile_type_host)
     {
         if (entry->ownedData)
         {
-            uint32_t requested = size * count;
             uint32_t available = (entry->offset < entry->size) ? (entry->size - entry->offset) : 0;
             uint32_t bytesToRead = requested < available ? requested : available;
             if (bytesToRead > 0)
@@ -894,7 +924,6 @@ uint32_t vm_fread(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
 
     if (entry->type == vfile_type_resource)
     {
-        uint32_t requested = size * count;
         uint32_t available = (entry->offset < entry->size) ? (entry->size - entry->offset) : 0;
         uint32_t bytesToRead = requested < available ? requested : available;
         if (bytesToRead > 0)
@@ -1207,8 +1236,8 @@ bool fsys_read_cached(uint32_t stream, uint32_t size, uint32_t count, const uint
         return false;
     }
 
-    uint32_t requested = size * count;
-    if (size != 0 && requested / size != count)
+    uint32_t requested = 0;
+    if (!fsys_checked_read_size(size, count, &requested))
     {
         return false;
     }
