@@ -36,7 +36,6 @@ uint32_t Origin_LG_mem_len;
 void* LG_mem_end;
 uint32_t LG_mem_left;
 static std::recursive_mutex g_vmHeapMutex;
-static const uint32_t kVmAllocationHeaderXor = 0xd19a6e5bu;
 
 #define realLGmemSize(x) (((x) + 7) & (0xfffffff8))
 
@@ -324,11 +323,41 @@ void* my_mallocExt(uint32_t len) {
     if (p)
     {
         ((uint32_t*)p)[0] = len;
-        ((uint32_t*)p)[1] = len ^ kVmAllocationHeaderXor;
         void* userPtr = (void*)((uint8_t*)p + 8);
         return userPtr;
     }
     return p;
+}
+
+static bool allocationRangeIsAllocatedLocked(uint64_t blockOffset, uint64_t blockLength)
+{
+    uint64_t blockEnd = blockOffset + blockLength;
+    size_t nextOffset = LG_mem_free.next;
+    size_t remainingNodes = LG_mem_len / 8u + 1u;
+    while (nextOffset < LG_mem_len && remainingNodes-- != 0)
+    {
+        if ((nextOffset & 7u) != 0 ||
+            nextOffset > LG_mem_len - sizeof(LG_mem_free_t))
+        {
+            return false;
+        }
+
+        const LG_mem_free_t* freeBlock =
+            (const LG_mem_free_t*)((const uint8_t*)LG_mem_base + nextOffset);
+        uint64_t freeLength = freeBlock->len;
+        uint64_t freeEnd = (uint64_t)nextOffset + freeLength;
+        if (freeLength == 0 || freeEnd > LG_mem_len ||
+            (blockOffset < freeEnd && nextOffset < blockEnd))
+        {
+            return false;
+        }
+        if (freeBlock->next <= nextOffset || freeBlock->next > LG_mem_len)
+        {
+            return false;
+        }
+        nextOffset = freeBlock->next;
+    }
+    return nextOffset == LG_mem_len;
 }
 
 static bool trackedAllocationLengthLocked(void* p, uint32_t* outLength)
@@ -347,15 +376,15 @@ static bool trackedAllocationLengthLocked(void* p, uint32_t* outLength)
     }
 
     uint32_t length = *(uint32_t*)(userAddress - 8u);
-    uint32_t check = *(uint32_t*)(userAddress - 4u);
-    if (length == 0 || length > UINT32_MAX - 15 ||
-        check != (length ^ kVmAllocationHeaderXor))
+    if (length == 0 || length > UINT32_MAX - 15)
     {
         return false;
     }
     uint64_t blockOffset = (uint64_t)(userAddress - heapBegin) - 8u;
     uint64_t blockLength = realLGmemSize((uint64_t)length + 8u);
-    if (blockOffset > LG_mem_len || blockLength > LG_mem_len - blockOffset)
+    if ((blockOffset & 7u) != 0 || blockOffset > LG_mem_len ||
+        blockLength > LG_mem_len - blockOffset ||
+        !allocationRangeIsAllocatedLocked(blockOffset, blockLength))
     {
         return false;
     }
