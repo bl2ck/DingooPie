@@ -27,6 +27,14 @@ struct CompatRuntimeExceptionExitRule
     const char* label;
 };
 
+struct CompatFileOpenExitRule
+{
+    const char* appSha256;
+    uint32_t returnAddress;
+    bool requiresSuccessfulSaveWrite;
+    const char* label;
+};
+
 struct CompatProfile
 {
     const char* appSha256;
@@ -96,6 +104,19 @@ static const CompatTaskStopExitRule kTaskStopExitRules[] =
 
     // ZhaoyunZhuan.app: quit-confirm path stops a subtask through OSTaskDel at this return address.
     { "3A59BD1C0DABFF74C8CCED69F50E3E95BC74CE0EA613AD6BE9D77F48D9967ECE", 0x80a09aa0u, COMPAT_TASK_STOP_EXIT_ALWAYS, "ZhaoyunZhuan task-stop exit" },
+};
+
+static const CompatFileOpenExitRule kFileOpenExitRules[] =
+{
+    // Dikeshe.app first probes its missing score through fopenW. Only promote
+    // the later corrupt-name failure after the score has been saved.
+    { "22531CCED426F19232613C8235B44A3DD4CDECDA18CD6A517044DC05160C5D39",
+        0, true, "Dikeshe suspicious file-open exit" },
+
+    // QiYeZhengShiBan.app ends its confirmed quit path with a corrupt wide
+    // filename. The startup music prompt does not execute this file open.
+    { "AF681C338A9932C98A3B450D4391C43D13747F1DFD937232AE38BEDB44359BF0",
+        0x80a03e18u, false, "QiYe suspicious file-open exit" },
 };
 
 static const CompatRuntimeExceptionExitRule kRuntimeExceptionExitRules[] =
@@ -203,6 +224,28 @@ CompatGuestExitDecision compatRuntimeExceptionGuestExitDecision(const char* appS
             shaEquals(appSha256, kRuntimeExceptionExitRules[i].appSha256))
         {
             return makeGuestExitDecision(true, true, kRuntimeExceptionExitRules[i].label);
+        }
+    }
+    return makeGuestExitDecision(false, false, NULL);
+}
+
+CompatGuestExitDecision compatFileOpenFailureGuestExitDecision(
+    const char* appSha256, uint32_t returnAddress, bool fileOpenFailed,
+    bool successfulSaveWrite)
+{
+    if (!fileOpenFailed)
+    {
+        return makeGuestExitDecision(false, false, NULL);
+    }
+
+    for (size_t i = 0; i < sizeof(kFileOpenExitRules) / sizeof(kFileOpenExitRules[0]); ++i)
+    {
+        const CompatFileOpenExitRule& rule = kFileOpenExitRules[i];
+        if (shaEquals(appSha256, rule.appSha256) &&
+            (rule.returnAddress == 0 || rule.returnAddress == returnAddress) &&
+            (!rule.requiresSuccessfulSaveWrite || successfulSaveWrite))
+        {
+            return makeGuestExitDecision(true, true, rule.label);
         }
     }
     return makeGuestExitDecision(false, false, NULL);

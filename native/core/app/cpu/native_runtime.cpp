@@ -1647,6 +1647,11 @@ RuntimeError nativeRuntimeRequestStop(NativeRuntime* runtime)
     return RUNTIME_OK;
 }
 
+bool nativeRuntimeStopRequested(NativeRuntime* runtime)
+{
+    return runtime && runtime->stopRequested.load(std::memory_order_acquire);
+}
+
 RuntimeError nativeRuntimeStart(NativeRuntime* runtime, uint64_t begin, uint64_t until, uint64_t timeout, size_t count)
 {
     if (!runtime)

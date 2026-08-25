@@ -69,6 +69,7 @@ static std::atomic<uint32_t> g_irjitThrottleMaxLagUs(100000);
 static std::atomic<uint64_t> g_throttleStartTicks(0);
 static std::atomic<uint64_t> g_throttleStartUs(0);
 static std::atomic<bool> g_runtimeStopRequested(false);
+static std::atomic<bool> g_jitCacheClearRequested(false);
 static uint64_t g_ppssppThrottleSleepMs = 0;
 static uint64_t g_ppssppLastProfileTicks = 0;
 static uint64_t g_ppssppHookCalls = 0;
@@ -1459,7 +1460,16 @@ void ppssppShimSyncStateFromRuntime(NativeRuntime* runtime)
 
 void ppssppShimClearJitCache(NativeRuntime* runtime)
 {
-    if (runtime && runtime == g_ppssppRuntime && MIPSComp::jit)
+    if (runtime && runtime == g_ppssppRuntime)
+    {
+        g_jitCacheClearRequested.store(true, std::memory_order_release);
+    }
+}
+
+static void processPendingJitCacheClear(void)
+{
+    if (g_jitCacheClearRequested.exchange(false, std::memory_order_acq_rel) &&
+        MIPSComp::jit)
     {
         MIPSComp::jit->ClearCache();
         clearEmuHackOriginals();
@@ -1954,6 +1964,7 @@ void ppssppShimAttachRuntime(NativeRuntime* runtime)
     clearEmuHackOriginals();
     g_ppssppRuntime = runtime;
     g_runtimePauseRequested.store(false, std::memory_order_release);
+    g_jitCacheClearRequested.store(false, std::memory_order_release);
     g_fastFramebufferDirectEnabled = ppssppShimParseEnabledEnv("DINGOO_PIE_IRJIT_FASTMEM_FB", true);
     rebuildFastMemoryRegions(runtime);
     initVfpuOrder();
@@ -2028,6 +2039,7 @@ void ppssppShimDetachRuntime(NativeRuntime* runtime)
     g_runtimeBeginTicks = 0;
     g_runtimeMaxTicks = 0;
     g_runtimePauseRequested.store(false, std::memory_order_release);
+    g_jitCacheClearRequested.store(false, std::memory_order_release);
     g_throttleStartTicks.store(0);
     g_throttleStartUs.store(0);
     memset(&g_fastHleAddresses, 0x00, sizeof(g_fastHleAddresses));
@@ -2077,6 +2089,7 @@ bool ppssppShimWaitForPauseResume(NativeRuntime* runtime)
     {
         syncRuntimeStateToPpsspp();
     }
+    processPendingJitCacheClear();
     if (g_runtimeStopRequested.load(std::memory_order_acquire))
     {
         coreState = CORE_POWERDOWN;
@@ -3061,6 +3074,7 @@ bool IsScheduled(int)
 void Advance()
 {
     g_ppssppAdvanceCalls++;
+    processPendingJitCacheClear();
     if (g_runtimeStopRequested.load(std::memory_order_acquire))
     {
         coreState = CORE_POWERDOWN;

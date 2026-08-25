@@ -197,8 +197,13 @@ RuntimeError ppssppIrJitStart(NativeRuntime* runtime, uint64_t begin, uint64_t u
         }
         for (;;)
         {
+            if (nativeRuntimeStopRequested(runtime))
+            {
+                break;
+            }
             jit.RunLoopUntil(maxTicks ? beginTicks + maxTicks : 0);
-            if (!ppssppShimWaitForPauseResume(runtime))
+            if (nativeRuntimeStopRequested(runtime) ||
+                !ppssppShimWaitForPauseResume(runtime))
             {
                 break;
             }

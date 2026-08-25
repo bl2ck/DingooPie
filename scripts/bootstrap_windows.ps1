@@ -59,7 +59,9 @@ function New-Directory($Path) {
 
 function Copy-CacheIfAvailable($Name, $Destination) {
     $workspaceCache = Join-Path $WorkspaceRoot "downloads\$Name"
-    if ((Test-Path -LiteralPath $workspaceCache) -and (!(Test-Path -LiteralPath $Destination) -or $Force)) {
+    $shouldCopy = (Test-Path -LiteralPath $workspaceCache) -and
+        (!(Test-Path -LiteralPath $Destination) -or $Force)
+    if ($shouldCopy) {
         Copy-Item -LiteralPath $workspaceCache -Destination $Destination -Force
     }
 }
@@ -106,7 +108,9 @@ function Get-Dependency($Spec) {
 
 function Expand-Zip($Archive, $Destination) {
     if ((Test-Path -LiteralPath $Destination) -and !$Force) {
-        $existing = Get-ChildItem -LiteralPath $Destination -Force -ErrorAction SilentlyContinue | Select-Object -First 1
+        $existing = Get-ChildItem -LiteralPath $Destination -Force `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
         if ($existing) {
             return
         }
@@ -189,7 +193,9 @@ function Install-ZipSourceTree {
                 }
         )
         if ($candidates.Count -ne 1) {
-            throw "Expected one source directory matching '$DirectoryPattern' in $Archive; found $($candidates.Count)."
+            $candidateCount = $candidates.Count
+            throw "Expected one source directory matching '$DirectoryPattern' " +
+                "in $Archive; found $candidateCount."
         }
 
         Move-Item -LiteralPath $candidates[0].FullName -Destination $Destination
@@ -247,7 +253,9 @@ function Apply-PatchIfNeeded($RepoRoot, $PatchFile) {
     $marker = Join-Path $RepoRoot '.dingoopie-patch-applied'
     if ((Test-DingooPatchApplied $RepoRoot) -and !$Force) {
         if (!(Test-Path -LiteralPath $marker)) {
-            Set-Content -LiteralPath $marker -Value "Verified $(Split-Path -Leaf $PatchFile) on $(Get-Date -Format o)"
+            $markerValue = "Verified $(Split-Path -Leaf $PatchFile) " +
+                "on $(Get-Date -Format o)"
+            Set-Content -LiteralPath $marker -Value $markerValue
         }
         return
     }
@@ -276,7 +284,9 @@ function Apply-PatchIfNeeded($RepoRoot, $PatchFile) {
         if (!(Test-DingooPatchApplied $RepoRoot)) {
             throw "Patch sentinel check failed after applying: $PatchFile"
         }
-        Set-Content -LiteralPath $marker -Value "Applied $(Split-Path -Leaf $PatchFile) on $(Get-Date -Format o)"
+        $markerValue = "Applied $(Split-Path -Leaf $PatchFile) " +
+            "on $(Get-Date -Format o)"
+        Set-Content -LiteralPath $marker -Value $markerValue
     } finally {
         Pop-Location
     }

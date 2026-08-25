@@ -479,7 +479,16 @@ bool vmHeapRestoreSnapshot(const VmHeapSnapshot& snapshot)
 extern uint32_t VM_LCD_FB_ADDRESS;
 extern uint8_t s_LcdFrameBufferPtr[VM_LCD_FB_SIZE];
 
-void* toHostPtr(uint32_t addr)
+static bool guestRangeFits(uint32_t addr, uint32_t size, uint32_t base, uint32_t regionSize)
+{
+    uint64_t rangeBegin = addr;
+    uint64_t rangeEnd = rangeBegin + (size ? size : 1u);
+    uint64_t regionBegin = base;
+    uint64_t regionEnd = regionBegin + regionSize;
+    return rangeBegin >= regionBegin && rangeBegin < regionEnd && rangeEnd <= regionEnd;
+}
+
+void* toHostPtrRange(uint32_t addr, uint32_t size)
 {
     uint32_t heapAlias = s_Heap_Begin_Address & 0x1fffffff;
     uint32_t stackBegin = VM_STACK_UPPER_ADDRESS - VM_STACK_SIZE;
@@ -487,36 +496,36 @@ void* toHostPtr(uint32_t addr)
     uint32_t appAlias = VM_APP_BEGIN_ADDRESS & 0x1fffffff;
 
     // VM heap and its cached alias.
-    if (addr >= s_Heap_Begin_Address && addr < s_Heap_Begin_Address + VM_HEAP_SIZE)
+    if (guestRangeFits(addr, size, s_Heap_Begin_Address, VM_HEAP_SIZE))
     {
         void* p = (void*)((size_t)addr - (size_t)s_Heap_Begin_Address + (size_t)s_HeapMemPtr);
         return p;
     }
-    if (heapAlias != s_Heap_Begin_Address && addr >= heapAlias && addr < heapAlias + VM_HEAP_SIZE)
+    if (heapAlias != s_Heap_Begin_Address && guestRangeFits(addr, size, heapAlias, VM_HEAP_SIZE))
     {
         void* p = (void*)((size_t)addr - (size_t)heapAlias + (size_t)s_HeapMemPtr);
         return p;
     }
 
     // VM stack and its cached alias.
-    if (addr >= stackBegin && addr < VM_STACK_UPPER_ADDRESS)
+    if (guestRangeFits(addr, size, stackBegin, VM_STACK_SIZE))
     {
         void* p = (void*)((size_t)addr - (size_t)stackBegin + (size_t)s_StackMemPtr);
         return p;
     }
-    if (stackAlias != stackBegin && addr >= stackAlias && addr < stackAlias + VM_STACK_SIZE)
+    if (stackAlias != stackBegin && guestRangeFits(addr, size, stackAlias, VM_STACK_SIZE))
     {
         void* p = (void*)((size_t)addr - (size_t)stackAlias + (size_t)s_StackMemPtr);
         return p;
     }
 
     // Loaded app image and its cached alias.
-    if (addr >= VM_APP_BEGIN_ADDRESS && addr < VM_APP_BEGIN_ADDRESS + s_App_Prog_Size)
+    if (guestRangeFits(addr, size, VM_APP_BEGIN_ADDRESS, s_App_Prog_Size))
     {
         void* p = (void*)((size_t)addr - (size_t)VM_APP_BEGIN_ADDRESS + (size_t)s_App_Prog_Ptr);
         return p;
     }
-    if (appAlias != VM_APP_BEGIN_ADDRESS && addr >= appAlias && addr < appAlias + s_App_Prog_Size)
+    if (appAlias != VM_APP_BEGIN_ADDRESS && guestRangeFits(addr, size, appAlias, s_App_Prog_Size))
     {
         void* p = (void*)((size_t)addr - (size_t)appAlias + (size_t)s_App_Prog_Ptr);
         return p;
@@ -525,11 +534,66 @@ void* toHostPtr(uint32_t addr)
     void* framebufferPtr = NULL;
     if (framebufferHostPointer(addr, &framebufferPtr))
     {
-        return framebufferPtr;
+        size_t framebufferOffset = (size_t)framebufferPtr - (size_t)s_LcdFrameBufferPtr;
+        uint64_t framebufferEnd = (uint64_t)framebufferOffset + (size ? size : 1u);
+        if (framebufferOffset < VM_LCD_FB_SIZE && framebufferEnd <= VM_LCD_FB_SIZE)
+        {
+            return framebufferPtr;
+        }
     }
 
-    printf("ERR: toHostPtr 0x%08x\n", addr);
+    printf("memory: failed to translate VM address address=0x%08x size=%u\n", addr, size);
     return NULL;
+}
+
+void* toHostPtr(uint32_t addr)
+{
+    return toHostPtrRange(addr, 1);
+}
+
+static uint32_t hostRegionRemaining(void* ptr, void* base, uint32_t size)
+{
+    size_t pointerValue = (size_t)ptr;
+    size_t baseValue = (size_t)base;
+    if (!ptr || !base || pointerValue < baseValue || pointerValue >= baseValue + size)
+    {
+        return 0;
+    }
+    return size - (uint32_t)(pointerValue - baseValue);
+}
+
+uint32_t toHostPtrRemaining(uint32_t addr, void** out)
+{
+    if (!out)
+    {
+        return 0;
+    }
+    *out = toHostPtr(addr);
+    if (!*out)
+    {
+        return 0;
+    }
+
+    uint32_t remaining = hostRegionRemaining(*out, s_HeapMemPtr, VM_HEAP_SIZE);
+    if (!remaining) remaining = hostRegionRemaining(*out, s_StackMemPtr, VM_STACK_SIZE);
+    if (!remaining) remaining = hostRegionRemaining(*out, s_App_Prog_Ptr, s_App_Prog_Size);
+    if (!remaining) remaining = hostRegionRemaining(*out, s_LcdFrameBufferPtr, VM_LCD_FB_SIZE);
+    if (!remaining)
+    {
+        *out = NULL;
+    }
+    return remaining;
+}
+
+const char* toHostString(uint32_t addr)
+{
+    void* ptr = NULL;
+    uint32_t remaining = toHostPtrRemaining(addr, &ptr);
+    if (!remaining || !memchr(ptr, 0, remaining))
+    {
+        return NULL;
+    }
+    return (const char*)ptr;
 }
 
 uint32_t toVmPtr(void* ptr)

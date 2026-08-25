@@ -76,8 +76,11 @@ About.
 
 - `app_loader.*`: Dingoo Technology `.app` container parsing and app resource metadata.
 - `app_paths.*`: path normalization and app file-name helpers.
-- `emulator_core.*`: app bootstrapping, memory mapping, app identity logging,
+- `emulator_core.*`: app bootstrapping, app identity logging,
   and fatal runtime diagnostics.
+- `app_framebuffer_mapping.*`: APP runtime framebuffer alias mapping. The
+  frontend framebuffer module owns only pixels, snapshots, pacing, and
+  presentation-facing state.
 - `emulator_options.*`: command-line and environment backend options.
 - `emulator_settings.*`: frontend settings, optional INI persistence, and
   environment synchronization.
@@ -95,7 +98,7 @@ About.
 - `task_scheduler.*`: Dingoo task APIs backed by host threads.
 - `input_controls.*`, `input_state.h`: host keyboard/mouse/virtual controls to
   Dingoo A320 and Gemei X760+ button state.
-- `framebuffer.*`, `sdl_frontend.*`: framebuffer snapshots, SDL presentation,
+- `framebuffer.*`, `sdl_frontend.*`: framebuffer storage and snapshots, SDL presentation,
   menus, overlays, filters, and screenshots.
 - `resource_monitor_ui.*`, `runtime_resource_monitor.*`: Resource Monitor UI,
   runtime resource-load snapshots, and transient list highlight state.
@@ -104,6 +107,11 @@ About.
   and optional Win32 debug console.
 - `platform_win32.*`: Windows file picker, UTF-8/UTF-16 conversion, and working
   directory setup.
+
+`scripts/check_core_dependencies.ps1` enforces the APP/CC/shared/frontend
+dependency direction before each Release build. The shared file-system header
+retains one explicit legacy APP package dependency until the APP and CC package
+parsers can be unified without dropping PC resource compatibility behavior.
 
 ## Compatibility Policy
 

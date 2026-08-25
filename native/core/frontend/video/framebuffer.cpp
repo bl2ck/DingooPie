@@ -1,7 +1,6 @@
 #include "framebuffer.h"
 #include "cheat_runtime.h"
 #include "pause_gate.h"
-#include "runtime_debug.h"
 
 #include <atomic>
 #include <chrono>
@@ -305,39 +304,24 @@ static void maybeDumpPresentedFrame(const uint8_t* pixels, uint32_t frameNumber)
     printf("framebuffer: dumped frame %u to %s\n", frameNumber, path);
 }
 
-int InitFb(NativeRuntime* runtime)
+void framebufferReset(void)
 {
-    for (size_t i = 0; i < sizeof(kLcdFramebufferAliases) / sizeof(kLcdFramebufferAliases[0]); ++i)
-    {
-        bool duplicate = false;
-        for (size_t j = 0; j < i; ++j)
-        {
-            if (kLcdFramebufferAliases[j] == kLcdFramebufferAliases[i])
-            {
-                duplicate = true;
-                break;
-            }
-        }
-        if (duplicate)
-        {
-            continue;
-        }
-
-        RuntimeError err = nativeRuntimeMapMemory(runtime, kLcdFramebufferAliases[i],
-            sizeof(s_LcdFrameBufferPtr), RUNTIME_PROT_ALL, s_LcdFrameBufferPtr);
-        if (err)
-        {
-            printf("framebuffer: failed to map s_LcdFrameBufferPtr alias 0x%08x: %u (%s)\n",
-                kLcdFramebufferAliases[i], err, nativeRuntimeErrorString(err));
-            return -1;
-        }
-    }
-
-    memcpy(s_presentedFrameBuffers[0], s_LcdFrameBufferPtr, sizeof(s_presentedFrameBuffers[0]));
+    memset(s_LcdFrameBufferPtr, 0, sizeof(s_LcdFrameBufferPtr));
+    memset(s_presentedFrameBuffers, 0, sizeof(s_presentedFrameBuffers));
     s_presentedFrameIndex.store(0, std::memory_order_release);
     s_SubmittedFrameCount.store(0, std::memory_order_release);
     resetFramebufferPacing();
-    return 0;
+}
+
+size_t framebufferGuestAliasCount(void)
+{
+    return sizeof(kLcdFramebufferAliases) / sizeof(kLcdFramebufferAliases[0]);
+}
+
+uint32_t framebufferGuestAlias(size_t index)
+{
+    return index < framebufferGuestAliasCount() ?
+        kLcdFramebufferAliases[index] : 0;
 }
 
 uint32_t _lcd_get_frame(void)

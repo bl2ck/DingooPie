@@ -1,18 +1,16 @@
 #ifndef DINGOO_PIE_FRAMEBUFFER_H
 #define DINGOO_PIE_FRAMEBUFFER_H
 
+#include <stddef.h>
 #include <stdint.h>
-#include <string.h>
-#include "native_runtime.h"
 #include "shared/config/runtime_constants.h"
-#include "app/runtime/app_loader.h"
 
 // 320x240 RGB565 framebuffer, rounded up to a 4 KB page boundary.
 #define VM_LCD_FB_SIZE  0x00026000
 
-int InitFb(NativeRuntime* runtime);
-
 uint32_t _lcd_get_frame(void);
+size_t framebufferGuestAliasCount(void);
+uint32_t framebufferGuestAlias(size_t index);
 bool framebufferHostPointer(uint32_t addr, void** out);
 bool framebufferVmPointer(void* ptr, uint32_t* out);
 
@@ -33,7 +31,7 @@ uint64_t consumeFramebufferWriteCount(void);
 uint64_t consumeFramebufferWriteBytes(void);
 void framebufferSetProfileEnabled(bool enabled);
 
-inline void framebufferReset(void) { memset(getFramebuffPtr(), 0, VM_LCD_FB_SIZE); }
+void framebufferReset(void);
 inline void* framebufferPixels(void) { return getFramebuffPtr(); }
 inline void framebufferRequestUpdate(void) { requestFbUpdate(); }
 inline void framebufferSetTransientPartialProtectionEnabled(bool) {}

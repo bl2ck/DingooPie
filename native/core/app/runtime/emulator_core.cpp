@@ -8,6 +8,7 @@
 #include "emulator_settings.h"
 #include "sdk_hle.h"
 #include "framebuffer.h"
+#include "app/memory/app_framebuffer_mapping.h"
 #include "guest_format.h"
 #include "compat_profile.h"
 #include "pause_gate.h"
@@ -356,6 +357,18 @@ static void destroyMainRuntime(NativeRuntime* runtime)
     }
     clearMainRuntimeIfCurrent(runtime);
     nativeRuntimeDestroy(runtime);
+}
+
+static void destroyMainApp(void)
+{
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    app* loadedApp = s_app;
+    s_app = NULL;
+    s_AppDataAddr = 0;
+    s_AppDataBuffSize = 0;
+    s_AppDataBuff = NULL;
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+    app_delete(loadedApp);
 }
 
 static std::string sha256Hex(const uint8_t* data, uint32_t size)
@@ -1029,6 +1042,10 @@ static NativeRuntime* initDingooPie(void)
     pthread_mutex_unlock(&g_runtimeThreadMutex);
     bridge_set_app_identity(appSha256.c_str());
     fsys_set_app_identity(appSha256.c_str());
+    std::string saveDirectory = platformGetAppSaveDirectory(
+        g_appLoadPath, appSha256);
+    fsys_set_save_directory(saveDirectory.c_str());
+    printf("DingooPie: save directory: %s\n", saveDirectory.c_str());
     cheatRuntimeLoadForGame(
         appSha256.c_str(),
         g_appLoadPath.c_str(),
@@ -1082,7 +1099,7 @@ static NativeRuntime* initDingooPie(void)
     runMemorySearcherAutotest(loadedApp->bin_entry);
 
     printf("DingooPie: init framebuffer begin\n");
-    if (InitFb(runtime))
+    if (appFramebufferInitialize(runtime))
     {
         printf("DingooPie: InitFb failed\n");
         destroyMainRuntime(runtime);
@@ -1193,6 +1210,9 @@ static void* dingoopieRun(void* data)
 {
     (void)data;
     NativeRuntime* runtime = initDingooPie();
+    taskSchedulerRequestShutdown("main runtime exit");
+    taskSchedulerWaitForTasks();
+    bridge_release_game_resources();
     if (!runtime)
     {
         clearRecentAppIfStillCurrent("startup failure");
@@ -1203,6 +1223,7 @@ static void* dingoopieRun(void* data)
         destroyMainRuntime(runtime);
         printf("DingooPie: native runtime destroyed runtime=%p\n", (void*)runtime);
     }
+    destroyMainApp();
     return 0;
 }
 

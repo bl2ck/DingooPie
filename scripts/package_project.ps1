@@ -165,7 +165,10 @@ Copy-SourceTree 'scripts'
 Copy-SourceTree 'tools'
 
 Copy-WorkspaceSourceFile 'native\pc\resources\app_metadata.h'
+Copy-WorkspaceSourceFile 'native\core\app\memory\app_framebuffer_mapping.cpp'
+Copy-WorkspaceSourceFile 'native\core\app\memory\app_framebuffer_mapping.h'
 Copy-WorkspaceSourceFile 'scripts\debug_output_regression.ps1'
+Copy-WorkspaceSourceFile 'scripts\check_core_dependencies.ps1'
 
 Copy-SourceFile 'CMakeLists.txt'
 Copy-SourceFile 'LICENSE'
@@ -185,6 +188,10 @@ $required = @(
     'native\core\main.cpp',
     'native\core\config\compatibility\compat_profile.cpp',
     'native\core\app\hle\sdk_hle.cpp',
+    'native\core\app\memory\app_framebuffer_mapping.cpp',
+    'native\core\app\memory\app_framebuffer_mapping.h',
+    'native\core\shared\save\guest_save_transaction.cpp',
+    'native\core\shared\save\guest_save_transaction.h',
     'native\core\shared\services\guest_filesystem.cpp',
     'native\core\app\hle\guest_format.cpp',
     'native\core\shared\services\guest_audio.cpp',
@@ -203,6 +210,7 @@ $required = @(
     'docs\DEBUGGING.md',
     'scripts\bootstrap_windows.ps1',
     'scripts\build_release.ps1',
+    'scripts\check_core_dependencies.ps1',
     'scripts\debug_output_regression.ps1',
     'scripts\profile_sample.ps1',
     'scripts\profile_samples.ps1',

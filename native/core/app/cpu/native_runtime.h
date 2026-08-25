@@ -108,6 +108,7 @@ RuntimeError nativeRuntimeCreate(NativeRuntime** runtime);
 RuntimeError nativeRuntimeDestroy(NativeRuntime* runtime);
 RuntimeError nativeRuntimeStart(NativeRuntime* runtime, uint64_t begin, uint64_t until, uint64_t timeout, size_t count);
 RuntimeError nativeRuntimeRequestStop(NativeRuntime* runtime);
+bool nativeRuntimeStopRequested(NativeRuntime* runtime);
 RuntimeError nativeRuntimeSetBackend(NativeRuntime* runtime, ExecutionBackend backend);
 ExecutionBackend nativeRuntimeGetBackend(NativeRuntime* runtime);
 void nativeRuntimeApplyProfileSettings(NativeRuntime* runtime);

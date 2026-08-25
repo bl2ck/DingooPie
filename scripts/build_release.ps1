@@ -9,9 +9,20 @@ $BuildDir = Join-Path $ProjectRoot 'build\win64'
 $ReleaseDir = Join-Path $ProjectRoot 'release'
 $W64Bin = Join-Path $ProjectRoot 'w64devkit\bin'
 $CMake = Join-Path $W64Bin 'cmake.exe'
+$CoreDependencyCheck = Join-Path $PSScriptRoot 'check_core_dependencies.ps1'
 
 if (!(Test-Path -LiteralPath $CMake)) {
     throw "CMake was not found at $CMake. Run scripts\bootstrap_windows.ps1 first."
+}
+
+if (!(Test-Path -LiteralPath $CoreDependencyCheck)) {
+    throw "Core dependency check was not found at $CoreDependencyCheck."
+}
+
+& powershell.exe -NoProfile -ExecutionPolicy Bypass `
+    -File $CoreDependencyCheck -ProjectRoot $ProjectRoot
+if ($LASTEXITCODE -ne 0) {
+    throw 'Core dependency validation failed.'
 }
 
 function Invoke-NativeCommand {
@@ -103,13 +114,18 @@ function Resolve-RequiredFile {
         }
     }
 
-    $searched = ($CandidateDirectories | Where-Object { $_ } | ForEach-Object { Join-Path $_ $FileName }) -join ', '
-    throw "Missing required release file ${FileName}. Searched: $searched. Run scripts\bootstrap_windows.ps1 first."
+    $searched = $CandidateDirectories |
+        Where-Object { $_ } |
+        ForEach-Object { Join-Path $_ $FileName }
+    $searched = $searched -join ', '
+    throw "Missing required release file ${FileName}. Searched: $searched. " +
+        'Run scripts\bootstrap_windows.ps1 first.'
 }
 
 function Resolve-ReleaseRuntimeDlls {
     @{
-        SDL2 = Join-Path $ProjectRoot 'deps_extract\SDL2\SDL2-2.26.5\x86_64-w64-mingw32\bin\SDL2.dll'
+        SDL2 = Join-Path $ProjectRoot `
+            'deps_extract\SDL2\SDL2-2.26.5\x86_64-w64-mingw32\bin\SDL2.dll'
         Capstone = Join-Path $ProjectRoot 'deps_extract\capstone\mingw64\bin\libcapstone.dll'
         Winpthread = Resolve-RequiredFile -FileName 'libwinpthread-1.dll' -CandidateDirectories @(
             $W64Bin,
@@ -125,18 +141,22 @@ function New-DingooPieRelease {
     $runtimeDlls = Resolve-ReleaseRuntimeDlls
     $cheatSourceDir = Join-Path $ProjectRoot 'cheats'
     $includeCheats = (Test-Path -LiteralPath $cheatSourceDir -PathType Container) -and
-        ($null -ne (Get-ChildItem -LiteralPath $cheatSourceDir -Filter '*.cht' -File -ErrorAction SilentlyContinue | Select-Object -First 1))
+        ($null -ne (Get-ChildItem -LiteralPath $cheatSourceDir -Filter '*.cht' `
+            -File -ErrorAction SilentlyContinue | Select-Object -First 1))
 
-    if (Copy-ReleaseFile -Source (Join-Path $BuildDir 'DingooPie.exe') -Destination (Join-Path $ReleaseDir 'DingooPie.exe')) {
+    if (Copy-ReleaseFile -Source (Join-Path $BuildDir 'DingooPie.exe') `
+        -Destination (Join-Path $ReleaseDir 'DingooPie.exe')) {
         $releaseFiles.Add('DingooPie.exe')
     }
     if (Copy-ReleaseFile -Source $runtimeDlls.SDL2 -Destination (Join-Path $ReleaseDir 'SDL2.dll')) {
         $releaseFiles.Add('SDL2.dll')
     }
-    if (Copy-ReleaseFile -Source $runtimeDlls.Capstone -Destination (Join-Path $ReleaseDir 'libcapstone.dll')) {
+    if (Copy-ReleaseFile -Source $runtimeDlls.Capstone `
+        -Destination (Join-Path $ReleaseDir 'libcapstone.dll')) {
         $releaseFiles.Add('libcapstone.dll')
     }
-    if (Copy-ReleaseFile -Source $runtimeDlls.Winpthread -Destination (Join-Path $ReleaseDir 'libwinpthread-1.dll')) {
+    if (Copy-ReleaseFile -Source $runtimeDlls.Winpthread `
+        -Destination (Join-Path $ReleaseDir 'libwinpthread-1.dll')) {
         $releaseFiles.Add('libwinpthread-1.dll')
     }
 
@@ -163,7 +183,8 @@ function New-DingooPieRelease {
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($ManifestPath, (($HashLines -join "`n") + "`n"), $utf8NoBom)
 
-    $keepFiles = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $keepFiles = [System.Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase)
     foreach ($fileName in $releaseFiles) {
         [void]$keepFiles.Add($fileName)
     }
@@ -181,6 +202,8 @@ function New-DingooPieRelease {
 
 $env:PATH = "$W64Bin;$env:PATH"
 New-Item -ItemType Directory -Path $BuildDir -Force | Out-Null
+$dynarmicBoostInclude = Join-Path $ProjectRoot `
+    'deps_extract\boost\lib\native\include'
 
 Write-Host "Configuring DingooPie ($Configuration)"
 Invoke-NativeCommand $CMake -S $ProjectRoot -B $BuildDir -G 'MinGW Makefiles' `
@@ -188,7 +211,7 @@ Invoke-NativeCommand $CMake -S $ProjectRoot -B $BuildDir -G 'MinGW Makefiles' `
     "-DDINGOO_PIE_DEPS_ROOT=$(Join-Path $ProjectRoot 'deps_extract')" `
     "-DPPSSPP_SOURCE_ROOT=$(Join-Path $ProjectRoot 'third_party\ppsspp-master')" `
     "-DDYNARMIC_SOURCE_ROOT=$(Join-Path $ProjectRoot 'third_party\dynarmic')" `
-    "-DDYNARMIC_BOOST_INCLUDE_DIR=$(Join-Path $ProjectRoot 'deps_extract\boost\lib\native\include')" `
+    "-DDYNARMIC_BOOST_INCLUDE_DIR=$dynarmicBoostInclude" `
     -DDINGOO_PIE_ENABLE_ARM32_DYNARMIC=ON `
     -DDINGOO_PIE_ENABLE_PPSSPP_IRJIT=ON
 Write-Host "Building DingooPie ($Configuration)"

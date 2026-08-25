@@ -18,5 +18,6 @@ void taskSchedulerRegisterRuntime(NativeRuntime* runtime);
 void taskSchedulerUnregisterRuntime(NativeRuntime* runtime);
 size_t taskSchedulerRuntimeCount(void);
 void taskSchedulerSnapshotRuntimes(std::vector<NativeRuntime*>* out);
+void taskSchedulerWaitForTasks(void);
 
 #endif

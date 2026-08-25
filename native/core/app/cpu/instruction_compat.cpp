@@ -1178,7 +1178,7 @@ static void hookTransparentBlit16(NativeRuntime* runtime, uint64_t address, uint
     uint32_t objectPtr = 0;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &objectPtr);
 
-    uint8_t* object = (uint8_t*)toHostPtr(objectPtr);
+    uint8_t* object = (uint8_t*)toHostPtrRange(objectPtr, 0x44);
     if (!object)
     {
         return;
@@ -1206,15 +1206,26 @@ static void hookTransparentBlit16(NativeRuntime* runtime, uint64_t address, uint
         return;
     }
 
-    uint8_t* sourceHeader = (uint8_t*)toHostPtr(sourceHeaderPtr);
-    uint16_t* source = (uint16_t*)toHostPtr(sourcePtr);
-    uint16_t* dest = (uint16_t*)toHostPtr(destPtr);
-    if (!sourceHeader || !source || !dest)
+    uint8_t* sourceHeader = (uint8_t*)toHostPtrRange(sourceHeaderPtr, sizeof(uint16_t));
+    if (!sourceHeader)
     {
         return;
     }
 
     uint32_t sourceStridePixels = (uint32_t)(sourceHeader[0] | ((uint32_t)sourceHeader[1] << 8));
+    uint64_t sourceBytes = rows ?
+        ((uint64_t)(rows - 1) * sourceStridePixels + columns) * sizeof(uint16_t) : 0;
+    uint64_t destBytes = rows ?
+        ((uint64_t)(rows - 1) * destStridePixels + columns) * sizeof(uint16_t) : 0;
+    uint16_t* source = sourceBytes <= UINT32_MAX ?
+        (uint16_t*)toHostPtrRange(sourcePtr, (uint32_t)sourceBytes) : NULL;
+    uint16_t* dest = destBytes <= UINT32_MAX ?
+        (uint16_t*)toHostPtrRange(destPtr, (uint32_t)destBytes) : NULL;
+    if (!source || !dest)
+    {
+        return;
+    }
+
     for (uint32_t row = 0; row < rows; ++row)
     {
         for (uint32_t i = columns; i > 0; --i)
@@ -1244,7 +1255,7 @@ static uint32_t readRegister32(NativeRuntime* runtime, int regid);
 
 static uint32_t readGuestLe32(uint32_t address)
 {
-    uint8_t* ptr = (uint8_t*)toHostPtr(address);
+    uint8_t* ptr = (uint8_t*)toHostPtrRange(address, sizeof(uint32_t));
     return ptr ? readLe32(ptr) : 0;
 }
 
@@ -1279,14 +1290,14 @@ static bool evalObjectFlagsPredicate(const uint8_t* object, uint32_t key, uint32
 
 static bool evalObjectFlagsCallback(uint32_t objectPtr, uint32_t key, uint32_t mask, uint32_t* out)
 {
-    uint8_t* object = (uint8_t*)toHostPtr(objectPtr);
+    uint8_t* object = (uint8_t*)toHostPtrRange(objectPtr, 0x0c);
     if (!object)
     {
         return false;
     }
 
     uint32_t tablePtr = readLe32(object);
-    uint8_t* table = (uint8_t*)toHostPtr(tablePtr + 0x18u);
+    uint8_t* table = (uint8_t*)toHostPtrRange(tablePtr + 0x18u, sizeof(uint32_t));
     if (!table)
     {
         return false;
@@ -1324,7 +1335,7 @@ static void hookObjectPredicateAggregate(NativeRuntime* runtime, uint64_t addres
     uint32_t result = 0;
     uint32_t value = 0;
 
-    uint8_t* initialObject = (uint8_t*)toHostPtr(base + 0x54u);
+    uint8_t* initialObject = (uint8_t*)toHostPtrRange(base + 0x54u, 0x0c);
     if (!evalObjectFlagsPredicate(initialObject, key, mask, &value))
     {
         return;
@@ -1357,7 +1368,7 @@ static void hookObjectPredicateAggregate(NativeRuntime* runtime, uint64_t addres
     };
     for (uint32_t i = 0; i < sizeof(inlineOffsets) / sizeof(inlineOffsets[0]); ++i)
     {
-        uint8_t* object = (uint8_t*)toHostPtr(base + inlineOffsets[i]);
+        uint8_t* object = (uint8_t*)toHostPtrRange(base + inlineOffsets[i], 0x0c);
         if (!evalObjectFlagsPredicate(object, key, mask, &value))
         {
             return;
@@ -1947,15 +1958,16 @@ static void hookPixelLoop16(NativeRuntime* runtime, uint64_t address, uint32_t s
         }
 
         uint32_t count = total - index;
-        uint16_t* dst = (uint16_t*)toHostPtr(dstPtr);
-        const uint16_t* src = (const uint16_t*)toHostPtr(srcPtr);
+        uint32_t copyBytes = count * sizeof(uint16_t);
+        uint16_t* dst = (uint16_t*)toHostPtrRange(dstPtr, copyBytes);
+        const uint16_t* src = (const uint16_t*)toHostPtrRange(srcPtr, copyBytes);
         if (!dst || !src)
         {
             return;
         }
 
-        memmove(dst, src, (size_t)count * sizeof(uint16_t));
-        trackFramebufferWrite(dstPtr, count * sizeof(uint16_t));
+        memmove(dst, src, copyBytes);
+        trackFramebufferWrite(dstPtr, copyBytes);
         uint32_t updatedDst = dstPtr + count * 2u;
         uint32_t updatedSrc = srcPtr + count * 2u;
         nativeRuntimeWriteRegister(runtime, RUNTIME_REG_A0, &updatedDst);
@@ -1988,7 +2000,8 @@ static void hookPixelLoop16(NativeRuntime* runtime, uint64_t address, uint32_t s
             return;
         }
 
-        uint16_t* dst = (uint16_t*)toHostPtr(basePtr);
+        uint32_t fillBytes = count * sizeof(uint16_t);
+        uint16_t* dst = (uint16_t*)toHostPtrRange(basePtr, fillBytes);
         if (!dst)
         {
             return;

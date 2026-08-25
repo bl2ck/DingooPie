@@ -32,6 +32,9 @@ const char* compatProfileName(const char* appSha256);
 double compatDefaultHostDelayScale(const char* appSha256);
 CompatGuestExitDecision compatTaskStopGuestExitDecision(const char* appSha256, const CompatTaskStopExitContext* context);
 CompatGuestExitDecision compatRuntimeExceptionGuestExitDecision(const char* appSha256, const CompatRuntimeExceptionExitContext* context);
+CompatGuestExitDecision compatFileOpenFailureGuestExitDecision(
+    const char* appSha256, uint32_t returnAddress, bool fileOpenFailed,
+    bool successfulSaveWrite);
 bool compatShouldUseBinResourceView(const char* appSha256);
 bool compatForcedBackend(const char* appSha256, ExecutionBackend* backend);
 

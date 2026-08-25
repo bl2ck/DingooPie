@@ -31,6 +31,7 @@ uint32_t bridge_fast_waveout_can_write(void);
 bool bridge_fast_os_sem_pend(uint32_t eventVal, uint32_t timeout, uint32_t errorPtr,
     NativeRuntime* runtime, bool* interrupted);
 bool bridge_fast_os_sem_post(uint32_t eventVal, uint32_t* returnValue);
+void bridge_release_game_resources(void);
 RuntimeError bridge_init(NativeRuntime* runtime, app* _app);
 RuntimeError bridge_init_task(NativeRuntime* runtime, app* _app, bool isMainRuntime);
 

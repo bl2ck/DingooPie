@@ -28,6 +28,8 @@
 #include <vector>
 #include <locale.h>
 #include <cstdlib>
+#include <mutex>
+#include <new>
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -527,6 +529,22 @@ static void requestGuestExit(NativeRuntime* runtime, const char* reason)
     frontendRequestQuit();
 }
 
+static bool requestCompatFileOpenExit(NativeRuntime* runtime, uint32_t filePointer)
+{
+    uint32_t returnAddress = 0;
+    nativeRuntimeReadRegister(runtime, RUNTIME_REG_RA, &returnAddress);
+    CompatGuestExitDecision decision = compatFileOpenFailureGuestExitDecision(
+        s_bridgeAppSha256.c_str(), returnAddress, filePointer == 0,
+        fsys_saw_successful_save_write());
+    if (!decision.shouldExit)
+    {
+        return false;
+    }
+
+    requestGuestExit(runtime, decision.label);
+    return true;
+}
+
 static void stopCurrentGuestRuntime(NativeRuntime* runtime, const char* reason)
 {
     uint32_t ra = 0;
@@ -832,6 +850,93 @@ struct DingooSemaphore
 };
 
 static DingooSemaphore* s_semaphore_map[128] = { NULL };
+static pthread_mutex_t s_semaphore_map_mutex = PTHREAD_MUTEX_INITIALIZER;
+static const uint8_t kOsInvalidEventError = 1;
+static const uint8_t kOsTimeoutError = 10;
+
+enum DingooSemaphorePendResult
+{
+    DINGOO_SEMAPHORE_ACQUIRED,
+    DINGOO_SEMAPHORE_INVALID,
+    DINGOO_SEMAPHORE_TIMEOUT,
+    DINGOO_SEMAPHORE_INTERRUPTED
+};
+
+static DingooSemaphore* findDingooSemaphore(uint32_t eventVal)
+{
+    if (eventVal == 0 ||
+        eventVal >= sizeof(s_semaphore_map) / sizeof(s_semaphore_map[0]))
+    {
+        return NULL;
+    }
+
+    pthread_mutex_lock(&s_semaphore_map_mutex);
+    DingooSemaphore* sem = s_semaphore_map[eventVal];
+    pthread_mutex_unlock(&s_semaphore_map_mutex);
+    return sem;
+}
+
+static void releaseDingooSemaphores(void)
+{
+    DingooSemaphore* semaphores[sizeof(s_semaphore_map) / sizeof(s_semaphore_map[0])] = {};
+    pthread_mutex_lock(&s_semaphore_map_mutex);
+    memcpy(semaphores, s_semaphore_map, sizeof(s_semaphore_map));
+    memset(s_semaphore_map, 0, sizeof(s_semaphore_map));
+    pthread_mutex_unlock(&s_semaphore_map_mutex);
+
+    for (size_t index = 1; index < sizeof(semaphores) / sizeof(semaphores[0]); ++index)
+    {
+        DingooSemaphore* sem = semaphores[index];
+        if (!sem)
+        {
+            continue;
+        }
+        pthread_cond_destroy(&sem->cond);
+        pthread_mutex_destroy(&sem->mutex);
+        delete sem;
+    }
+}
+
+static uint32_t createDingooSemaphore(uint32_t count)
+{
+    DingooSemaphore* sem = new (std::nothrow) DingooSemaphore();
+    if (!sem)
+    {
+        return 0;
+    }
+    int mutexRet = pthread_mutex_init(&sem->mutex, NULL);
+    int condRet = mutexRet ? -1 : pthread_cond_init(&sem->cond, NULL);
+    if (mutexRet || condRet)
+    {
+        if (!mutexRet)
+        {
+            pthread_mutex_destroy(&sem->mutex);
+        }
+        delete sem;
+        return 0;
+    }
+    sem->count.store(count, std::memory_order_release);
+
+    uint32_t index = 1;
+    pthread_mutex_lock(&s_semaphore_map_mutex);
+    for (; index < sizeof(s_semaphore_map) / sizeof(s_semaphore_map[0]); ++index)
+    {
+        if (!s_semaphore_map[index])
+        {
+            s_semaphore_map[index] = sem;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&s_semaphore_map_mutex);
+    if (index >= sizeof(s_semaphore_map) / sizeof(s_semaphore_map[0]))
+    {
+        pthread_cond_destroy(&sem->cond);
+        pthread_mutex_destroy(&sem->mutex);
+        delete sem;
+        return 0;
+    }
+    return index;
+}
 
 uint32_t bridge_semaphore_state_count(void)
 {
@@ -846,6 +951,7 @@ void bridge_capture_semaphore_counts(uint32_t* out, uint32_t count)
     }
 
     uint32_t capacity = bridge_semaphore_state_count();
+    pthread_mutex_lock(&s_semaphore_map_mutex);
     for (uint32_t i = 0; i < count; ++i)
     {
         uint32_t value = 0;
@@ -861,6 +967,7 @@ void bridge_capture_semaphore_counts(uint32_t* out, uint32_t count)
         }
         out[i] = value;
     }
+    pthread_mutex_unlock(&s_semaphore_map_mutex);
 }
 
 bool bridge_restore_semaphore_counts(const uint32_t* counts, uint32_t count)
@@ -870,6 +977,7 @@ bool bridge_restore_semaphore_counts(const uint32_t* counts, uint32_t count)
         return false;
     }
 
+    pthread_mutex_lock(&s_semaphore_map_mutex);
     for (uint32_t i = 0; i < count; ++i)
     {
         DingooSemaphore* sem = s_semaphore_map[i];
@@ -879,6 +987,7 @@ bool bridge_restore_semaphore_counts(const uint32_t* counts, uint32_t count)
             {
                 printf("hle: restore semaphore missing index=%u count=%u\n",
                     (unsigned int)i, (unsigned int)counts[i]);
+                pthread_mutex_unlock(&s_semaphore_map_mutex);
                 return false;
             }
             continue;
@@ -889,11 +998,13 @@ bool bridge_restore_semaphore_counts(const uint32_t* counts, uint32_t count)
         pthread_cond_broadcast(&sem->cond);
         pthread_mutex_unlock(&sem->mutex);
     }
+    pthread_mutex_unlock(&s_semaphore_map_mutex);
     return true;
 }
 
 void bridge_notify_state_restored(void)
 {
+    pthread_mutex_lock(&s_semaphore_map_mutex);
     for (size_t i = 0; i < sizeof(s_semaphore_map) / sizeof(s_semaphore_map[0]); ++i)
     {
         DingooSemaphore* sem = s_semaphore_map[i];
@@ -905,20 +1016,7 @@ void bridge_notify_state_restored(void)
         pthread_cond_broadcast(&sem->cond);
         pthread_mutex_unlock(&sem->mutex);
     }
-}
-
-static bool waitHlePauseResume(NativeRuntime* runtime, uint32_t waitRestoreGeneration)
-{
-    (void)runtime;
-    if (waitRestoreGeneration != pauseGateRestoreGeneration())
-    {
-        return false;
-    }
-    if (pauseGateWaitForResume() && waitRestoreGeneration != pauseGateRestoreGeneration())
-    {
-        return false;
-    }
-    return true;
+    pthread_mutex_unlock(&s_semaphore_map_mutex);
 }
 
 static timespec hostTimespecAfterMillis(uint32_t millis)
@@ -935,15 +1033,12 @@ static timespec hostTimespecAfterMillis(uint32_t millis)
     return ts;
 }
 
-static bool dingooSemaphorePend(DingooSemaphore* sem, NativeRuntime* runtime, bool* interrupted)
+static DingooSemaphorePendResult dingooSemaphorePend(DingooSemaphore* sem,
+    NativeRuntime* runtime, uint32_t timeoutTicks)
 {
     if (!sem)
     {
-        return false;
-    }
-    if (interrupted)
-    {
-        *interrupted = false;
+        return DINGOO_SEMAPHORE_INVALID;
     }
 
     uint32_t current = sem->count.load(std::memory_order_acquire);
@@ -954,29 +1049,46 @@ static bool dingooSemaphorePend(DingooSemaphore* sem, NativeRuntime* runtime, bo
                 std::memory_order_acq_rel,
                 std::memory_order_acquire))
         {
-            return true;
+            return DINGOO_SEMAPHORE_ACQUIRED;
         }
     }
 
+    using namespace std::chrono;
+    const bool hasTimeout = timeoutTicks != 0;
+    const uint64_t timeoutMicros = hasTimeout ?
+        ((uint64_t)timeoutTicks * 1000000ull) / OS_TICKS_PER_SEC : 0;
+    steady_clock::time_point deadline = steady_clock::now() +
+        microseconds(timeoutMicros);
     uint32_t waitRestoreGeneration = pauseGateRestoreGeneration();
     pthread_mutex_lock(&sem->mutex);
     while ((current = sem->count.load(std::memory_order_acquire)) == 0)
     {
-        if (!waitHlePauseResume(runtime, waitRestoreGeneration))
+        if (nativeRuntimeStopRequested(runtime) ||
+            waitRestoreGeneration != pauseGateRestoreGeneration())
         {
-            if (interrupted)
-            {
-                *interrupted = true;
-            }
             pthread_mutex_unlock(&sem->mutex);
-            return false;
+            return DINGOO_SEMAPHORE_INTERRUPTED;
         }
+        if (hasTimeout && steady_clock::now() >= deadline)
+        {
+            pthread_mutex_unlock(&sem->mutex);
+            return DINGOO_SEMAPHORE_TIMEOUT;
+        }
+
+        pthread_mutex_unlock(&sem->mutex);
+        steady_clock::time_point pauseBegin = steady_clock::now();
+        bool paused = pauseGateWaitForResume();
+        if (paused && hasTimeout)
+        {
+            deadline += steady_clock::now() - pauseBegin;
+        }
+        pthread_mutex_lock(&sem->mutex);
         timespec deadline = hostTimespecAfterMillis(10);
         pthread_cond_timedwait(&sem->cond, &sem->mutex, &deadline);
     }
     sem->count.store(current - 1, std::memory_order_release);
     pthread_mutex_unlock(&sem->mutex);
-    return true;
+    return DINGOO_SEMAPHORE_ACQUIRED;
 }
 
 static bool dingooSemaphorePost(DingooSemaphore* sem)
@@ -999,39 +1111,13 @@ static void br_OSSemCreate(NativeRuntime* runtime)
 {
     s_hleProfile.semCreate++;
 
-    uint32_t index = 1;
     uint32_t cnt;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &cnt);
-
-    DingooSemaphore* sem = (DingooSemaphore*)malloc(sizeof(DingooSemaphore));
-    if (!sem)
+    uint32_t ret = createDingooSemaphore(cnt);
+    if (!ret)
     {
-        printf("hle: failed to allocate semaphore\n");
-        assert(0);
+        printf("hle: semaphore slot allocation failed\n");
     }
-    int mutexRet = pthread_mutex_init(&sem->mutex, NULL);
-    int condRet = pthread_cond_init(&sem->cond, NULL);
-    if (mutexRet || condRet)
-    {
-        printf("hle: semaphore init failed mutex=%d cond=%d\n", mutexRet, condRet);
-        assert(0);
-    }
-    sem->count.store(cnt, std::memory_order_release);
-    for (; index < sizeof(s_semaphore_map) / sizeof(s_semaphore_map[0]); ++index)
-    {
-        if (s_semaphore_map[index] == NULL)
-        {
-            break;
-        }
-    }
-    if (index >= sizeof(s_semaphore_map) / sizeof(s_semaphore_map[0]))
-    {
-        printf("hle: semaphore slot allocation failed errno=%u index=%d\n", errno, index);
-        assert(0);
-    }
-    s_semaphore_map[index] = sem;
-
-    uint32_t ret = index;
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ret);
 
     uint32_t pc;
@@ -1056,16 +1142,23 @@ static void br_OSSemPend(NativeRuntime* runtime)
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A1, &timeout);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A2, &errorPtr);
 
-    DingooSemaphore* sem = s_semaphore_map[eventVal];
-    bool interrupted = false;
-    if (!dingooSemaphorePend(sem, runtime, &interrupted))
+    DingooSemaphore* sem = findDingooSemaphore(eventVal);
+    DingooSemaphorePendResult result = dingooSemaphorePend(sem, runtime, timeout);
+    if (result != DINGOO_SEMAPHORE_ACQUIRED)
     {
-        if (interrupted)
+        if (result == DINGOO_SEMAPHORE_INTERRUPTED)
         {
             return;
         }
         printf("hle: semaphore pend failed index=%u timeout=%u\n", eventVal, timeout);
-        assert(0);
+        uint8_t* error = (uint8_t*)toHostPtr(errorPtr);
+        if (error)
+        {
+            *error = result == DINGOO_SEMAPHORE_TIMEOUT ?
+                kOsTimeoutError : kOsInvalidEventError;
+        }
+        returnToRa(runtime);
+        return;
     }
 
     uint8_t* error = (uint8_t*)toHostPtr(errorPtr);
@@ -1086,11 +1179,14 @@ static void br_OSSemPost(NativeRuntime* runtime)
     uint32_t eventVal;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &eventVal);
 
-    DingooSemaphore* sem = s_semaphore_map[eventVal];
+    DingooSemaphore* sem = findDingooSemaphore(eventVal);
     if (!dingooSemaphorePost(sem))
     {
         printf("hle: semaphore post failed index=%u\n", eventVal);
-        assert(0);
+        uint32_t retVal = kOsInvalidEventError;
+        nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &retVal);
+        returnToRa(runtime);
+        return;
     }
 
     uint32_t retVal = OS_NO_ERR;
@@ -1104,39 +1200,56 @@ static void br_OSSemPost(NativeRuntime* runtime)
 bool bridge_fast_os_sem_pend(uint32_t eventVal, uint32_t timeout, uint32_t errorPtr,
     NativeRuntime* runtime, bool* interrupted)
 {
-    (void)timeout;
     if (interrupted)
     {
         *interrupted = false;
     }
-    if (eventVal >= sizeof(s_semaphore_map) / sizeof(s_semaphore_map[0]) || !s_semaphore_map[eventVal])
+    DingooSemaphore* sem = findDingooSemaphore(eventVal);
+    if (!sem)
     {
-        return false;
+        uint8_t* error = (uint8_t*)toHostPtr(errorPtr);
+        if (error)
+        {
+            *error = kOsInvalidEventError;
+        }
+        return true;
     }
 
     s_hleProfile.semPend++;
-    if (!dingooSemaphorePend(s_semaphore_map[eventVal], runtime, interrupted))
+    DingooSemaphorePendResult result = dingooSemaphorePend(sem, runtime, timeout);
+    if (result == DINGOO_SEMAPHORE_INTERRUPTED)
     {
+        if (interrupted)
+        {
+            *interrupted = true;
+        }
         return false;
     }
 
     uint8_t* error = (uint8_t*)toHostPtr(errorPtr);
     if (error)
     {
-        *error = OS_NO_ERR;
+        *error = result == DINGOO_SEMAPHORE_ACQUIRED ? OS_NO_ERR :
+            (result == DINGOO_SEMAPHORE_TIMEOUT ?
+                kOsTimeoutError : kOsInvalidEventError);
     }
     return true;
 }
 
 bool bridge_fast_os_sem_post(uint32_t eventVal, uint32_t* returnValue)
 {
-    if (eventVal >= sizeof(s_semaphore_map) / sizeof(s_semaphore_map[0]) || !s_semaphore_map[eventVal])
+    DingooSemaphore* sem = findDingooSemaphore(eventVal);
+    if (!sem)
     {
-        return false;
+        if (returnValue)
+        {
+            *returnValue = kOsInvalidEventError;
+        }
+        return true;
     }
 
     s_hleProfile.semPost++;
-    if (!dingooSemaphorePost(s_semaphore_map[eventVal]))
+    if (!dingooSemaphorePost(sem))
     {
         return false;
     }
@@ -1987,6 +2100,10 @@ static void br_fsys_fopenW(NativeRuntime* runtime)
     std::string modestr = WString2String(mode);
 
     uint32_t fpPtr = fsys_fopen(namestr.c_str(), modestr.c_str());
+    if (requestCompatFileOpenExit(runtime, fpPtr))
+    {
+        return;
+    }
     uint32_t ret = fpPtr;
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ret);
     uint32_t pc;
@@ -2002,6 +2119,22 @@ struct DlResHandle
 };
 
 static DlResHandle s_dl_res_handles[128];
+static std::mutex s_dlResMutex;
+
+static void releaseDlResHandles(void)
+{
+    std::lock_guard<std::mutex> lock(s_dlResMutex);
+    for (uint32_t i = 1; i < sizeof(s_dl_res_handles) / sizeof(s_dl_res_handles[0]); ++i)
+    {
+        if (s_dl_res_handles[i].dataPtr)
+        {
+            vm_free(s_dl_res_handles[i].dataPtr);
+        }
+        s_dl_res_handles[i].entry = NULL;
+        s_dl_res_handles[i].dataPtr = 0;
+        s_dl_res_handles[i].offset = 0;
+    }
+}
 
 static char* hostStringIfVmPtr(uint32_t ptr)
 {
@@ -2014,6 +2147,7 @@ static char* hostStringIfVmPtr(uint32_t ptr)
 
 static void br_get_dl_handle(NativeRuntime* runtime)
 {
+    std::lock_guard<std::mutex> lock(s_dlResMutex);
     uint32_t ret = s_bridgeApp ? 1 : 0;
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ret);
     returnToRa(runtime);
@@ -2021,6 +2155,7 @@ static void br_get_dl_handle(NativeRuntime* runtime)
 
 static void br_dl_res_open(NativeRuntime* runtime)
 {
+    std::lock_guard<std::mutex> lock(s_dlResMutex);
     uint32_t a0;
     uint32_t a1;
     uint32_t a2;
@@ -2080,6 +2215,7 @@ static void br_dl_res_open(NativeRuntime* runtime)
 
 static void br_dl_res_get_size(NativeRuntime* runtime)
 {
+    std::lock_guard<std::mutex> lock(s_dlResMutex);
     uint32_t handle;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &handle);
     uint32_t ret = 0;
@@ -2097,6 +2233,7 @@ static void br_dl_res_get_size(NativeRuntime* runtime)
 
 static void br_dl_res_get_data(NativeRuntime* runtime)
 {
+    std::lock_guard<std::mutex> lock(s_dlResMutex);
     uint32_t handle;
     uint32_t bufferPtr;
     uint32_t buffLen;
@@ -2197,6 +2334,7 @@ static void br_dl_res_get_data(NativeRuntime* runtime)
 
 static void br_dl_res_close(NativeRuntime* runtime)
 {
+    std::lock_guard<std::mutex> lock(s_dlResMutex);
     uint32_t handle;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &handle);
     if (handle < sizeof(s_dl_res_handles) / sizeof(s_dl_res_handles[0]))
@@ -2778,16 +2916,38 @@ RuntimeError bridge_init(NativeRuntime* runtime, app* _app)
     return bridge_init_task(runtime, _app, true);
 }
 
+void bridge_release_game_resources(void)
+{
+    releaseDlResHandles();
+    releaseDingooSemaphores();
+    fsys_set_app(NULL);
+    fsys_set_app_identity(NULL);
+    fsys_set_save_directory(NULL);
+    pthread_mutex_lock(&s_runtimeContextsMutex);
+    s_runtimeContexts.clear();
+    pthread_mutex_unlock(&s_runtimeContextsMutex);
+    std::lock_guard<std::mutex> lock(s_dlResMutex);
+    s_bridgeApp = NULL;
+    s_bridgeAppSha256.clear();
+}
+
 RuntimeError bridge_init_task(NativeRuntime* runtime, app* _app, bool isMainRuntime)
 {
-    s_bridgeApp = _app;
+    {
+        std::lock_guard<std::mutex> lock(s_dlResMutex);
+        s_bridgeApp = _app;
+    }
     if (isMainRuntime)
     {
         s_tempTicks = 0;
+        fsys_set_app(_app);
     }
-    fsys_set_app(_app);
+    else
+    {
+        fsys_set_app_package(_app);
+    }
     registerRuntimeContext(runtime, isMainRuntime);
-	hooks_init(runtime, _app);
+    hooks_init(runtime, _app);
 
-	return RUNTIME_OK;
+    return RUNTIME_OK;
 }

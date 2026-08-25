@@ -3,8 +3,6 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "app/runtime/app_loader.h"
-#include "native_runtime.h"
 
 // Dingoo SDK audio sample format values.
 #define	AFMT_U8			8

@@ -17,6 +17,9 @@ bool vmHeapCaptureSnapshot(VmHeapSnapshot* out);
 bool vmHeapRestoreSnapshot(const VmHeapSnapshot& snapshot);
 
 void* toHostPtr(uint32_t addr);
+void* toHostPtrRange(uint32_t addr, uint32_t size);
+uint32_t toHostPtrRemaining(uint32_t addr, void** out);
+const char* toHostString(uint32_t addr);
 uint32_t toVmPtr(void* ptr);
 
 #endif

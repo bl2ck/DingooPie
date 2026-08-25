@@ -3,13 +3,23 @@ cmake_minimum_required(VERSION 3.16)
 project(DingooPie LANGUAGES C CXX)
 
 set(targetName DingooPie)
-set(DINGOO_PIE_DEPS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/deps_extract" CACHE PATH "Extracted third-party dependency root")
-set(PPSSPP_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ppsspp-master" CACHE PATH "PPSSPP source tree used for the IR JIT backend")
-set(DYNARMIC_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/dynarmic" CACHE PATH "Dynarmic source tree used for the ARM32 JIT backend")
-set(DYNARMIC_BOOST_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps_extract/boost/lib/native/include" CACHE PATH "Boost include directory used by Dynarmic")
+set(DINGOO_PIE_DEPS_ROOT
+    "${CMAKE_CURRENT_SOURCE_DIR}/deps_extract"
+    CACHE PATH "Extracted third-party dependency root")
+set(PPSSPP_SOURCE_ROOT
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ppsspp-master"
+    CACHE PATH "PPSSPP source tree used for the IR JIT backend")
+set(DYNARMIC_SOURCE_ROOT
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/dynarmic"
+    CACHE PATH "Dynarmic source tree used for the ARM32 JIT backend")
+set(DYNARMIC_BOOST_INCLUDE_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/deps_extract/boost/lib/native/include"
+    CACHE PATH "Boost include directory used by Dynarmic")
 option(DINGOO_PIE_ENABLE_PPSSPP_IRJIT "Compile the PPSSPP IR/x64 JIT backend adapter" ON)
 option(DINGOO_PIE_ENABLE_ARM32_DYNARMIC "Compile the Dynarmic ARM32 JIT backend" ON)
-option(DINGOO_PIE_CONSOLE_SUBSYSTEM "Build DingooPie as a console executable for log-capturing validation runs" OFF)
+option(DINGOO_PIE_CONSOLE_SUBSYSTEM
+    "Build DingooPie as a console executable for log-capturing validation runs"
+    OFF)
 
 set(DINGOO_PIE_SOURCE_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}/native/core"
@@ -120,7 +130,9 @@ if(DINGOO_PIE_ENABLE_PPSSPP_IRJIT)
         "${PPSSPP_SOURCE_ROOT}/Common"
         "${PPSSPP_SOURCE_ROOT}/Core"
     )
-    target_compile_definitions(ppsspp_irjit_core PRIVATE DINGOO_PIE_DINGOO_MEMORY _WIN32_WINNT=0x0601)
+    target_compile_definitions(ppsspp_irjit_core PRIVATE
+        DINGOO_PIE_DINGOO_MEMORY
+        _WIN32_WINNT=0x0601)
 
     add_library(dingoopie_ppsspp_adapter STATIC ${dingoopie_ppsspp_adapter_src})
     set_target_properties(dingoopie_ppsspp_adapter PROPERTIES
@@ -128,7 +140,10 @@ if(DINGOO_PIE_ENABLE_PPSSPP_IRJIT)
         CXX_STANDARD_REQUIRED YES
         CXX_EXTENSIONS YES
     )
-    target_compile_definitions(dingoopie_ppsspp_adapter PRIVATE DINGOO_PIE_ENABLE_PPSSPP_IRJIT DINGOO_PIE_DINGOO_MEMORY _WIN32_WINNT=0x0601)
+    target_compile_definitions(dingoopie_ppsspp_adapter PRIVATE
+        DINGOO_PIE_ENABLE_PPSSPP_IRJIT
+        DINGOO_PIE_DINGOO_MEMORY
+        _WIN32_WINNT=0x0601)
     target_include_directories(dingoopie_ppsspp_adapter PRIVATE
         ${DINGOO_PIE_SOURCE_INCLUDE_DIRS}
         "${PPSSPP_SOURCE_ROOT}"
@@ -161,7 +176,8 @@ function(dingoopie_configure_arm32_dynarmic application_target)
     if(missing_dependencies)
         string(JOIN "; " missing_dependency_summary ${missing_dependencies})
         message(WARNING
-            "DingooPie ARM32 backend: interpreter. Dynarmic was requested but dependencies are missing: "
+            "DingooPie ARM32 backend: interpreter. "
+            "Dynarmic was requested but dependencies are missing: "
             "${missing_dependency_summary}. Run scripts/bootstrap_windows.ps1 to install them.")
         return()
     endif()

@@ -1,5 +1,6 @@
 #include "guest_filesystem.h"
 #include "compat_profile.h"
+#include "shared/save/guest_save_transaction.h"
 #include "runtime_log.h"
 #include "runtime_resource_monitor.h"
 
@@ -10,6 +11,7 @@
 #include <string.h>
 #include <chrono>
 #include <atomic>
+#include <mutex>
 
 typedef enum {
     vfile_type_none,
@@ -28,13 +30,20 @@ typedef struct {
     uint32_t size;
     uint32_t offset;
     uint8_t xor_key;
+    bool saveTransaction;
+    char saveTransactionName[1024];
+    bool writable;
+    bool wroteData;
 } vfile_entry_t;
 
 static vfile_entry_t s_FILE_Map[128];
 static app* s_fsys_app = NULL;
 static GuestPackage* s_fsys_guest_package = NULL;
 static const char* s_fsys_app_sha256 = "";
+static std::string s_saveDirectory;
 static std::atomic<bool> s_suspiciousOpenFailure(false);
+static std::atomic<bool> s_successfulSaveWrite(false);
+static std::recursive_mutex s_filesystemMutex;
 
 typedef struct {
     uint64_t fopenCalls;
@@ -78,6 +87,7 @@ static bool fsysProfileEnabled(void)
 
 void fsys_set_profile_enabled(bool enabled)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     s_fsysProfileEnabled.store(enabled);
 }
 
@@ -193,20 +203,32 @@ static const char* vfileTypeName(vfile_type_e type)
 
 void fsys_set_app(app* inApp)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     s_fsys_app = inApp;
     s_fsys_guest_package = NULL;
     s_suspiciousOpenFailure.store(false);
+    s_successfulSaveWrite.store(false);
+}
+
+void fsys_set_app_package(app* inApp)
+{
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
+    s_fsys_app = inApp;
+    s_fsys_guest_package = NULL;
 }
 
 void fsys_reset_guest_package(GuestPackage* package)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     s_fsys_guest_package = package;
     s_fsys_app = NULL;
     s_suspiciousOpenFailure.store(false);
+    s_successfulSaveWrite.store(false);
 }
 
 void fsys_set_game_identity(const char* sha256Hex)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     fsys_set_app_identity(sha256Hex);
 }
 
@@ -214,19 +236,29 @@ void fsys_set_game_name(const char*)
 {
 }
 
-void fsys_set_save_directory(const char*)
+void fsys_set_save_directory(const char* directory)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
+    s_saveDirectory = directory ? directory : "";
 }
 
 void fsys_set_app_identity(const char* sha256Hex)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     s_fsys_app_sha256 = sha256Hex ? sha256Hex : "";
     s_suspiciousOpenFailure.store(false);
 }
 
 bool fsys_saw_suspicious_open_failure(void)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     return s_suspiciousOpenFailure.load();
+}
+
+bool fsys_saw_successful_save_write(void)
+{
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
+    return s_successfulSaveWrite.load();
 }
 
 static bool isBlockBreakerApp(void)
@@ -470,8 +502,51 @@ static FILE* fopen_guest_mode(const char* name, const char* mode)
     return fopen(name, hostMode);
 }
 
-static FILE* try_host_open(const char* name, const char* mode)
+static FILE* try_host_open(const char* name, const char* mode,
+    bool* saveTransaction, char* saveTransactionName,
+    size_t saveTransactionNameSize)
 {
+    if (saveTransaction)
+    {
+        *saveTransaction = false;
+    }
+    if (saveTransactionName && saveTransactionNameSize)
+    {
+        saveTransactionName[0] = 0;
+    }
+    if (name && !s_saveDirectory.empty() && name[0] != '/' && name[0] != '\\')
+    {
+        char normalized[1024];
+        normalize_guest_path(name, normalized, sizeof(normalized));
+        if (normalized[0])
+        {
+            char hostMode[16];
+            if (!normalize_host_file_mode(mode, hostMode, sizeof(hostMode)))
+            {
+                return NULL;
+            }
+            bool transactional = false;
+            FILE* saveFile = guestSaveOpenFile(
+                s_saveDirectory, normalized, hostMode, &transactional);
+            if (saveFile)
+            {
+                if (saveTransaction)
+                {
+                    *saveTransaction = transactional;
+                }
+                if (transactional && saveTransactionName && saveTransactionNameSize)
+                {
+                    snprintf(saveTransactionName, saveTransactionNameSize, "%s", normalized);
+                }
+                return saveFile;
+            }
+            if (mode_writes(hostMode))
+            {
+                return NULL;
+            }
+        }
+    }
+
     FILE* fp = fopen_guest_mode(name, mode);
     if (fp)
     {
@@ -643,6 +718,7 @@ static app_resource_entry* try_resource_open(const char* name)
 
 uint32_t fsys_fopen(const char* name, const char* mode)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     s_fsys_profile.fopenCalls++;
     fsysProfileTick();
 
@@ -725,11 +801,19 @@ uint32_t fsys_fopen(const char* name, const char* mode)
         }
     }
 
-    FILE* fp = try_host_open(name, mode);
+    bool saveTransaction = false;
+    char saveTransactionName[1024] = {};
+    FILE* fp = try_host_open(name, mode, &saveTransaction,
+        saveTransactionName, sizeof(saveTransactionName));
     if (fp)
     {
         uint32_t index = alloc_file_slot();
         s_FILE_Map[index].type = vfile_type_host;
+        s_FILE_Map[index].saveTransaction = saveTransaction;
+        snprintf(s_FILE_Map[index].saveTransactionName,
+            sizeof(s_FILE_Map[index].saveTransactionName), "%s",
+            saveTransactionName);
+        s_FILE_Map[index].writable = mode_writes(mode);
         setVfileRequestName(&s_FILE_Map[index], name);
         if (shouldCacheHostFile(name, mode))
         {
@@ -768,6 +852,7 @@ uint32_t fsys_fopen(const char* name, const char* mode)
 
 app_resource_entry* fsys_stream_resource(uint32_t stream)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
     {
         return NULL;
@@ -779,6 +864,7 @@ app_resource_entry* fsys_stream_resource(uint32_t stream)
 
 bool fsys_stream_is_app_package(uint32_t stream)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
     {
         return false;
@@ -790,6 +876,7 @@ bool fsys_stream_is_app_package(uint32_t stream)
 
 bool fsys_stream_is_external_file(uint32_t stream)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
     {
         return false;
@@ -801,6 +888,7 @@ bool fsys_stream_is_external_file(uint32_t stream)
 
 uint32_t fsys_stream_position(uint32_t stream)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
     {
         return 0;
@@ -817,12 +905,16 @@ uint32_t fsys_stream_position(uint32_t stream)
 
 const char* fsys_stream_request_name(uint32_t stream)
 {
+    static thread_local std::string requestName;
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
     {
-        return "";
+        requestName.clear();
+        return requestName.c_str();
     }
 
-    return s_FILE_Map[stream].requestName;
+    requestName = s_FILE_Map[stream].requestName;
+    return requestName.c_str();
 }
 
 void fsys_record_load_to_guest(
@@ -831,6 +923,7 @@ void fsys_record_load_to_guest(
     const void* hostData,
     uint32_t positionBefore)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     // Resource monitor rows represent bytes that have actually entered guest memory.
     if (!runtimeResourceMonitorIsCapturing() || !hostData)
     {
@@ -902,6 +995,7 @@ static bool fsys_checked_read_size(uint32_t size, uint32_t count, uint32_t* requ
 
 uint32_t vm_fread(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     s_fsys_profile.freadCalls++;
     fsysProfileTick();
 
@@ -1007,6 +1101,7 @@ uint32_t vm_fread(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
 
 uint32_t fsys_fclose(uint32_t stream)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     s_fsys_profile.fcloseCalls++;
     fsysProfileTick();
 
@@ -1045,7 +1140,12 @@ uint32_t fsys_fclose(uint32_t stream)
     }
     if (entry->type == vfile_type_host && entry->fp)
     {
-        ret = fclose(entry->fp);
+        ret = guestSaveCloseFile(s_saveDirectory,
+            entry->saveTransactionName, entry->fp, entry->saveTransaction);
+        if (ret == 0 && entry->writable && entry->wroteData)
+        {
+            s_successfulSaveWrite.store(true);
+        }
     }
 
     if (traceFsEnabled() || traceFsOpenEnabled())
@@ -1058,6 +1158,7 @@ uint32_t fsys_fclose(uint32_t stream)
 
 uint32_t fsys_fseek(uint32_t stream, uint32_t offset, uint32_t origin)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     s_fsys_profile.fseekCalls++;
     fsysProfileTick();
 
@@ -1222,6 +1323,7 @@ static bool vfileSeekMemory(vfile_entry_t* entry, uint32_t offset, uint32_t orig
 
 bool fsys_seek_cached(uint32_t stream, uint32_t offset, uint32_t origin, uint32_t* ret)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     if (!ret || stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
     {
         return false;
@@ -1272,6 +1374,7 @@ bool fsys_seek_cached(uint32_t stream, uint32_t offset, uint32_t origin, uint32_
 
 bool fsys_read_cached(uint32_t stream, uint32_t size, uint32_t count, const uint8_t** data, uint32_t* bytesRead, uint32_t* itemsRead)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     if (!data || !bytesRead || !itemsRead ||
         stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]) ||
         size == 0 || count == 0)
@@ -1331,6 +1434,7 @@ bool fsys_read_cached(uint32_t stream, uint32_t size, uint32_t count, const uint
 
 uint32_t fsys_ftell(uint32_t stream)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     s_fsys_profile.ftellCalls++;
     fsysProfileTick();
 
@@ -1357,6 +1461,7 @@ uint32_t fsys_ftell(uint32_t stream)
 
 uint32_t fsys_fwrite(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
     {
         return 0;
@@ -1365,7 +1470,12 @@ uint32_t fsys_fwrite(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
     vfile_entry_t* entry = &s_FILE_Map[stream];
     if (entry->type == vfile_type_host)
     {
-        return (uint32_t)fwrite(ptr, size, count, entry->fp);
+        uint32_t written = (uint32_t)fwrite(ptr, size, count, entry->fp);
+        if (written > 0)
+        {
+            entry->wroteData = true;
+        }
+        return written;
     }
 
     return 0;
@@ -1373,6 +1483,7 @@ uint32_t fsys_fwrite(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
 
 uint32_t fsys_feof(uint32_t stream)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     s_fsys_profile.feofCalls++;
     fsysProfileTick();
 
