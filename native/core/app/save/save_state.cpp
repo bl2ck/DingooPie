@@ -1,5 +1,6 @@
 #include "save_state.h"
 #include "shared/save/save_file_storage.h"
+#include "shared/save/save_state_format.h"
 
 #include "shared/game/game_paths.h"
 #include "platform_win32.h"
@@ -19,8 +20,6 @@
 #include <sys/types.h>
 #endif
 
-static const uint32_t kSaveStateMagic = 0x53534744u; // DGSS
-static const uint32_t kSaveStateAppIdLength = 64;
 static const uint8_t kSaveStateTokenRaw = 0;
 static const uint8_t kSaveStateTokenFill = 1;
 static const size_t kSaveStateMinFillRun = 16;
@@ -33,19 +32,6 @@ static std::string g_cachedAppId;
 // The payload stores small runtime records first, then a compact writable
 // memory region table followed by contiguous region data. appId verifies the
 // save still belongs to the running game.
-struct SaveStateHeader
-{
-    uint32_t magic;
-    uint32_t headerSize;
-    uint32_t payloadUncompressedSize;
-    uint32_t payloadCompressedSize;
-    uint32_t regionCount;
-    uint32_t taskRegisterCount;
-    uint32_t semaphoreCount;
-    uint32_t osTicks;
-    char appId[kSaveStateAppIdLength];
-};
-
 struct SaveStateHeapHeader
 {
     uint32_t flags;
@@ -77,6 +63,10 @@ struct SaveStateRegionHeader
     uint32_t size;
     uint32_t perms;
 };
+
+static_assert(sizeof(SaveStateHeapHeader) == 32, "DGSS heap layout changed");
+static_assert(sizeof(SaveStateRegisterHeader) == 852, "DGSS register layout changed");
+static_assert(sizeof(SaveStateRegionHeader) == 12, "DGSS region layout changed");
 
 static void writeHeapHeader(SaveStateHeapHeader* out, const VmHeapSnapshot& in)
 {
@@ -197,7 +187,7 @@ static bool readWholeFile(const std::string& path, std::vector<uint8_t>* out)
     return ok;
 }
 
-static bool readSaveStateHeader(const std::string& path, SaveStateHeader* out)
+static bool readSaveStateHeader(const std::string& path, AppSaveStateFileHeader* out)
 {
     if (!out)
     {
@@ -970,10 +960,10 @@ SaveStateSlotInfo saveStateSlotInfo(const std::string& appPath, int slot)
         if (info.exists)
         {
             info.modifiedTime = fileModifiedTime(info.path);
-            SaveStateHeader header;
+            AppSaveStateFileHeader header;
             if (readSaveStateHeader(info.path, &header) &&
-                header.magic == kSaveStateMagic &&
-                header.headerSize == sizeof(SaveStateHeader))
+                header.magic == kAppSaveStateMagic &&
+                header.headerSize == kAppSaveStateHeaderSize)
             {
                 info.runtimeCountValid = true;
                 info.runtimeCount = 1u + header.taskRegisterCount;
@@ -1024,9 +1014,9 @@ bool saveStateWriteSlot(const std::string& appPath, int slot,
         return false;
     }
 
-    SaveStateHeader header;
+    AppSaveStateFileHeader header;
     memset(&header, 0, sizeof(header));
-    header.magic = kSaveStateMagic;
+    header.magic = kAppSaveStateMagic;
     header.headerSize = sizeof(header);
     header.payloadUncompressedSize = (uint32_t)payload.size();
     header.payloadCompressedSize = (uint32_t)compressedPayload.size();
@@ -1094,17 +1084,17 @@ bool saveStateReadSlot(const std::string& appPath, int slot,
         if (error) *error = "save-state file not found";
         return false;
     }
-    if (bytes.size() < sizeof(SaveStateHeader))
+    if (bytes.size() < kAppSaveStateHeaderSize)
     {
         if (error) *error = "save-state file is truncated";
         return false;
     }
 
     size_t offset = 0;
-    SaveStateHeader header;
+    AppSaveStateFileHeader header;
     if (!readRecord(bytes, &offset, &header) ||
-        header.magic != kSaveStateMagic ||
-        header.headerSize != sizeof(SaveStateHeader) ||
+        header.magic != kAppSaveStateMagic ||
+        header.headerSize != kAppSaveStateHeaderSize ||
         header.payloadUncompressedSize == 0 ||
         header.payloadCompressedSize == 0)
     {

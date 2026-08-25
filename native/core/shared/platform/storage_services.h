@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 bool platformFileExists(const std::string& path);
+FILE* platformOpenHostFile(const std::string& path, const char* mode);
 bool platformChangeToGameDirectory(const std::string& gamePath);
 FILE* platformOpenGameFile(const std::string& path);
 FILE* platformOpenGameSiblingFile(const std::string& gamePath, const std::string& fileName);

@@ -1398,7 +1398,7 @@ static void hookMemoryRoutine(NativeRuntime* runtime, uint64_t address, uint32_t
     const uint8_t* src = NULL;
     if (count > 0)
     {
-        dst = (uint8_t*)toHostPtr(dstPtr);
+        dst = (uint8_t*)toHostPtrRange(dstPtr, count);
         if (!dst)
         {
             return;
@@ -1410,7 +1410,7 @@ static void hookMemoryRoutine(NativeRuntime* runtime, uint64_t address, uint32_t
     case MEMORY_ROUTINE_MEMCPY:
         if (count > 0)
         {
-            src = (const uint8_t*)toHostPtr(arg1);
+            src = (const uint8_t*)toHostPtrRange(arg1, count);
             if (!src)
             {
                 return;
@@ -1450,7 +1450,7 @@ static void hookTinyPredicate(NativeRuntime* runtime, uint64_t address, uint32_t
     uint32_t a0 = gpr[RUNTIME_REG_A0];
     uint32_t a1 = gpr[RUNTIME_REG_A1] & 0xffu;
     uint32_t a2 = gpr[RUNTIME_REG_A2] & 0xffu;
-    uint8_t* object = (uint8_t*)toHostPtr(a0);
+    uint8_t* object = (uint8_t*)toHostPtrRange(a0, 0x14);
     if (!object)
     {
         return;
@@ -1483,7 +1483,9 @@ static void hookTinyPredicate(NativeRuntime* runtime, uint64_t address, uint32_t
         if (a1 < width && a2 < readLe32(object + 0x0c))
         {
             uint32_t cellsPtr = readLe32(object + 0x10);
-            const uint8_t* cells = (const uint8_t*)toHostPtr(cellsPtr + a2 * width + a1);
+            uint64_t cellAddress = (uint64_t)cellsPtr + (uint64_t)a2 * width + a1;
+            const uint8_t* cells = cellAddress <= UINT32_MAX ?
+                (const uint8_t*)toHostPtrRange((uint32_t)cellAddress, 1) : NULL;
             if (!cells)
             {
                 return;
@@ -1518,7 +1520,7 @@ static void hookRowCopyLoop(NativeRuntime* runtime, uint64_t address, uint32_t s
         }
 
         uint32_t objectPtr = gpr[RUNTIME_REG_A0];
-        uint8_t* object = (uint8_t*)toHostPtr(objectPtr);
+        uint8_t* object = (uint8_t*)toHostPtrRange(objectPtr, 0x10);
         if (!object)
         {
             return;
@@ -1563,7 +1565,7 @@ static void hookRowCopyLoop(NativeRuntime* runtime, uint64_t address, uint32_t s
     }
 
     uint32_t objectPtr = readRegister32(runtime, RUNTIME_REG_A0);
-    uint8_t* object = (uint8_t*)toHostPtr(objectPtr);
+    uint8_t* object = (uint8_t*)toHostPtrRange(objectPtr, 0x38);
     if (!object)
     {
         return;
@@ -1586,7 +1588,7 @@ static void hookRowCopyLoop(NativeRuntime* runtime, uint64_t address, uint32_t s
     }
 
     uint32_t sourceHeaderPtr = readLe32(object + 0x04);
-    const uint8_t* sourceHeader = (const uint8_t*)toHostPtr(sourceHeaderPtr);
+    const uint8_t* sourceHeader = (const uint8_t*)toHostPtrRange(sourceHeaderPtr, sizeof(uint16_t));
     if (!sourceHeader)
     {
         return;
@@ -1611,8 +1613,12 @@ static void hookRowCopyLoop(NativeRuntime* runtime, uint64_t address, uint32_t s
     uint32_t destPtr = readLe32(object + 0x1c);
     if (rows > 0 && rowBytes > 0)
     {
-        uint8_t* dest = (uint8_t*)toHostPtr(destPtr);
-        const uint8_t* source = (const uint8_t*)toHostPtr(sourcePtr);
+        uint64_t sourceBytes = (uint64_t)(rows - 1) * sourceStrideBytes + rowBytes;
+        uint64_t destBytes = (uint64_t)(rows - 1) * destStrideBytes + rowBytes;
+        uint8_t* dest = destBytes <= UINT32_MAX ?
+            (uint8_t*)toHostPtrRange(destPtr, (uint32_t)destBytes) : NULL;
+        const uint8_t* source = sourceBytes <= UINT32_MAX ?
+            (const uint8_t*)toHostPtrRange(sourcePtr, (uint32_t)sourceBytes) : NULL;
         if (!dest || !source)
         {
             return;
@@ -1642,7 +1648,7 @@ static void hookCompactTransparentBlit16(NativeRuntime* runtime, uint64_t addres
     CompactTransparentBlit16Kind kind = (CompactTransparentBlit16Kind)(uintptr_t)userData;
 
     uint32_t objectPtr = readRegister32(runtime, RUNTIME_REG_A0);
-    uint8_t* object = (uint8_t*)toHostPtr(objectPtr);
+    uint8_t* object = (uint8_t*)toHostPtrRange(objectPtr, 0x38);
     if (!object)
     {
         return;
@@ -1667,7 +1673,7 @@ static void hookCompactTransparentBlit16(NativeRuntime* runtime, uint64_t addres
     uint32_t sourceHeaderPtr = readLe32(object + 0x04);
     uint32_t sourcePtr = readLe32(object + 0x18);
     uint32_t destPtr = readLe32(object + 0x1c);
-    const uint8_t* sourceHeader = (const uint8_t*)toHostPtr(sourceHeaderPtr);
+    const uint8_t* sourceHeader = (const uint8_t*)toHostPtrRange(sourceHeaderPtr, sizeof(uint16_t));
     if (!sourceHeader)
     {
         return;
@@ -1689,8 +1695,12 @@ static void hookCompactTransparentBlit16(NativeRuntime* runtime, uint64_t addres
     uint16_t* dest = NULL;
     if (columns > 0 && rows > 0)
     {
-        source = (const uint16_t*)toHostPtr(sourcePtr);
-        dest = (uint16_t*)toHostPtr(destPtr);
+        uint64_t sourceBytes = ((uint64_t)(rows - 1) * sourceStridePixels + columns) * sizeof(uint16_t);
+        uint64_t destBytes = ((uint64_t)(rows - 1) * destStridePixels + columns) * sizeof(uint16_t);
+        source = sourceBytes <= UINT32_MAX ?
+            (const uint16_t*)toHostPtrRange(sourcePtr, (uint32_t)sourceBytes) : NULL;
+        dest = destBytes <= UINT32_MAX ?
+            (uint16_t*)toHostPtrRange(destPtr, (uint32_t)destBytes) : NULL;
         if (!source || !dest)
         {
             return;
@@ -1750,7 +1760,7 @@ static void hookIndexedBlit8ToRgb565(NativeRuntime* runtime, uint64_t address, u
     (void)userData;
 
     uint32_t objectPtr = readRegister32(runtime, RUNTIME_REG_A0);
-    uint8_t* object = (uint8_t*)toHostPtr(objectPtr);
+    uint8_t* object = (uint8_t*)toHostPtrRange(objectPtr, 0x38);
     if (!object)
     {
         return;
@@ -1778,11 +1788,9 @@ static void hookIndexedBlit8ToRgb565(NativeRuntime* runtime, uint64_t address, u
     uint32_t sourceHeaderPtr = readLe32(object + 0x04);
     uint16_t transparent = (uint16_t)(object[0x0e] | ((uint16_t)object[0x0f] << 8));
 
-    uint16_t* palette = (uint16_t*)toHostPtr(palettePtr);
-    uint16_t* dest = (uint16_t*)toHostPtr(destPtr);
-    const uint8_t* source = (const uint8_t*)toHostPtr(sourcePtr);
-    const uint8_t* sourceHeader = (const uint8_t*)toHostPtr(sourceHeaderPtr);
-    if (!palette || !dest || !source || !sourceHeader)
+    uint16_t* palette = (uint16_t*)toHostPtrRange(palettePtr, 256u * sizeof(uint16_t));
+    const uint8_t* sourceHeader = (const uint8_t*)toHostPtrRange(sourceHeaderPtr, sizeof(uint16_t));
+    if (!palette || !sourceHeader)
     {
         return;
     }
@@ -1795,6 +1803,16 @@ static void hookIndexedBlit8ToRgb565(NativeRuntime* runtime, uint64_t address, u
         destStride = readGuestLe32(strideAddr);
     }
     if (sourceStride == 0 || destStride == 0 || sourceStride > 16384 || destStride > 16384)
+    {
+        return;
+    }
+    uint64_t sourceBytes = (uint64_t)(rows - 1) * sourceStride + columns;
+    uint64_t destBytes = ((uint64_t)(rows - 1) * destStride + columns) * sizeof(uint16_t);
+    const uint8_t* source = sourceBytes <= UINT32_MAX ?
+        (const uint8_t*)toHostPtrRange(sourcePtr, (uint32_t)sourceBytes) : NULL;
+    uint16_t* dest = destBytes <= UINT32_MAX ?
+        (uint16_t*)toHostPtrRange(destPtr, (uint32_t)destBytes) : NULL;
+    if (!source || !dest)
     {
         return;
     }
@@ -1847,7 +1865,7 @@ static void hookIndexedTransformBlit16(NativeRuntime* runtime, uint64_t address,
     static const uint32_t kRows = 240u;
     static const uint32_t kSourceBytes = kColumns * kRows * sizeof(uint32_t);
     static const uint32_t kDestBytes = kColumns * kRows * sizeof(uint16_t);
-    uint8_t* object = (uint8_t*)toHostPtr(objectPtr);
+    uint8_t* object = (uint8_t*)toHostPtrRange(objectPtr, 0x2a);
     const uint8_t* source = nativeRuntimeHostPointer(runtime, sourcePtr, kSourceBytes);
     uint16_t* dest = (uint16_t*)nativeRuntimeHostPointer(runtime, destPtr, kDestBytes);
     if (!object || !source || !dest)

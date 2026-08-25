@@ -273,11 +273,11 @@ function Apply-PatchIfNeeded($RepoRoot, $PatchFile) {
     $relativeRepo = $repoFull.Substring($projectFull.Length).TrimStart($trimChars).Replace('\', '/')
     Push-Location $ProjectRoot
     try {
-        git apply --check --ignore-space-change "--directory=$relativeRepo" $PatchFile
+        git apply --check --unidiff-zero --ignore-space-change --whitespace=nowarn "--directory=$relativeRepo" $PatchFile
         if ($LASTEXITCODE -ne 0) {
             throw "Patch check failed: $PatchFile"
         }
-        git apply --ignore-space-change "--directory=$relativeRepo" $PatchFile
+        git apply --unidiff-zero --ignore-space-change --whitespace=nowarn "--directory=$relativeRepo" $PatchFile
         if ($LASTEXITCODE -ne 0) {
             throw "Patch apply failed: $PatchFile"
         }

@@ -1332,6 +1332,18 @@ static uint8_t* hostPointerCanonical(uint32_t address, size_t size)
     return ptr ? ptr : tryRuntimeRegionAliasPointer(address, size, 0x03ffffffu);
 }
 
+static bool isFullyMappedFastPageRange(uint32_t address, uint32_t size)
+{
+    if (!g_fastPageBases || size == 0 || size > kFastPageSize)
+    {
+        return false;
+    }
+
+    uint32_t pageOffset = address & kFastPageMask;
+    return pageOffset <= kFastPageSize - size &&
+        g_fastPageBases[address >> kFastPageBits] != 0;
+}
+
 static void syncPpssppStateToRuntime()
 {
     if (!g_ppssppRuntime || !currentMIPS)
@@ -2553,6 +2565,10 @@ uint32_t ppssppShimValidateAddress(uint32_t address, uint32_t alignment, uint32_
 
 uint32_t ppssppShimIsValidRange(uint32_t address, uint32_t size)
 {
+    if (isFullyMappedFastPageRange(address, size))
+    {
+        return 1;
+    }
     return hostPointerCanonical(address, size) != NULL ? 1 : 0;
 }
 
@@ -2581,6 +2597,11 @@ uint32_t ppssppShimMaxSizeAtAddress(uint32_t address)
 uintptr_t* ppssppShimFastPageBases(void)
 {
     return g_fastPageDirectEnabled ? g_fastPageBases : NULL;
+}
+
+const uint8_t* ppssppShimCodeHookPageMap(void)
+{
+    return nativeRuntimeCodeHookPageMap(g_ppssppRuntime);
 }
 
 MIPSState::MIPSState()

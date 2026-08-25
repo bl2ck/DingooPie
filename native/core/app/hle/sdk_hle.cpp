@@ -20,6 +20,7 @@
 #include "compat_profile.h"
 #include "runtime_log.h"
 #include "runtime_resource_monitor.h"
+#include "runtime_tick_clock.h"
 #include <chrono>
 #include <atomic>
 #include <pthread.h>
@@ -42,6 +43,7 @@ static app* s_bridgeApp = NULL;
 static std::string s_bridgeAppSha256;
 static char s_lastTaskStopSummary[192] = "";
 static char s_lastHleSummary[192] = "";
+static RuntimeTickClock s_osTickClock;
 static std::atomic<bool> s_bridgeProfileEnabled(false);
 static std::atomic<double> s_runtimeSpeedScale(1.0);
 static std::atomic<bool> s_runtimeSpeedScaleForced(false);
@@ -744,16 +746,10 @@ static void br__to_locale_ansi(NativeRuntime* runtime)
     br_common(runtime);
 }
 
-static uint64_t s_tempTicks = 0;
 // Returns guest OS ticks elapsed since the current app runtime started.
 uint32_t OSTimeGet(void)
 {
-    if (s_tempTicks == 0)
-    {
-        s_tempTicks = SDL_GetTicks64();
-    }
-
-    uint64_t tempTicks = SDL_GetTicks64() - s_tempTicks;
+    uint64_t tempTicks = s_osTickClock.elapsed(SDL_GetTicks64());
     double speedScale = runtimeSpeedScale();
     if (speedScale > 0.0 && speedScale < 1.0)
     {
@@ -777,8 +773,7 @@ void bridge_restore_os_ticks(uint32_t ticks)
     double effectiveScale = (speedScale > 0.0 && speedScale < 1.0) ? speedScale : 1.0;
     uint64_t elapsedMs = ((uint64_t)ticks * 1000ull) / OS_TICKS_PER_SEC;
     uint64_t hostElapsedMs = (uint64_t)((double)elapsedMs / effectiveScale);
-    uint64_t now = SDL_GetTicks64();
-    s_tempTicks = now > hostElapsedMs ? now - hostElapsedMs : 1;
+    s_osTickClock.restoreElapsed(SDL_GetTicks64(), hostElapsedMs);
 }
 
 static void br_GetTickCount(NativeRuntime* runtime)
@@ -820,7 +815,7 @@ static void br__kbd_get_status(NativeRuntime* runtime)
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_RA, &ra);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_SP, &sp);
 
-    KEY_STATUS* ks = (KEY_STATUS*)toHostPtr(ksPtr);
+    KEY_STATUS* ks = (KEY_STATUS*)toHostPtrRange(ksPtr, sizeof(KEY_STATUS));
     if (ks)
     {
         _kbd_get_status(ks);
@@ -1300,7 +1295,7 @@ static void br_waveout_open(NativeRuntime* runtime)
     uint32_t ret = 0;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &argsPtr);
 
-    waveout_args* args = (waveout_args*)toHostPtr(argsPtr);
+    waveout_args* args = (waveout_args*)toHostPtrRange(argsPtr, sizeof(waveout_args));
     waveout_args* argsCpy = (waveout_args*)malloc(sizeof(waveout_args));
     if (args != NULL && argsCpy != NULL)
     {
@@ -1330,7 +1325,7 @@ static void br_waveout_write(NativeRuntime* runtime)
     uint32_t ret = 1;
     if (!waveout_skips_audio_output())
     {
-        void* src = toHostPtr(bufferPtr);
+        void* src = toHostPtrRange(bufferPtr, count);
         if (src && count > 0)
         {
             char* buff = (char*)malloc(count);
@@ -1396,7 +1391,7 @@ bool bridge_fast_waveout_write(uint32_t instPtr, uint32_t bufferPtr, uint32_t co
     uint32_t ret = 1;
     if (!waveout_skips_audio_output())
     {
-        void* src = toHostPtr(bufferPtr);
+        void* src = toHostPtrRange(bufferPtr, count);
         if (!src || count == 0)
         {
             ret = 0;
@@ -1574,7 +1569,7 @@ static void br_fread(NativeRuntime* runtime)
         read_size = size * count;
     }
 
-    _file_t *_file = (_file_t*)toHostPtr(stream);
+    _file_t *_file = (_file_t*)toHostPtrRange(stream, sizeof(_file_t));
     if (!_file)
     {
         read_ret =  -1;
@@ -1583,7 +1578,8 @@ static void br_fread(NativeRuntime* runtime)
     {
         if (_file->type == _file_type_mem)
         {
-            _file_mem_t* _file_mem = (_file_mem_t*)toHostPtr(_file->data);
+            _file_mem_t* _file_mem = (_file_mem_t*)toHostPtrRange(
+                _file->data, sizeof(_file_mem_t));
             if (!_file_mem)
             {
                 read_ret = -1;
@@ -1593,8 +1589,10 @@ static void br_fread(NativeRuntime* runtime)
                 uint32_t available = (_file_mem->offset < _file_mem->size) ?
                     (_file_mem->size - _file_mem->offset) : 0;
                 uint32_t bytesToRead = read_size < available ? read_size : available;
-                void* buff = toHostPtr(_file_mem->base + _file_mem->offset);
-                void* distPtr = toHostPtr(ptr);
+                uint64_t sourceAddress = (uint64_t)_file_mem->base + _file_mem->offset;
+                void* buff = sourceAddress <= UINT32_MAX ?
+                    toHostPtrRange((uint32_t)sourceAddress, bytesToRead) : NULL;
+                void* distPtr = toHostPtrRange(ptr, bytesToRead);
                 if (!buff || !distPtr)
                 {
                     read_ret = -1;
@@ -1614,7 +1612,7 @@ static void br_fread(NativeRuntime* runtime)
         }
         else if (_file->type == _file_type_file)
         {
-            void* buff = toHostPtr(ptr);
+            void* buff = toHostPtrRange(ptr, read_size);
             if (buff)
             {
                 bool shouldRecordResourceLoad = runtimeResourceMonitorIsCapturing();
@@ -1649,21 +1647,28 @@ static void br_fread(NativeRuntime* runtime)
 //int sprintf(char* buff, const char* fmt, char* va_list);
 uint32_t vm_sprintf(NativeRuntime* runtime, uint32_t buffPtr, uint32_t fmtPtr, uint32_t val1Ptr, uint32_t val2Ptr)
 {
-    char* buff = (char*)toHostPtr(buffPtr);
-    char* fmt = (char*)toHostPtr(fmtPtr);
-    char* val1 = (char*)toHostPtr(val1Ptr);
-    char* val2 = (char*)toHostPtr(val2Ptr);
+    (void)runtime;
+    void* buffHost = NULL;
+    uint32_t buffSize = toHostPtrRemaining(buffPtr, &buffHost);
+    char* buff = (char*)buffHost;
+    const char* fmt = toHostString(fmtPtr);
+    const char* val1 = toHostString(val1Ptr);
+    const char* val2 = toHostString(val2Ptr);
+    if (!buff || !buffSize || !fmt)
+    {
+        return 0;
+    }
 
     if (NULL == val1 && NULL != val2)
     {
-        return sprintf(buff, fmt, val1Ptr, val2);
+        return snprintf(buff, buffSize, fmt, val1Ptr, val2);
     }
     else if (NULL == val1 && NULL == val2)
     {
-        return sprintf(buff, fmt, val1Ptr, val2Ptr);
+        return snprintf(buff, buffSize, fmt, val1Ptr, val2Ptr);
     }
 
-    return sprintf(buff, fmt, val1, val2);
+    return snprintf(buff, buffSize, fmt, val1, val2);
 }
 
 static void br_sprintf(NativeRuntime* runtime)
@@ -1680,8 +1685,8 @@ static void br_fsys_fopen(NativeRuntime* runtime)
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &namePtr);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A1, &modePtr);
 
-    char* name = (char*)toHostPtr(namePtr);
-    char* mode = (char*)toHostPtr(modePtr);
+    const char* name = toHostString(namePtr);
+    const char* mode = toHostString(modePtr);
     uint32_t fpPtr = fsys_fopen(name, mode);
     uint32_t ret = fpPtr;
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ret);
@@ -1747,10 +1752,15 @@ static void br_fsys_fwrite(NativeRuntime* runtime)
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A2, &count);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A3, &stream);
 
-    void* buff = toHostPtr(ptr);
-    if (buff)
+    uint32_t byteCount = 0;
+    if (size == 0 || count <= UINT32_MAX / size)
     {
-        ret = fsys_fwrite(buff, size, count, stream);
+        byteCount = size * count;
+        void* buff = toHostPtrRange(ptr, byteCount);
+        if (buff)
+        {
+            ret = fsys_fwrite(buff, size, count, stream);
+        }
     }
 
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ret);
@@ -1770,21 +1780,22 @@ static void br_fsys_fread(NativeRuntime* runtime)
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A2, &count);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A3, &stream);
 
-    void* buff = toHostPtr(ptr);
-    if (buff)
+    uint32_t byteCount = 0;
+    if (size == 0 || count <= UINT32_MAX / size)
     {
-        bool shouldRecordResourceLoad = runtimeResourceMonitorIsCapturing();
-        uint32_t positionBefore = shouldRecordResourceLoad ?
-            fsys_stream_position(stream) : 0;
-        read_ret = vm_fread(buff, size, count, stream);
-        if (shouldRecordResourceLoad && read_ret != (uint32_t)-1)
+        byteCount = size * count;
+        void* buff = toHostPtrRange(ptr, byteCount);
+        if (buff)
         {
-            fsys_record_load_to_guest(stream, ptr, buff, positionBefore);
+            bool shouldRecordResourceLoad = runtimeResourceMonitorIsCapturing();
+            uint32_t positionBefore = shouldRecordResourceLoad ?
+                fsys_stream_position(stream) : 0;
+            read_ret = vm_fread(buff, size, count, stream);
+            if (shouldRecordResourceLoad && read_ret != (uint32_t)-1)
+            {
+                fsys_record_load_to_guest(stream, ptr, buff, positionBefore);
+            }
         }
-    }
-    else
-    {
-        read_ret = -1;
     }
 
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &read_ret);
@@ -1869,7 +1880,7 @@ static void br_memset(NativeRuntime* runtime)
         return;
     }
 
-    void* in = toHostPtr(outDestPtr);
+    void* in = toHostPtrRange(outDestPtr, inLength);
     if (in)
     {
         void* out = memset(in, inValue, inLength);
@@ -1909,8 +1920,8 @@ static void br_memcpy(NativeRuntime* runtime)
         return;
     }
 
-    void* outDest = toHostPtr(outDestPtr);
-    void* inSrc = toHostPtr(inSrcPtr);
+    void* outDest = toHostPtrRange(outDestPtr, inLength);
+    void* inSrc = toHostPtrRange(inSrcPtr, inLength);
     if (outDest && inSrc)
     {
         if (shouldTraceCopy(outDestPtr, inLength) || shouldTraceCopy(inSrcPtr, inLength))
@@ -1943,7 +1954,7 @@ static void br_strlen(NativeRuntime* runtime)
     uint32_t strPtr;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &strPtr);
 
-    char* str = (char*)toHostPtr(strPtr);
+    const char* str = toHostString(strPtr);
     uint32_t ret = str ? (uint32_t)strlen(str) : 0;
 
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ret);
@@ -1964,12 +1975,13 @@ static void br_fseek(NativeRuntime* runtime)
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A1, &offset);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &stream);
 
-    _file_t* _file = (_file_t*)toHostPtr(stream);
+    _file_t* _file = (_file_t*)toHostPtrRange(stream, sizeof(_file_t));
     if (_file)
     {
         if (_file->type == _file_type_mem)
         {
-            _file_mem_t* _file_mem = (_file_mem_t*)toHostPtr(_file->data);
+            _file_mem_t* _file_mem = (_file_mem_t*)toHostPtrRange(
+                _file->data, sizeof(_file_mem_t));
             if (!_file_mem)
             {
                 read_ret = -1;
@@ -2060,7 +2072,7 @@ static void br__to_unicode_le(NativeRuntime* runtime)
     uint32_t inPtr;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &inPtr);
 
-    char* in = (char*)toHostPtr(inPtr);
+    const char* in = toHostString(inPtr);
     if (!in)
     {
         br_return_zero(runtime);
@@ -2076,7 +2088,7 @@ static void br__to_unicode_le(NativeRuntime* runtime)
         return;
     }
 
-    uint16_t* out = (uint16_t*)toHostPtr(outPtr);
+    uint16_t* out = (uint16_t*)toHostPtrRange(outPtr, outBytes);
     for (size_t i = 0; i <= inLen; ++i)
     {
         out[i] = (uint8_t)in[i];
@@ -2086,6 +2098,83 @@ static void br__to_unicode_le(NativeRuntime* runtime)
     br_common(runtime);
 }
 
+static void appendUtf8CodePoint(std::string* out, uint32_t codePoint)
+{
+    if (codePoint <= 0x7fu)
+    {
+        out->push_back((char)codePoint);
+    }
+    else if (codePoint <= 0x7ffu)
+    {
+        out->push_back((char)(0xc0u | (codePoint >> 6)));
+        out->push_back((char)(0x80u | (codePoint & 0x3fu)));
+    }
+    else if (codePoint <= 0xffffu)
+    {
+        out->push_back((char)(0xe0u | (codePoint >> 12)));
+        out->push_back((char)(0x80u | ((codePoint >> 6) & 0x3fu)));
+        out->push_back((char)(0x80u | (codePoint & 0x3fu)));
+    }
+    else
+    {
+        out->push_back((char)(0xf0u | (codePoint >> 18)));
+        out->push_back((char)(0x80u | ((codePoint >> 12) & 0x3fu)));
+        out->push_back((char)(0x80u | ((codePoint >> 6) & 0x3fu)));
+        out->push_back((char)(0x80u | (codePoint & 0x3fu)));
+    }
+}
+
+static std::string guestUtf16ToUtf8(const uint16_t* text, size_t unitCount)
+{
+    std::string result;
+    if (!text)
+    {
+        return result;
+    }
+
+    if (unitCount >= 4 && text[0] != 0 && text[1] == 0 && text[2] != 0 && text[3] == 0)
+    {
+        for (size_t i = 0; i * 2 + 1 < unitCount; ++i)
+        {
+            uint32_t codePoint = text[i * 2] | ((uint32_t)text[i * 2 + 1] << 16);
+            if (codePoint == 0)
+            {
+                break;
+            }
+            if (codePoint > 0x10ffffu || (codePoint >= 0xd800u && codePoint <= 0xdfffu))
+            {
+                codePoint = 0xfffdu;
+            }
+            appendUtf8CodePoint(&result, codePoint);
+        }
+        return result;
+    }
+
+    for (size_t i = 0; i < unitCount && text[i] != 0; ++i)
+    {
+        uint32_t codePoint = text[i];
+        if (codePoint >= 0xd800u && codePoint <= 0xdbffu)
+        {
+            uint32_t low = i + 1 < unitCount ? text[i + 1] : 0;
+            if (low >= 0xdc00u && low <= 0xdfffu)
+            {
+                codePoint = 0x10000u + ((codePoint - 0xd800u) << 10) + (low - 0xdc00u);
+                ++i;
+            }
+            else
+            {
+                codePoint = 0xfffdu;
+            }
+        }
+        else if (codePoint >= 0xdc00u && codePoint <= 0xdfffu)
+        {
+            codePoint = 0xfffdu;
+        }
+        appendUtf8CodePoint(&result, codePoint);
+    }
+    return result;
+}
+
 static void br_fsys_fopenW(NativeRuntime* runtime)
 {
     uint32_t namePtr;
@@ -2093,11 +2182,15 @@ static void br_fsys_fopenW(NativeRuntime* runtime)
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &namePtr);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A1, &modePtr);
 
-    wchar_t* name = (wchar_t*)toHostPtr(namePtr);
-    wchar_t* mode = (wchar_t*)toHostPtr(modePtr);
+    void* nameHost = NULL;
+    void* modeHost = NULL;
+    uint32_t nameBytes = (namePtr & 1u) ? 0 : toHostPtrRemaining(namePtr, &nameHost);
+    uint32_t modeBytes = (modePtr & 1u) ? 0 : toHostPtrRemaining(modePtr, &modeHost);
+    const uint16_t* name = (const uint16_t*)nameHost;
+    const uint16_t* mode = (const uint16_t*)modeHost;
 
-    std::string namestr = WString2String(name);
-    std::string modestr = WString2String(mode);
+    std::string namestr = guestUtf16ToUtf8(name, nameBytes / sizeof(uint16_t));
+    std::string modestr = guestUtf16ToUtf8(mode, modeBytes / sizeof(uint16_t));
 
     uint32_t fpPtr = fsys_fopen(namestr.c_str(), modestr.c_str());
     if (requestCompatFileOpenExit(runtime, fpPtr))
@@ -2142,7 +2235,7 @@ static char* hostStringIfVmPtr(uint32_t ptr)
     {
         return NULL;
     }
-    return (char*)toHostPtr(ptr);
+    return (char*)toHostString(ptr);
 }
 
 static void br_get_dl_handle(NativeRuntime* runtime)
@@ -2255,19 +2348,19 @@ static void br_dl_res_get_data(NativeRuntime* runtime)
         }
         if (bufferPtr)
         {
-            void* dst = toHostPtr(bufferPtr);
+            uint32_t remaining = (h->offset < h->entry->size) ? (h->entry->size - h->offset) : 0;
+            uint32_t copySize = readLen ? readLen : buffLen;
+            if (readLen && buffLen > 1 && readLen <= UINT32_MAX / buffLen)
+            {
+                copySize = readLen * buffLen;
+            }
+            if (copySize == 0 || copySize > remaining)
+            {
+                copySize = remaining;
+            }
+            void* dst = toHostPtrRange(bufferPtr, copySize);
             if (dst)
             {
-                uint32_t remaining = (h->offset < h->entry->size) ? (h->entry->size - h->offset) : 0;
-                uint32_t copySize = readLen ? readLen : buffLen;
-                if (readLen && buffLen > 1 && readLen <= UINT32_MAX / buffLen)
-                {
-                    copySize = readLen * buffLen;
-                }
-                if (copySize == 0 || copySize > remaining)
-                {
-                    copySize = remaining;
-                }
                 memcpy(dst, resourceData + h->offset, copySize);
                 h->offset += copySize;
                 ret = readLen ? (copySize / readLen) : copySize;
@@ -2297,7 +2390,7 @@ static void br_dl_res_get_data(NativeRuntime* runtime)
                 h->dataPtr = vm_malloc(h->entry->size);
                 if (h->dataPtr)
                 {
-                    void* dst = toHostPtr(h->dataPtr);
+                    void* dst = toHostPtrRange(h->dataPtr, h->entry->size);
                     if (dst)
                     {
                         memcpy(dst, resourceData, h->entry->size);
@@ -2939,7 +3032,7 @@ RuntimeError bridge_init_task(NativeRuntime* runtime, app* _app, bool isMainRunt
     }
     if (isMainRuntime)
     {
-        s_tempTicks = 0;
+        s_osTickClock.reset();
         fsys_set_app(_app);
     }
     else

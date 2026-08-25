@@ -1,5 +1,6 @@
 #include "guest_filesystem.h"
 #include "compat_profile.h"
+#include "shared/platform/storage_services.h"
 #include "shared/save/guest_save_transaction.h"
 #include "runtime_log.h"
 #include "runtime_resource_monitor.h"
@@ -354,8 +355,8 @@ static uint32_t alloc_file_slot(void)
         }
     }
 
-    printf("fsys: s_FILE_Map allocation failed errno=%u\n", errno);
-    assert(0);
+    printf("fsys: virtual file table exhausted capacity=%u\n",
+        (unsigned)(sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]) - 1));
     return 0;
 }
 
@@ -499,7 +500,7 @@ static FILE* fopen_guest_mode(const char* name, const char* mode)
     {
         return NULL;
     }
-    return fopen(name, hostMode);
+    return name ? platformOpenHostFile(name, hostMode) : NULL;
 }
 
 static FILE* try_host_open(const char* name, const char* mode,
@@ -736,6 +737,10 @@ uint32_t fsys_fopen(const char* name, const char* mode)
             if (data)
             {
                 uint32_t index = alloc_file_slot();
+                if (index == 0)
+                {
+                    return 0;
+                }
                 s_FILE_Map[index].type = vfile_type_resource;
                 s_FILE_Map[index].data = data;
                 s_FILE_Map[index].size = resource->size;
@@ -759,6 +764,10 @@ uint32_t fsys_fopen(const char* name, const char* mode)
                 return 0;
             }
             uint32_t index = alloc_file_slot();
+            if (index == 0)
+            {
+                return 0;
+            }
             s_FILE_Map[index].type = vfile_type_resource;
             s_FILE_Map[index].data = data;
             s_FILE_Map[index].resource = res;
@@ -808,6 +817,11 @@ uint32_t fsys_fopen(const char* name, const char* mode)
     if (fp)
     {
         uint32_t index = alloc_file_slot();
+        if (index == 0)
+        {
+            fclose(fp);
+            return 0;
+        }
         s_FILE_Map[index].type = vfile_type_host;
         s_FILE_Map[index].saveTransaction = saveTransaction;
         snprintf(s_FILE_Map[index].saveTransactionName,

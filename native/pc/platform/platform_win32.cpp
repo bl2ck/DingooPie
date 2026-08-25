@@ -261,6 +261,16 @@ uint64_t platformGetStorageFileModifiedTime(const std::string& directoryUri,
     return value.QuadPart;
 }
 
+FILE* platformOpenHostFile(const std::string& path, const char* mode)
+{
+#ifdef _WIN32
+    std::wstring wideMode = platformUtf8ToWide(mode ? mode : "rb");
+    return _wfopen(platformUtf8ToWide(path).c_str(), wideMode.c_str());
+#else
+    return fopen(path.c_str(), mode ? mode : "rb");
+#endif
+}
+
 bool platformProbeAppHeader(const std::string& path)
 {
     if (path.empty())

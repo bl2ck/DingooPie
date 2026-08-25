@@ -1940,6 +1940,15 @@ bool nativeRuntimeHasCodeHook(NativeRuntime* runtime, uint32_t address)
     return runtime ? hasCodeHook(runtime, address) : false;
 }
 
+const uint8_t* nativeRuntimeCodeHookPageMap(NativeRuntime* runtime)
+{
+    if (!runtime || runtime->codeHookPageMap.size() != kCodeHookPageCount)
+    {
+        return NULL;
+    }
+    return runtime->codeHookPageMap.data();
+}
+
 RuntimeError nativeRuntimeAddHook(NativeRuntime* runtime, RuntimeHook* hh, int type, void* callback, void* user_data, uint64_t begin, uint64_t end, ...)
 {
     if (!runtime || !hh || !callback || begin > 0xffffffffu || end > 0xffffffffu)

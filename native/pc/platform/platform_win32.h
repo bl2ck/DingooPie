@@ -9,6 +9,7 @@ std::string platformCommandLineAppPath(int argc, char* argv[]);
 std::string platformSelectAppPath(void);
 std::string platformSelectAppPathLocalized(const wchar_t* title, const wchar_t* filter);
 bool platformFileExists(const std::string& path);
+FILE* platformOpenHostFile(const std::string& path, const char* mode);
 bool platformProbeAppHeader(const std::string& path);
 bool platformChangeToAppDirectory(const std::string& appPath);
 bool platformChangeToGameDirectory(const std::string& gamePath);

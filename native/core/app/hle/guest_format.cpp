@@ -9,18 +9,28 @@
 
 #include <float.h>
 
-typedef char* my_va_list;
+struct my_va_list
+{
+    uint8_t* current;
+    uint8_t* end;
+};
 
 template <typename T>
-static T _va_arg_value(my_va_list* va)
+static T readVaArgValue(my_va_list* va)
 {
-    T value = *((T*)*va);
-    *va += sizeof(T);
+    T value = {};
+    if (!va || !va->current || !va->end || va->current > va->end ||
+        (size_t)(va->end - va->current) < sizeof(T))
+    {
+        return value;
+    }
+    memcpy(&value, va->current, sizeof(T));
+    va->current += sizeof(T);
     return value;
 }
 
 template <typename UnsignedT, typename SignedT>
-static UnsignedT _signed_magnitude(SignedT value)
+static UnsignedT signedMagnitude(SignedT value)
 {
     return value < 0 ? (UnsignedT)0 - (UnsignedT)value : (UnsignedT)value;
 }
@@ -48,7 +58,7 @@ static UnsignedT _signed_magnitude(SignedT value)
 #define PRINTF_SUPPORT_PTRDIFF_T
 
 // Bounded strlen for formatter inputs.
-static inline unsigned int _strnlen_s(const char* str, uint32_t maxsize)
+static inline unsigned int boundedStringLength(const char* str, uint32_t maxsize)
 {
     const char* s;
     for (s = str; *s && maxsize--; ++s);
@@ -57,30 +67,30 @@ static inline unsigned int _strnlen_s(const char* str, uint32_t maxsize)
 
 // internal test if char is a digit (0-9)
 // \return true if char is a digit
-static inline bool _is_digit(char ch)
+static inline bool isDigit(char ch)
 {
     return (ch >= '0') && (ch <= '9');
 }
 
 // internal ASCII string to unsigned int conversion
-static unsigned int _atoi(const char** str)
+static unsigned int parseUnsigned(const char** str)
 {
     unsigned int i = 0U;
-    while (_is_digit(**str)) {
+    while (isDigit(**str)) {
         i = i * 10U + (unsigned int)(*((*str)++) - '0');
     }
     return i;
 }
 
 // internal buffer output
-static void _out_buffer(char character, void* buffer, uint32_t idx, uint32_t maxlen)
+static void writeBufferCharacter(char character, void* buffer, uint32_t idx, uint32_t maxlen)
 {
     if (idx < maxlen) {
         ((char*)buffer)[idx] = character;
     }
 }
 
-static void _out_null(char character, void* buffer, uint32_t idx, uint32_t maxlen)
+static void discardCharacter(char character, void* buffer, uint32_t idx, uint32_t maxlen)
 {
     (void)character;
     (void)buffer;
@@ -88,9 +98,9 @@ static void _out_null(char character, void* buffer, uint32_t idx, uint32_t maxle
     (void)maxlen;
 }
 
-static const char* _guest_string_or_empty(uint32_t guestAddress)
+static const char* guestStringOrEmpty(uint32_t guestAddress)
 {
-    const char* text = (const char*)toHostPtr(guestAddress);
+    const char* text = toHostString(guestAddress);
     return text ? text : "";
 }
 
@@ -98,7 +108,7 @@ static const char* _guest_string_or_empty(uint32_t guestAddress)
 typedef void (*out_fct_type)(char character, void* buffer, uint32_t idx, uint32_t maxlen);
 
 // output the specified string in reverse, taking care of any zero-padding
-static int32_t _out_rev(
+static int32_t writeReversed(
     out_fct_type out,
     char* buffer,
     int32_t idx,
@@ -134,7 +144,7 @@ static int32_t _out_rev(
 }
 
 // internal itoa format
-static int32_t _ntoa_format(
+static int32_t formatInteger(
     out_fct_type out,
     char* buffer,
     int32_t idx,
@@ -194,11 +204,11 @@ static int32_t _ntoa_format(
         }
     }
 
-    return _out_rev(out, buffer, idx, maxlen, buf, len, width, flags);
+    return writeReversed(out, buffer, idx, maxlen, buf, len, width, flags);
 }
 
 // internal itoa for 'long' type
-static int32_t _ntoa_long(
+static int32_t formatLong(
     out_fct_type out,
     char* buffer,
     int32_t idx,
@@ -227,11 +237,11 @@ static int32_t _ntoa_long(
         } while (value && (len < PRINTF_NTOA_BUFFER_SIZE));
     }
 
-    return _ntoa_format(
+    return formatInteger(
         out, buffer, idx, maxlen, buf, len, negative, (unsigned int)base, prec, width, flags);
 }
 
-static int32_t _ntoa_long_long(
+static int32_t formatLongLong(
     out_fct_type out,
     char* buffer,
     int32_t idx,
@@ -260,12 +270,12 @@ static int32_t _ntoa_long_long(
         } while (value && (len < PRINTF_NTOA_BUFFER_SIZE));
     }
 
-    return _ntoa_format(
+    return formatInteger(
         out, buffer, idx, maxlen, buf, len, negative, (unsigned int)base, prec, width, flags);
 }
 
 // internal ftoa for fixed decimal floating point
-static int32_t _ftoa(
+static int32_t formatFloat(
     out_fct_type out,
     char* buffer,
     int32_t idx,
@@ -288,16 +298,16 @@ static int32_t _ftoa(
 
     // test for special values
     if (value != value)
-        return _out_rev(out, buffer, idx, maxlen, "nan", 3, width, flags);
+        return writeReversed(out, buffer, idx, maxlen, "nan", 3, width, flags);
     if (value < -DBL_MAX)
-        return _out_rev(out, buffer, idx, maxlen, "fni-", 4, width, flags);
+        return writeReversed(out, buffer, idx, maxlen, "fni-", 4, width, flags);
     if (value > DBL_MAX)
-        return _out_rev(out, buffer, idx, maxlen, (flags & FLAGS_PLUS) ? "fni+" : "fni", (flags & FLAGS_PLUS) ? 4U : 3U, width, flags);
+        return writeReversed(out, buffer, idx, maxlen, (flags & FLAGS_PLUS) ? "fni+" : "fni", (flags & FLAGS_PLUS) ? 4U : 3U, width, flags);
 
     // Avoid emitting hundreds of whole-number digits into the bounded buffer.
     if ((value > PRINTF_MAX_FLOAT) || (value < -PRINTF_MAX_FLOAT)) {
 #if defined(PRINTF_SUPPORT_EXPONENTIAL)
-        return _etoa(out, buffer, idx, maxlen, value, prec, width, flags);
+        return formatExponential(out, buffer, idx, maxlen, value, prec, width, flags);
 #else
         return 0U;
 #endif
@@ -397,7 +407,7 @@ static int32_t _ftoa(
         }
     }
 
-    return _out_rev(out, buffer, idx, maxlen, buf, len, width, flags);
+    return writeReversed(out, buffer, idx, maxlen, buf, len, width, flags);
 }
 
 // internal vsnprintf
@@ -417,7 +427,7 @@ static int my_vsnprintf(
     }
 
     if (!buffer || !out) {
-        out = _out_null;
+        out = discardCharacter;
     }
 
     while (*format)
@@ -466,14 +476,14 @@ static int my_vsnprintf(
 
         // evaluate width field
         width = 0U;
-        if (_is_digit(*format)) {
-            width = _atoi(&format);
+        if (isDigit(*format)) {
+            width = parseUnsigned(&format);
         }
         else if (*format == '*') {
-            int w = _va_arg_value<int>(&va);
+            int w = readVaArgValue<int>(&va);
             if (w < 0) {
                 flags |= FLAGS_LEFT;
-                width = _signed_magnitude<unsigned int>(w);
+                width = signedMagnitude<unsigned int>(w);
             }
             else {
                 width = (unsigned int)w;
@@ -486,11 +496,11 @@ static int my_vsnprintf(
         if (*format == '.') {
             flags |= FLAGS_PRECISION;
             format++;
-            if (_is_digit(*format)) {
-                precision = _atoi(&format);
+            if (isDigit(*format)) {
+                precision = parseUnsigned(&format);
             }
             else if (*format == '*') {
-                int prec = _va_arg_value<int>(&va);
+                int prec = readVaArgValue<int>(&va);
                 precision = prec > 0 ? (unsigned int)prec : 0U;
                 format++;
             }
@@ -576,32 +586,32 @@ static int my_vsnprintf(
                 // signed
                 if (flags & FLAGS_LONG_LONG) {
 #if defined(PRINTF_SUPPORT_LONG_LONG)
-                    long long value = _va_arg_value<long long>(&va);
-                    unsigned long long magnitude = _signed_magnitude<unsigned long long>(value);
-                    idx = _ntoa_long_long(
+                    long long value = readVaArgValue<long long>(&va);
+                    unsigned long long magnitude = signedMagnitude<unsigned long long>(value);
+                    idx = formatLongLong(
                         out, buffer, idx, maxlen, magnitude, value < 0, base, precision, width, flags);
 #endif
                 }
                 else if (flags & FLAGS_LONG) {
-                    long value = _va_arg_value<long>(&va);
-                    unsigned long magnitude = _signed_magnitude<unsigned long>(value);
-                    idx = _ntoa_long(
+                    long value = readVaArgValue<long>(&va);
+                    unsigned long magnitude = signedMagnitude<unsigned long>(value);
+                    idx = formatLong(
                         out, buffer, idx, maxlen, magnitude, value < 0, base, precision, width, flags);
                 }
                 else {
                     int value = 0;
                     if (flags & FLAGS_CHAR) {
-                        value = _va_arg_value<int>(&va);
+                        value = readVaArgValue<int>(&va);
                     }
                     else if (flags & FLAGS_SHORT) {
-                        value = (short int)_va_arg_value<int>(&va);
+                        value = (short int)readVaArgValue<int>(&va);
                     }
                     else {
-                        value = _va_arg_value<int>(&va);
+                        value = readVaArgValue<int>(&va);
                     }
 
-                    unsigned int magnitude = _signed_magnitude<unsigned int>(value);
-                    idx = _ntoa_long(
+                    unsigned int magnitude = signedMagnitude<unsigned int>(value);
+                    idx = formatLong(
                         out, buffer, idx, maxlen, magnitude, value < 0, base, precision, width, flags);
                 }
             }
@@ -609,29 +619,29 @@ static int my_vsnprintf(
                 // unsigned
                 if (flags & FLAGS_LONG_LONG) {
 #if defined(PRINTF_SUPPORT_LONG_LONG)
-                    unsigned long long value = _va_arg_value<unsigned long long>(&va);
-                    idx = _ntoa_long_long(out, buffer, idx, maxlen, value, false, base, precision, width, flags);
+                    unsigned long long value = readVaArgValue<unsigned long long>(&va);
+                    idx = formatLongLong(out, buffer, idx, maxlen, value, false, base, precision, width, flags);
 #endif
                 }
                 else if (flags & FLAGS_LONG) {
-                    unsigned long value = _va_arg_value<unsigned long>(&va);
-                    idx = _ntoa_long(out, buffer, idx, maxlen, value, false, base, precision, width, flags);
+                    unsigned long value = readVaArgValue<unsigned long>(&va);
+                    idx = formatLong(out, buffer, idx, maxlen, value, false, base, precision, width, flags);
                 }
                 else {
                     unsigned int value = 0;
 
                     if (flags & FLAGS_CHAR) {
-                        unsigned int v = _va_arg_value<unsigned int>(&va);
+                        unsigned int v = readVaArgValue<unsigned int>(&va);
                         value = (unsigned char)v;
                     }
                     else if (flags & FLAGS_SHORT) {
-                        unsigned int v = _va_arg_value<unsigned int>(&va);
+                        unsigned int v = readVaArgValue<unsigned int>(&va);
                         value = (unsigned short int)v;
                     }
                     else {
-                        value = _va_arg_value<unsigned int>(&va);
+                        value = readVaArgValue<unsigned int>(&va);
                     }
-                    idx = _ntoa_long(out, buffer, idx, maxlen, value, false, base, precision, width, flags);
+                    idx = formatLong(out, buffer, idx, maxlen, value, false, base, precision, width, flags);
                 }
             }
             format++;
@@ -642,8 +652,8 @@ static int my_vsnprintf(
         case 'F':
         {
             if (*format == 'F') flags |= FLAGS_UPPERCASE;
-            double value = _va_arg_value<double>(&va);
-            idx = _ftoa(out, buffer, idx, maxlen, value, precision, width, flags);
+            double value = readVaArgValue<double>(&va);
+            idx = formatFloat(out, buffer, idx, maxlen, value, precision, width, flags);
             format++;
             break;
         }
@@ -654,7 +664,7 @@ static int my_vsnprintf(
         case 'G':
             if ((*format == 'g') || (*format == 'G')) flags |= FLAGS_ADAPT_EXP;
             if ((*format == 'E') || (*format == 'G')) flags |= FLAGS_UPPERCASE;
-            idx = _etoa(out, buffer, idx, maxlen, _va_arg_value<double>(&va), precision, width, flags);
+            idx = formatExponential(out, buffer, idx, maxlen, readVaArgValue<double>(&va), precision, width, flags);
             format++;
             break;
 #endif  // PRINTF_SUPPORT_EXPONENTIAL
@@ -667,7 +677,7 @@ static int my_vsnprintf(
                 }
             }
 
-            int value = _va_arg_value<int>(&va);
+            int value = readVaArgValue<int>(&va);
             out((char)value, buffer, idx++, maxlen);
 
             if (flags & FLAGS_LEFT) {
@@ -680,9 +690,9 @@ static int my_vsnprintf(
         }
 
         case 's': {
-            uint32_t guestString = _va_arg_value<uint32_t>(&va);
-            const char* text = _guest_string_or_empty(guestString);
-            unsigned int paddedLength = _strnlen_s(text, UINT32_MAX);
+            uint32_t guestString = readVaArgValue<uint32_t>(&va);
+            const char* text = guestStringOrEmpty(guestString);
+            unsigned int paddedLength = boundedStringLength(text, UINT32_MAX);
             if (flags & FLAGS_PRECISION) {
                 paddedLength = (paddedLength < precision ? paddedLength : precision);
             }
@@ -707,13 +717,13 @@ static int my_vsnprintf(
         }
 
         case 'p': {
-            uint32_t value = _va_arg_value<uint32_t>(&va);
+            uint32_t value = readVaArgValue<uint32_t>(&va);
             width = sizeof(void*) * 2U;
             flags |= FLAGS_ZEROPAD | FLAGS_UPPERCASE;
 #if defined(PRINTF_SUPPORT_LONG_LONG)
-            idx = _ntoa_long_long(out, buffer, idx, maxlen, value, false, 16U, precision, width, flags);
+            idx = formatLongLong(out, buffer, idx, maxlen, value, false, 16U, precision, width, flags);
 #else
-            idx = _ntoa_long(out, buffer, idx, maxlen, (unsigned long)value, false, 16U, precision, width, flags);
+            idx = formatLong(out, buffer, idx, maxlen, (unsigned long)value, false, 16U, precision, width, flags);
 #endif
             format++;
             break;
@@ -750,24 +760,38 @@ void my_sprintf(NativeRuntime* runtime)
 
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_SP, &sp);
 
-    char* buffer = (char*)toHostPtr((a0));
-    char* format = (char*)toHostPtr((a1));
+    void* bufferPtr = NULL;
+    uint32_t bufferSize = toHostPtrRemaining(a0, &bufferPtr);
+    char* buffer = (char*)bufferPtr;
+    const char* format = toHostString(a1);
 
     uint32_t s1, s2;
 
     sp -= 40;
 
-    s1 = ((uint32_t*)toHostPtr((sp + 48)))[0];
-    s2 = ((uint32_t*)toHostPtr((sp + 52)))[0];
+    void* argumentsPtr = NULL;
+    uint32_t argumentsSize = toHostPtrRemaining(sp + 48, &argumentsPtr);
+    uint32_t* arguments = (uint32_t*)argumentsPtr;
+    if (!buffer || !bufferSize || !format || !arguments || argumentsSize < sizeof(uint32_t) * 2)
+    {
+        uint32_t ret = 0;
+        nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ret);
+        uint32_t pc;
+        nativeRuntimeReadRegister(runtime, RUNTIME_REG_RA, &pc);
+        nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &pc);
+        return;
+    }
+    s1 = arguments[0];
+    s2 = arguments[1];
 
-    *((uint32_t*)toHostPtr((sp + 48))) = a2;
-    *((uint32_t*)toHostPtr((sp + 52))) = a3;
-    my_va_list va = (my_va_list)toHostPtr((sp + 48));
+    arguments[0] = a2;
+    arguments[1] = a3;
+    my_va_list va = { (uint8_t*)arguments, (uint8_t*)arguments + argumentsSize };
 
-    uint32_t ret = my_vsnprintf(runtime, _out_buffer, buffer, (uint32_t)-1, format, va);
+    uint32_t ret = my_vsnprintf(runtime, writeBufferCharacter, buffer, bufferSize, format, va);
 
-    *((uint32_t*)toHostPtr((sp + 48))) = s1;
-    *((uint32_t*)toHostPtr((sp + 52))) = s2;
+    arguments[0] = s1;
+    arguments[1] = s2;
 
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ret);
 
@@ -789,15 +813,25 @@ void dingoo_debug(NativeRuntime* runtime)
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_SP, &sp);
 
     char buffer[128] = {};
-    char* format = (char*)toHostPtr((a0));
+    const char* format = toHostString(a0);
+    void* argumentsPtr = NULL;
+    uint32_t argumentsSize = toHostPtrRemaining(sp + 4, &argumentsPtr);
+    uint32_t* arguments = (uint32_t*)argumentsPtr;
+    if (!format || !arguments || argumentsSize < sizeof(uint32_t) * 3)
+    {
+        uint32_t pc;
+        nativeRuntimeReadRegister(runtime, RUNTIME_REG_RA, &pc);
+        nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &pc);
+        return;
+    }
 
-    *(uint32_t*)toHostPtr((sp + 4))     = a1;
-    *(uint32_t*)toHostPtr((sp + 8))     = a2;
-    *(uint32_t*)toHostPtr((sp + 0xc))   = a3;
+    arguments[0] = a1;
+    arguments[1] = a2;
+    arguments[2] = a3;
 
-    my_va_list va = (my_va_list)toHostPtr((sp + 4));
+    my_va_list va = { (uint8_t*)arguments, (uint8_t*)arguments + argumentsSize };
 
-    my_vsnprintf(runtime, _out_buffer, buffer, (uint32_t)-1, format, va);
+    my_vsnprintf(runtime, writeBufferCharacter, buffer, sizeof(buffer), format, va);
 
     printf("guest_debug: %s", buffer);
 

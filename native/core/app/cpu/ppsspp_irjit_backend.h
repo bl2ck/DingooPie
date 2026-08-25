@@ -44,5 +44,6 @@ uint32_t ppssppShimIsValidRange(uint32_t address, uint32_t size);
 uint32_t ppssppShimIsValid4AlignedAddress(uint32_t address);
 uint32_t ppssppShimMaxSizeAtAddress(uint32_t address);
 uintptr_t* ppssppShimFastPageBases(void);
+const uint8_t* ppssppShimCodeHookPageMap(void);
 
 #endif

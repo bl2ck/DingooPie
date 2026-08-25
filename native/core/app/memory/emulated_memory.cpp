@@ -36,6 +36,7 @@ uint32_t Origin_LG_mem_len;
 void* LG_mem_end;
 uint32_t LG_mem_left;
 static std::recursive_mutex g_vmHeapMutex;
+static const uint32_t kVmAllocationHeaderXor = 0xd19a6e5bu;
 
 #define realLGmemSize(x) (((x) + 7) & (0xfffffff8))
 
@@ -62,6 +63,7 @@ static int mapAliasIfNeeded(NativeRuntime* runtime, uint32_t addr, uint32_t size
 
 void initMemoryManager(void* baseAddress, uint32_t len)
 {
+	std::lock_guard<std::recursive_mutex> lock(g_vmHeapMutex);
 	printf("initMemoryManager: baseAddress:0x%" PRIx64 " len: 0x%08x\n", (size_t)baseAddress, len);
 	Origin_LG_mem_base = baseAddress;
 	Origin_LG_mem_len = len;
@@ -306,6 +308,7 @@ int InitVmMemSubTask(NativeRuntime* runtime)
 }
 
 void* my_mallocExt(uint32_t len) {
+    std::lock_guard<std::recursive_mutex> lock(g_vmHeapMutex);
     void* p = NULL;
     if (len == 0)
     {
@@ -321,17 +324,58 @@ void* my_mallocExt(uint32_t len) {
     if (p)
     {
         ((uint32_t*)p)[0] = len;
-        return (void*)((uint8_t*)p + 8);
+        ((uint32_t*)p)[1] = len ^ kVmAllocationHeaderXor;
+        void* userPtr = (void*)((uint8_t*)p + 8);
+        return userPtr;
     }
     return p;
 }
 
+static bool trackedAllocationLengthLocked(void* p, uint32_t* outLength)
+{
+    if (!p || !outLength || !LG_mem_base || !LG_mem_end)
+    {
+        return false;
+    }
+
+    uintptr_t userAddress = (uintptr_t)p;
+    uintptr_t heapBegin = (uintptr_t)LG_mem_base;
+    uintptr_t heapEnd = (uintptr_t)LG_mem_end;
+    if (userAddress < heapBegin + 8u || userAddress >= heapEnd)
+    {
+        return false;
+    }
+
+    uint32_t length = *(uint32_t*)(userAddress - 8u);
+    uint32_t check = *(uint32_t*)(userAddress - 4u);
+    if (length == 0 || length > UINT32_MAX - 15 ||
+        check != (length ^ kVmAllocationHeaderXor))
+    {
+        return false;
+    }
+    uint64_t blockOffset = (uint64_t)(userAddress - heapBegin) - 8u;
+    uint64_t blockLength = realLGmemSize((uint64_t)length + 8u);
+    if (blockOffset > LG_mem_len || blockLength > LG_mem_len - blockOffset)
+    {
+        return false;
+    }
+
+    *outLength = length;
+    return true;
+}
+
 void my_freeExt(void* p)
 {
-    if (p)
+    if (!p)
     {
-        uint32_t* t = (uint32_t*)((uint8_t*)p - 8);
-        my_free(t, *t + 8);
+        return;
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(g_vmHeapMutex);
+    uint32_t length = 0;
+    if (trackedAllocationLengthLocked(p, &length))
+    {
+        my_free((uint8_t*)p - 8, length + 8);
     }
 }
 
@@ -345,7 +389,12 @@ void* my_reallocExt(void* p, uint32_t newLen) {
     }
     else
     {
-        uint32_t oldlen = *(uint32_t*)((uint8_t*)p - 8);
+        std::lock_guard<std::recursive_mutex> lock(g_vmHeapMutex);
+        uint32_t oldlen = 0;
+        if (!trackedAllocationLengthLocked(p, &oldlen))
+        {
+            return NULL;
+        }
         size_t minsize = (oldlen < newLen) ? oldlen : newLen;
         void* newblock = my_mallocExt(newLen);
         if (newblock == NULL)
@@ -385,8 +434,8 @@ void vm_free(uint32_t addr)
     {
         return;
     }
-    void* p = (void*)((size_t)addr - (size_t)s_Heap_Begin_Address + (size_t)s_HeapMemPtr);
-    my_freeExt((void*)p);
+    void* p = toHostPtrRange(addr, 1);
+    my_freeExt(p);
 }
 
 uint32_t vm_realloc(uint32_t addr, uint32_t len)
@@ -401,8 +450,12 @@ uint32_t vm_realloc(uint32_t addr, uint32_t len)
         return 0;
     }
 
-    void* p = (void*)((size_t)addr - (size_t)s_Heap_Begin_Address + (size_t)s_HeapMemPtr);
-    void* retPtr = my_reallocExt((void*)p, len);
+    void* p = toHostPtrRange(addr, 1);
+    if (!p)
+    {
+        return 0;
+    }
+    void* retPtr = my_reallocExt(p, len);
     if (!retPtr)
     {
         return 0;

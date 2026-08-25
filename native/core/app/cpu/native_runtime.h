@@ -136,6 +136,7 @@ bool nativeRuntimeReadRaw(NativeRuntime* runtime, uint32_t address, void* out, s
 bool nativeRuntimeWriteRaw(NativeRuntime* runtime, uint32_t address, const void* in, size_t size);
 uint8_t* nativeRuntimeHostPointer(NativeRuntime* runtime, uint32_t address, size_t size);
 bool nativeRuntimeHasCodeHook(NativeRuntime* runtime, uint32_t address);
+const uint8_t* nativeRuntimeCodeHookPageMap(NativeRuntime* runtime);
 void nativeRuntimeCallCodeHooks(NativeRuntime* runtime, uint32_t address);
 const char* nativeRuntimeErrorString(RuntimeError err);
 

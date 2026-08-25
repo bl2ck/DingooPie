@@ -242,19 +242,39 @@ index 5cf4136..83107d0 100644
  
  namespace MIPSComp {
  
-@@ -225,15 +228,56 @@ void X64JitBackend::GenerateFixedCode(MIPSState *mipsState) {
+@@ -225,15 +228,76 @@ void X64JitBackend::GenerateFixedCode(MIPSState *mipsState) {
  
  			MovFromPC(SCRATCH1);
  			WriteDebugPC(SCRATCH1);
 +#ifdef DINGOO_PIE_DINGOO_MEMORY
-+			SaveStaticRegisters();
-+			ABI_CallFunctionR(reinterpret_cast<void *>(&ppssppShimRunCodeHook), SCRATCH1);
-+			// ppssppShimRunCodeHook returns the next guest PC in RAX/SCRATCH1.
-+			// Store it before restoring static registers and keep SCRATCH1 as the
-+			// fetch PC; otherwise the dispatcher can fetch from the pre-hook PC.
-+			MovToPC(SCRATCH1);
-+			LoadStaticRegisters();
-+			MovFromPC(SCRATCH1);
++			if (ppssppShimCodeHookPageMap()) {
++#if PPSSPP_ARCH(AMD64)
++				MOV(32, R(R8), R(SCRATCH1));
++				SHR(32, R(R8), Imm8(12));
++				MOV(64, R(R10), ImmPtr(ppssppShimCodeHookPageMap()));
++				MOVZX(32, 8, R8, MComplex(R10, R8, SCALE_1, 0));
++				TEST(32, R(R8), R(R8));
++#else
++				MOV(32, R(ECX), R(SCRATCH1));
++				SHR(32, R(ECX), Imm8(12));
++				MOV(PTRBITS, R(EDX), ImmPtr(ppssppShimCodeHookPageMap()));
++				MOVZX(32, 8, ECX, MComplex(EDX, ECX, SCALE_1, 0));
++				TEST(32, R(ECX), R(ECX));
++#endif
++				FixupBranch skipCodeHook = J_CC(CC_Z);
++				SaveStaticRegisters();
++				ABI_CallFunctionR(reinterpret_cast<void *>(&ppssppShimRunCodeHook), SCRATCH1);
++				MovToPC(SCRATCH1);
++				LoadStaticRegisters();
++				MovFromPC(SCRATCH1);
++				SetJumpTarget(skipCodeHook);
++			} else {
++				SaveStaticRegisters();
++				ABI_CallFunctionR(reinterpret_cast<void *>(&ppssppShimRunCodeHook), SCRATCH1);
++				MovToPC(SCRATCH1);
++				LoadStaticRegisters();
++				MovFromPC(SCRATCH1);
++			}
 +#endif
  #ifdef MASKED_PSP_MEMORY
  			AND(32, R(SCRATCH1), Imm32(Memory::MEMVIEW32_MASK));
@@ -364,7 +384,115 @@ index 9b3eea1..856c7f0 100644
  #define DISABLE { CompIR_Generic(inst); return; }
  #define INVALIDOP { _assert_msg_(false, "Invalid IR inst %d", (int)inst.op); CompIR_Generic(inst); return; }
  
-@@ -151,6 +158,123 @@ void X64JitBackend::CompIR_FStore(IRInst inst) {
+@@ -119,0 +127,54 @@ void X64JitBackend::CompIR_FLoad(IRInst inst) {
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	FlushAll();
++	MOV(32, R(SCRATCH1), MDisp(CTXREG, -128 + inst.src1 * 4));
++	if (inst.constant != 0) {
++		ADD(32, R(SCRATCH1), Imm32(inst.constant));
++	}
++
++	if (ppssppShimFastPageBases()) {
++		FixupBranch fallbackCrossPage;
++#if PPSSPP_ARCH(AMD64)
++		MOV(32, R(R8), R(SCRATCH1));
++		AND(32, R(R8), Imm32(0xFFF));
++		CMP(32, R(R8), Imm32(0xFFC));
++		fallbackCrossPage = J_CC(CC_A);
++
++		MOV(32, R(R8), R(SCRATCH1));
++		SHR(32, R(R8), Imm8(12));
++		MOV(64, R(R10), ImmPtr(ppssppShimFastPageBases()));
++		MOV(64, R(R10), MComplex(R10, R8, SCALE_8, 0));
++		TEST(64, R(R10), R(R10));
++		FixupBranch fallbackUnmapped = J_CC(CC_Z);
++		MOV(32, R(SCRATCH1), MComplex(R10, SCRATCH1, SCALE_1, 0));
++#else
++		MOV(32, R(ECX), R(SCRATCH1));
++		AND(32, R(ECX), Imm32(0xFFF));
++		CMP(32, R(ECX), Imm32(0xFFC));
++		fallbackCrossPage = J_CC(CC_A);
++
++		MOV(32, R(ECX), R(SCRATCH1));
++		SHR(32, R(ECX), Imm8(12));
++		MOV(PTRBITS, R(EDX), ImmPtr(ppssppShimFastPageBases()));
++		MOV(PTRBITS, R(EDX), MComplex(EDX, ECX, SCALE_4, 0));
++		TEST(PTRBITS, R(EDX), R(EDX));
++		FixupBranch fallbackUnmapped = J_CC(CC_Z);
++		MOV(32, R(SCRATCH1), MComplex(EDX, SCRATCH1, SCALE_1, 0));
++#endif
++
++		FixupBranch doneFastLoad = J();
++		SetJumpTarget(fallbackCrossPage);
++		SetJumpTarget(fallbackUnmapped);
++		SaveStaticRegisters();
++		ABI_CallFunctionR(reinterpret_cast<const void *>(&ppssppShimRead32), SCRATCH1);
++		LoadStaticRegisters();
++		SetJumpTarget(doneFastLoad);
++	} else {
++		SaveStaticRegisters();
++		ABI_CallFunctionR(reinterpret_cast<const void *>(&ppssppShimRead32), SCRATCH1);
++		LoadStaticRegisters();
++	}
++
++	regs_.MapFPR(inst.dest, MIPSMap::NOINIT);
++	MOVD_xmm(regs_.FX(inst.dest), R(SCRATCH1));
++	return;
++#endif
+@@ -136,0 +198,52 @@ void X64JitBackend::CompIR_FStore(IRInst inst) {
++#ifdef DINGOO_PIE_DINGOO_MEMORY
++	FlushAll();
++	MOV(32, R(SCRATCH1), MDisp(CTXREG, -128 + inst.src1 * 4));
++	if (inst.constant != 0) {
++		ADD(32, R(SCRATCH1), Imm32(inst.constant));
++	}
++	MOV(32, R(EDX), MDisp(CTXREG, -128 + (inst.src3 + 32) * 4));
++
++	if (ppssppShimFastPageBases()) {
++		FixupBranch fallbackCrossPage;
++#if PPSSPP_ARCH(AMD64)
++		MOV(32, R(R8), R(SCRATCH1));
++		AND(32, R(R8), Imm32(0xFFF));
++		CMP(32, R(R8), Imm32(0xFFC));
++		fallbackCrossPage = J_CC(CC_A);
++
++		MOV(32, R(R8), R(SCRATCH1));
++		SHR(32, R(R8), Imm8(12));
++		MOV(64, R(R10), ImmPtr(ppssppShimFastPageBases()));
++		MOV(64, R(R10), MComplex(R10, R8, SCALE_8, 0));
++		TEST(64, R(R10), R(R10));
++		FixupBranch fallbackUnmapped = J_CC(CC_Z);
++		MOV(32, MComplex(R10, SCRATCH1, SCALE_1, 0), R(EDX));
++#else
++		MOV(32, R(ECX), R(SCRATCH1));
++		AND(32, R(ECX), Imm32(0xFFF));
++		CMP(32, R(ECX), Imm32(0xFFC));
++		fallbackCrossPage = J_CC(CC_A);
++
++		MOV(32, R(ECX), R(SCRATCH1));
++		SHR(32, R(ECX), Imm8(12));
++		MOV(PTRBITS, R(EAX), ImmPtr(ppssppShimFastPageBases()));
++		MOV(PTRBITS, R(EAX), MComplex(EAX, ECX, SCALE_4, 0));
++		TEST(PTRBITS, R(EAX), R(EAX));
++		FixupBranch fallbackUnmapped = J_CC(CC_Z);
++		MOV(32, MComplex(EAX, SCRATCH1, SCALE_1, 0), R(EDX));
++#endif
++
++		FixupBranch doneFastStore = J();
++		SetJumpTarget(fallbackCrossPage);
++		SetJumpTarget(fallbackUnmapped);
++		SaveStaticRegisters();
++		ABI_CallFunctionRR(reinterpret_cast<const void *>(&ppssppShimWrite32), SCRATCH1, EDX);
++		LoadStaticRegisters();
++		SetJumpTarget(doneFastStore);
++	} else {
++		SaveStaticRegisters();
++		ABI_CallFunctionRR(reinterpret_cast<const void *>(&ppssppShimWrite32), SCRATCH1, EDX);
++		LoadStaticRegisters();
++	}
++	return;
++#endif
+@@ -151,6 +264,123 @@ void X64JitBackend::CompIR_FStore(IRInst inst) {
  }
  
  void X64JitBackend::CompIR_Load(IRInst inst) {
@@ -488,7 +616,7 @@ index 9b3eea1..856c7f0 100644
  	CONDITIONAL_DISABLE;
  
  	regs_.SpillLockGPR(inst.dest, inst.src1);
-@@ -210,6 +334,102 @@ void X64JitBackend::CompIR_LoadShift(IRInst inst) {
+@@ -210,6 +440,102 @@ void X64JitBackend::CompIR_LoadShift(IRInst inst) {
  }
  
  void X64JitBackend::CompIR_Store(IRInst inst) {
@@ -595,7 +723,7 @@ diff --git a/Core/MIPS/x86/X64IRCompSystem.cpp b/Core/MIPS/x86/X64IRCompSystem.c
 index b137ee1..378901e 100644
 --- a/Core/MIPS/x86/X64IRCompSystem.cpp
 +++ b/Core/MIPS/x86/X64IRCompSystem.cpp
-@@ -381,6 +381,22 @@ void X64JitBackend::CompIR_ValidateAddress(IRInst inst) {
+@@ -381,6 +381,44 @@ void X64JitBackend::CompIR_ValidateAddress(IRInst inst) {
  		break;
  	}
  
@@ -603,15 +731,37 @@ index b137ee1..378901e 100644
 +	regs_.Map(inst);
 +	LEA(32, SCRATCH1, MDisp(regs_.RX(inst.src1), inst.constant));
 +	MOV(32, MDisp(CTXREG, tempOffset), R(SCRATCH1));
-+	// The Dingoo validator is a native helper call.  Flush the register cache
-+	// before entering it so Win64 caller-saved registers cannot corrupt guest
-+	// registers that are still live in this IR block.
 +	FlushAll();
++	MOV(32, R(SCRATCH1), MDisp(CTXREG, tempOffset));
++	std::vector<FixupBranch> fallbackJumps;
++	if (alignment != 1) {
++		TEST(32, R(SCRATCH1), Imm32(alignment - 1));
++		fallbackJumps.push_back(J_CC(CC_NZ));
++	}
++#if PPSSPP_ARCH(AMD64)
++	MOV(32, R(R8), R(SCRATCH1));
++	SHR(32, R(R8), Imm8(12));
++	MOV(64, R(R10), ImmPtr(ppssppShimFastPageBases()));
++	MOV(64, R(R10), MComplex(R10, R8, SCALE_8, 0));
++	TEST(64, R(R10), R(R10));
++	fallbackJumps.push_back(J_CC(CC_Z));
++#else
++	MOV(32, R(ECX), R(SCRATCH1));
++	SHR(32, R(ECX), Imm8(12));
++	MOV(PTRBITS, R(EDX), ImmPtr(ppssppShimFastPageBases()));
++	MOV(PTRBITS, R(EDX), MComplex(EDX, ECX, SCALE_4, 0));
++	TEST(PTRBITS, R(EDX), R(EDX));
++	fallbackJumps.push_back(J_CC(CC_Z));
++#endif
++	FixupBranch done = J();
++	for (FixupBranch &fallback : fallbackJumps)
++		SetJumpTarget(fallback);
 +	SaveStaticRegisters();
 +	ABI_CallFunctionACC(reinterpret_cast<const void *>(&ppssppShimValidateAddress), MDisp(CTXREG, tempOffset), alignment, isWrite);
 +	LoadStaticRegisters();
 +	TEST(32, R(SCRATCH1), R(SCRATCH1));
 +	J_CC(CC_NZ, dispatcherCheckCoreState_, true);
++	SetJumpTarget(done);
 +	return;
 +#endif
 +
