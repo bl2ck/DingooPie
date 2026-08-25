@@ -371,14 +371,17 @@ static bool normalize_host_file_mode(const char* mode, char* out, size_t outSize
         return false;
     }
 
-    bool changed = false;
+    bool hasBinary = false;
     size_t pos = 0;
     for (const char* p = mode; *p; ++p)
     {
-        if (*p == 's')
+        if (*p == 's' || *p == 't')
         {
-            changed = true;
             continue;
+        }
+        if (*p == 'b')
+        {
+            hasBinary = true;
         }
         if (pos + 1 >= outSize)
         {
@@ -387,8 +390,17 @@ static bool normalize_host_file_mode(const char* mode, char* out, size_t outSize
         }
         out[pos++] = *p;
     }
+    if (!hasBinary)
+    {
+        if (pos + 1 >= outSize)
+        {
+            out[0] = 0;
+            return false;
+        }
+        out[pos++] = 'b';
+    }
     out[pos] = 0;
-    return changed && pos > 0;
+    return pos > 0;
 }
 
 static const char* path_basename(const char* path)
@@ -450,18 +462,12 @@ static void normalize_guest_path(const char* in, char* out, size_t outSize)
 
 static FILE* fopen_guest_mode(const char* name, const char* mode)
 {
-    FILE* fp = fopen(name, mode);
-    if (fp)
-    {
-        return fp;
-    }
-
     char hostMode[16];
-    if (normalize_host_file_mode(mode, hostMode, sizeof(hostMode)))
+    if (!normalize_host_file_mode(mode, hostMode, sizeof(hostMode)))
     {
-        fp = fopen(name, hostMode);
+        return NULL;
     }
-    return fp;
+    return fopen(name, hostMode);
 }
 
 static FILE* try_host_open(const char* name, const char* mode)
