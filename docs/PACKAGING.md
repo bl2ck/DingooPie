@@ -50,7 +50,7 @@ Run:
 copies tracked project files from:
 
 - `cheats\`
-- `dingoo_pie\`
+- `native\`
 - `docs\`
 - `patches\`
 - `resources\`

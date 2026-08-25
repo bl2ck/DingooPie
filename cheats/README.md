@@ -13,7 +13,8 @@
 游戏文件同名：
 
 ```text
-游戏名.app -> cheats\游戏名.cht
+游戏名.app -> cheats\游戏名.app.cht
+游戏名.cc  -> cheats\游戏名.cc.cht
 ```
 
 没有同名 `.cht` 文件时，游戏会正常运行。如果 `.cht` 文件声明的 `app_sha256`
@@ -74,11 +75,12 @@ Cheats are disabled by default. To use them:
 3. Select features from `Settings > Cheats`, or open
    `Settings > Cheats > Cheat Manager` for the list view.
 
-Cheat files live in a `cheats` folder next to `DingooPie.exe`, and each file
-must use the same base name as the game:
+Cheat files live in a `cheats` folder next to `DingooPie.exe`. Keep the game
+format suffix in the cheat filename:
 
 ```text
-GameName.app -> cheats\GameName.cht
+GameName.app -> cheats\GameName.app.cht
+GameName.cc  -> cheats\GameName.cc.cht
 ```
 
 If no same-name `.cht` file exists, the game runs normally. If a `.cht` file

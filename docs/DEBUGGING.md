@@ -11,7 +11,7 @@ The Windows frontend also writes `DingooPie.ini` next to `DingooPie.exe`.
 The INI reader accepts UTF-16LE with BOM, UTF-8 with or without BOM, and a
 system ANSI fallback, so manually edited Chinese app paths remain loadable.
 The executable is named `DingooPie.exe`; its Windows version resource reports
-`Dingoo Game Emulator`, file/product version `1.6`, product
+`Dingoo Game Emulator`, file/product version `1.7`, product
 name `DingooPie`, and `Copyright (c) 2026 BL2CK`.
 Starting without command-line arguments does not show a file picker. Empty
 `recent.last_app` opens the frontend only; an existing `recent.last_app` is
@@ -42,12 +42,12 @@ enabled.
 The `recent` section writes `last_app` first, followed by the ordered
 `app1`...`app10` recent-game list.
 Runtime-affecting values are saved immediately. Changes to window scale,
-windowed fullscreen, minimized behavior, portrait mode, FPS overlay, CPU clock, runtime speed, delay scale,
+windowed fullscreen, minimized behavior, portrait mode, FPS overlay, CPU clock, Game Speed, System Delay Scale,
 audio disable, performance logging, Resource Monitor auto-open,
 anti-aliasing/effect, brightness, contrast,
 gamma, saturation, IME disable mode, virtual controls, language, master volume, audio
 buffer size, audio effect, and debug console visibility apply without relaunching the guest.
-Changing the CPU backend still relaunches the emulator because the execution
+Changing CPU Execution Mode still relaunches the emulator because the execution
 backend is selected at startup. Restored defaults relaunch only when they change
 the active CPU backend.
 `audio.volume_percent` stores the emulator-side master volume. It is applied
@@ -74,8 +74,9 @@ Auto pace.
 the global 1.0 SDK delay default while explicit values preserve manual
 accuracy/performance choices.
 `runtime.cheats_enabled=1` enables runtime cheat-code application. Cheat files
-are loaded from a `cheats` directory next to `DingooPie.exe` by app base name:
-`GameName.app` loads `cheats\GameName.cht`. The optional
+are loaded from a `cheats` directory next to `DingooPie.exe` by game filename:
+`GameName.app` loads `cheats\GameName.app.cht`, while `GameName.cc` loads
+`cheats\GameName.cc.cht`. APP also accepts the legacy `GameName.cht` fallback. The optional
 `app_sha256=` field inside the `.cht` file is validation only. The global cheat
 switch is disabled by default; the menu item is `Settings -> Cheats -> Enable Cheats`.
 Individual cheat features start unchecked until the user selects them under
@@ -231,11 +232,12 @@ some games compare that string directly.
 | `DINGOO_PIE_LCD_FRAME_PACING` | `0`, `1` | Enables adaptive pacing at Dingoo LCD frame submission boundaries. The default is enabled; set `0` to diagnose raw guest frame production. |
 | `DINGOO_PIE_AUDIO_QUEUE_DROP_MS` | `0..60000` | Drops guest PCM buffers after the audio queue stays full for this many milliseconds. The default `0` waits for playback so saturated queues preserve audio timing. |
 | `DINGOO_PIE_AUDIO_QUEUE_TRACE` | `1` | Logs audio queue backpressure waits when `DINGOO_PIE_AUDIO_QUEUE_DROP_MS=0`. This is noisy during games that stream audio near the queue limit. |
-| `DINGOO_PIE_RUNTIME_SPEED_SCALE` | `0.0..1.0` | Scales runtime pacing used by HLE and the PPSSPP shim. The menu `Auto` preset leaves it unset and maps to the global 65% runtime pace. Explicit Runtime Speed menu values apply immediately and persist to the INI. |
+| `DINGOO_PIE_RUNTIME_SPEED_SCALE` | `0.0..1.0` | Scales runtime pacing used by HLE and the PPSSPP shim. The menu `Auto` preset leaves it unset and maps to the global 65% runtime pace. Explicit Game Speed menu values apply immediately and persist to the INI. |
 | `DINGOO_PIE_OSTIMEDLY_SCALE` | `0.0..1.0` | Scales host sleep time for `OSTimeDly`, `delay_ms`, and `udelay` calls while preserving guest tick accounting. Auto uses the global 1.0 delay scale unless a content-hash compatibility entry overrides it. Use this to override sample-specific delay behavior. |
 | `DINGOO_PIE_CHEATS` | `1` | Enables loaded cheat files without changing `DingooPie.ini`. Cheat files use `status|name|width|address|value` or `status|name|width|address|value|compare` pipe records; see "Cheat File Format" below. |
 | `DINGOO_PIE_CHEAT_DIR` | path | Overrides the directory used for `.cht` files. |
 | `DINGOO_PIE_CHEAT_TRACE` | `1` | Prints cheat loading and apply counters. |
+| `DINGOO_PIE_AUTOTEST_QUIT_MS` | milliseconds | Requests a clean frontend exit after the specified delay for PC lifecycle regression tests. |
 | `DINGOO_PIE_IRJIT_SLICE` | `10000..10000000` | Overrides the PPSSPP shim slice length. Useful for timing experiments only. |
 | `DINGOO_PIE_INPUT_TRACE` | `1` | Prints SDL key events and Dingoo key state reads. |
 | `DINGOO_PIE_AUTOPRESS_KEYS` | `KEY:DELAY_MS:COUNT:PERIOD_MS:HOLD_MS` | Injects deterministic synthetic controls from inside the frontend for automated sample tests. Example: `A:6000:8:900:300`. Keys: `A`, `B`, `X`, `Y`, `U`, `D`, `L`, `R`, `SELECT`, `START`. |
@@ -279,8 +281,8 @@ from silently changing a different game version. One visible menu feature can
 use multiple low-level writes by sharing the same prefix:
 
 ```text
-once|解锁所有赛车/Unlock All Cars：隐藏锁图标|u32|0x80A9B190|0x1000000F|0x1040000F
-once|解锁所有赛车/Unlock All Cars：允许选择|u32|0x80A9C3E8|0x10000005|0x10400005
+once|解锁所有赛车/Unlock All Cars：隐藏锁图标|u32|0x80A092F4|0x1000000F|0x1040000F
+once|解锁所有赛车/Unlock All Cars：允许选择|u32|0x80A0A54C|0x10000005|0x10400005
 ```
 
 The menu shows one item: `解锁所有赛车` in Chinese or `Unlock All Cars` in
@@ -467,7 +469,7 @@ The latest known smoke results are:
 - `Snake.app`: frontend and HLE frame submission are aligned around 19-21 FPS after framebuffer snapshotting on the default Auto backend.
 - `PoPo Bash.app`: frontend submission is aligned with HLE at roughly 15-16 FPS. Remaining visible cadence is likely Dingoo timer/task/audio semantics rather than SDL presentation.
 - `Ultimate Drift.app`: remains a diagnostic sample for CPU/VFPU coverage and framebuffer behavior. This codebase no longer carries a game-specific Soft3D or 3D resource parser; investigate remaining 3D issues through guest execution traces, SDK/HLE calls, and framebuffer submissions.
-- `7Days.app` (`AF681C338A9932C98A3B450D4391C43D13747F1DFD937232AE38BEDB44359BF0`): the title/menu path throttles heavily through `OSTimeDly`. Auto now uses the global 1.0 delay scale; use `Settings -> Delay Scale` to tune it per user preference. Use `DINGOO_PIE_AUTOPRESS_SEQUENCE=A@9000:300` for smoke tests; repeated confirm presses can enter the save-load screen instead of staying on the title screen. Framebuffer dumps from this path should show title text and the background corridor rather than an all-black frame.
+- `7Days.app` (`AF681C338A9932C98A3B450D4391C43D13747F1DFD937232AE38BEDB44359BF0`): the title/menu path throttles heavily through `OSTimeDly`. Auto now uses the global 1.0 delay scale; use `Settings -> System Delay Scale` to tune it per user preference. Use `DINGOO_PIE_AUTOPRESS_SEQUENCE=A@9000:300` for smoke tests; repeated confirm presses can enter the save-load screen instead of staying on the title screen. Framebuffer dumps from this path should show title text and the background corridor rather than an all-black frame.
 
 Game files are not part of the repository or release packages. `.app` files
 belong to Dingoo Technology's package format and must come from legally obtained
@@ -475,9 +477,9 @@ user samples.
 
 ## Extension Points
 
-- Add sample-specific content-hash rules in `dingoo_pie/compat_profile.cpp`.
-- Add SDK import handlers in `dingoo_pie/sdk_hle.cpp`.
-- Add exact instruction compatibility hooks in `dingoo_pie/instruction_compat.cpp`.
-- Add CPU instruction support to `dingoo_pie/native_runtime.cpp` for interpreter checks.
-- Add PPSSPP shim or fast-memory work in `dingoo_pie/ppsspp_shim.cpp` and the patch files under `patches/`.
+- Add sample-specific content-hash rules in `native/core/config/compatibility/compat_profile.cpp`.
+- Add SDK import handlers in `native/core/app/hle/sdk_hle.cpp`.
+- Add exact instruction compatibility hooks in `native/core/app/cpu/instruction_compat.cpp`.
+- Add CPU instruction support to `native/core/app/cpu/native_runtime.cpp` for interpreter checks.
+- Add PPSSPP shim or fast-memory work in `native/core/app/cpu/ppsspp_shim.cpp` and the patch files under `patches/`.
 - Keep subtask JIT disabled by default until PPSSPP globals such as `currentMIPS`, `coreState`, and `MIPSComp::jit` are isolated per runtime or per thread.

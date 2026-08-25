@@ -228,9 +228,11 @@ function Stop-RunDingooPieProcesses($OutputDir) {
     return $errors
 }
 
-$apps = Get-ChildItem -LiteralPath $SampleDir -Filter "*.app" -File | Sort-Object Name
+$apps = Get-ChildItem -LiteralPath $SampleDir -File |
+    Where-Object { $_.Extension -ieq ".app" -or $_.Extension -ieq ".cc" } |
+    Sort-Object Name
 if ($apps.Count -eq 0) {
-    throw "No .app samples found under $SampleDir"
+    throw "No .app or .cc samples found under $SampleDir"
 }
 
 $runStamp = Get-Date -Format "yyyyMMdd-HHmmss"

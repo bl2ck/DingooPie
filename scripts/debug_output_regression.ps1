@@ -239,6 +239,7 @@ $baseRequired = @(
     '^main: no startup app; frontend is waiting for File/Open Game$',
     '^main: initializing frontend$',
     '^sdl-log: info application: Audio buffer samples set to 2048$'
+    '^sdl-log: info application: Digital noise reduction set to high$'
 )
 
 $results = @()

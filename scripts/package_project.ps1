@@ -156,7 +156,7 @@ New-Item -ItemType Directory -Path $StageRoot -Force | Out-Null
 
 $UseGitTrackedFiles = Test-GitWorkspace
 
-Copy-SourceTree 'dingoo_pie'
+Copy-SourceTree 'native'
 Copy-SourceTree 'cheats'
 Copy-SourceTree 'docs'
 Copy-SourceTree 'patches'
@@ -164,7 +164,7 @@ Copy-SourceTree 'resources'
 Copy-SourceTree 'scripts'
 Copy-SourceTree 'tools'
 
-Copy-WorkspaceSourceFile 'dingoo_pie\app_metadata.h'
+Copy-WorkspaceSourceFile 'native\pc\resources\app_metadata.h'
 Copy-WorkspaceSourceFile 'scripts\debug_output_regression.ps1'
 
 Copy-SourceFile 'CMakeLists.txt'
@@ -182,21 +182,21 @@ $required = @(
     'LICENSE',
     'README.md',
     'THIRD_PARTY.md',
-    'dingoo_pie\main.cpp',
-    'dingoo_pie\compat_profile.cpp',
-    'dingoo_pie\sdk_hle.cpp',
-    'dingoo_pie\guest_filesystem.cpp',
-    'dingoo_pie\guest_format.cpp',
-    'dingoo_pie\guest_audio.cpp',
-    'dingoo_pie\instruction_compat.cpp',
-    'dingoo_pie\runtime_debug.cpp',
-    'dingoo_pie\platform_win32.cpp',
-    'dingoo_pie\app_metadata.h',
-    'dingoo_pie\app_icon.rc',
-    'dingoo_pie\resource_ids.h',
-    'dingoo_pie\ui_strings.cpp',
-    'dingoo_pie\ui_strings.h',
-    'dingoo_pie\ppsspp_shim.cpp',
+    'native\core\main.cpp',
+    'native\core\config\compatibility\compat_profile.cpp',
+    'native\core\app\hle\sdk_hle.cpp',
+    'native\core\shared\services\guest_filesystem.cpp',
+    'native\core\app\hle\guest_format.cpp',
+    'native\core\shared\services\guest_audio.cpp',
+    'native\core\app\cpu\instruction_compat.cpp',
+    'native\core\app\runtime\runtime_debug.cpp',
+    'native\pc\platform\platform_win32.cpp',
+    'native\pc\resources\app_metadata.h',
+    'native\pc\resources\app_icon.rc',
+    'native\pc\resources\resource_ids.h',
+    'native\pc\frontend\ui_strings.cpp',
+    'native\pc\frontend\ui_strings.h',
+    'native\core\app\cpu\ppsspp_shim.cpp',
     'cheats\README.md',
     'docs\ARCHITECTURE.md',
     'docs\A320_X760_PLUS_3D_BASELINES.md',

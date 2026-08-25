@@ -3,22 +3,47 @@ cmake_minimum_required(VERSION 3.16)
 project(DingooPie LANGUAGES C CXX)
 
 set(targetName DingooPie)
-set(DINGOO_PIE_DEPS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../deps_extract" CACHE PATH "Extracted third-party dependency root")
-set(PPSSPP_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../downloads/ppsspp-master" CACHE PATH "PPSSPP source tree used for the IR JIT backend")
+set(DINGOO_PIE_DEPS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/deps_extract" CACHE PATH "Extracted third-party dependency root")
+set(PPSSPP_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ppsspp-master" CACHE PATH "PPSSPP source tree used for the IR JIT backend")
 option(DINGOO_PIE_ENABLE_PPSSPP_IRJIT "Compile the PPSSPP IR/x64 JIT backend adapter" ON)
 option(DINGOO_PIE_CONSOLE_SUBSYSTEM "Build DingooPie as a console executable for log-capturing validation runs" OFF)
 
-file(GLOB targetName_src CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/dingoo_pie/*.cpp"
+set(DINGOO_PIE_SOURCE_INCLUDE_DIRS
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/core"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/core/app/cpu"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/core/app/hle"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/core/app/memory"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/core/app/runtime"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/core/app/save"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/core/config/cheats"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/core/config/compatibility"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/core/config/settings"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/core/frontend/audio"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/core/frontend/input"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/core/frontend/video"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/core/shared"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/core/shared/diagnostics"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/core/shared/execution"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/core/shared/game"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/core/shared/services"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/pc/debug"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/pc/frontend"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/pc/platform"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/pc/resources"
+)
+
+file(GLOB_RECURSE targetName_src CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/core/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/pc/*.cpp"
 )
 
 if(WIN32)
     list(APPEND targetName_src
-        "${CMAKE_CURRENT_SOURCE_DIR}/dingoo_pie/app_icon.rc"
+        "${CMAKE_CURRENT_SOURCE_DIR}/native/pc/resources/app_icon.rc"
     )
-    set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/dingoo_pie/app_icon.rc" PROPERTIES
+    set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/native/pc/resources/app_icon.rc" PROPERTIES
         OBJECT_DEPENDS
-            "${CMAKE_CURRENT_SOURCE_DIR}/dingoo_pie/app_metadata.h;${CMAKE_CURRENT_SOURCE_DIR}/dingoo_pie/resource_ids.h;${CMAKE_CURRENT_SOURCE_DIR}/dingoo_pie/app.manifest;${CMAKE_CURRENT_SOURCE_DIR}/resources/app_icon.ico"
+            "${CMAKE_CURRENT_SOURCE_DIR}/native/pc/resources/app_metadata.h;${CMAKE_CURRENT_SOURCE_DIR}/native/pc/resources/resource_ids.h;${CMAKE_CURRENT_SOURCE_DIR}/native/pc/resources/app.manifest;${CMAKE_CURRENT_SOURCE_DIR}/resources/app_icon.ico"
     )
 endif()
 
@@ -28,8 +53,8 @@ list(APPEND targetName_src
 
 if(DINGOO_PIE_ENABLE_PPSSPP_IRJIT)
     set(dingoopie_ppsspp_adapter_src
-        "${CMAKE_CURRENT_SOURCE_DIR}/dingoo_pie/ppsspp_irjit_backend.cpp"
-        "${CMAKE_CURRENT_SOURCE_DIR}/dingoo_pie/ppsspp_shim.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/native/core/app/cpu/ppsspp_irjit_backend.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/native/core/app/cpu/ppsspp_shim.cpp"
     )
     list(REMOVE_ITEM targetName_src ${dingoopie_ppsspp_adapter_src})
 
@@ -82,7 +107,7 @@ if(DINGOO_PIE_ENABLE_PPSSPP_IRJIT)
         CXX_EXTENSIONS YES
     )
     target_include_directories(ppsspp_irjit_core PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/dingoo_pie"
+        ${DINGOO_PIE_SOURCE_INCLUDE_DIRS}
         "${PPSSPP_SOURCE_ROOT}"
         "${PPSSPP_SOURCE_ROOT}/Common"
         "${PPSSPP_SOURCE_ROOT}/Core"
@@ -97,7 +122,7 @@ if(DINGOO_PIE_ENABLE_PPSSPP_IRJIT)
     )
     target_compile_definitions(dingoopie_ppsspp_adapter PRIVATE DINGOO_PIE_ENABLE_PPSSPP_IRJIT DINGOO_PIE_DINGOO_MEMORY _WIN32_WINNT=0x0601)
     target_include_directories(dingoopie_ppsspp_adapter PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/dingoo_pie"
+        ${DINGOO_PIE_SOURCE_INCLUDE_DIRS}
         "${PPSSPP_SOURCE_ROOT}"
         "${PPSSPP_SOURCE_ROOT}/Common"
         "${PPSSPP_SOURCE_ROOT}/Core"
@@ -115,7 +140,7 @@ set_target_properties(${targetName} PROPERTIES
 target_compile_definitions(${targetName} PRIVATE _WIN32_WINNT=0x0601 SDL_MAIN_HANDLED)
 
 target_include_directories(${targetName} PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/dingoo_pie"
+    ${DINGOO_PIE_SOURCE_INCLUDE_DIRS}
     "${DINGOO_PIE_DEPS_ROOT}/capstone/mingw64/include"
     "${DINGOO_PIE_DEPS_ROOT}/SDL2/SDL2-2.26.5/x86_64-w64-mingw32/include"
     "${DINGOO_PIE_DEPS_ROOT}/SDL2/SDL2-2.26.5/x86_64-w64-mingw32/include/SDL2"

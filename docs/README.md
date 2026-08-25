@@ -2,7 +2,7 @@
 
 ## 中文
 
-丁果派 DingooPie 是 Windows 平台的高层模拟器，用于运行丁果科技 `.app`
+丁果派 DingooPie 是 Windows 平台的高层模拟器，用于运行丁果科技 `.app`、`.cc`
 游戏文件，目标设备包括丁果 A320 掌机，并补充支持兼容的歌美 X760+
 掌机游戏。`.app` 格式文件归丁果科技所有。本项目不附带游戏样本，
 用户需自行提供合法取得的文件。
@@ -10,7 +10,7 @@
 Windows 版本信息：
 
 - 文件说明：Dingoo Game Emulator
-- 文件版本：1.6
+- 文件版本：1.7
 - 产品名称：丁果派 DingooPie
 - Powered by：BL2CK Software
 - 版权：Copyright (c) 2026 BL2CK
@@ -39,15 +39,16 @@ Windows 版本信息：
 | 竖屏模式 | 关闭 |
 | FPS 显示 | 关闭 |
 | 主音量 | 100% |
-| 音频缓冲 | 2048 采样 |
+| 音频缓冲 | 1024 采样 |
+| 数字降噪 | 高 |
 | 音频效果 | 关闭 |
 | 禁用音频 | 关闭 |
-| 禁用输入法 | 开启 |
-| 虚拟按键 | 关闭 |
-| CPU 后端 | 自动，默认使用 PPSSPP IR JIT |
+| 禁用系统输入法 | 开启 |
+| 显示虚拟按键 | 关闭 |
+| CPU 执行模式 | 自动，默认使用 PPSSPP IR JIT |
 | CPU 时钟 | 自动，默认 336 MHz |
-| 运行速度 | 自动，默认 65% |
-| 延迟比例 | 自动，默认 1.0 |
+| 游戏速度 | 自动，默认 65% |
+| 系统延迟比例 | 自动，默认 1.0 |
 | 金手指 | 关闭 |
 | 界面语言 | 中文 |
 | 调试控制台 | 关闭 |
@@ -58,16 +59,16 @@ Windows 版本信息：
 
 当前中文前端菜单顺序为 `文件`、`选项`、`设置`、`调试` 和 `帮助`。
 
-- `文件`：打开游戏、最近游戏/清除最近游戏、重启游戏、暂停/恢复游戏、保存截图、保存存档/读取存档、存档管理器、退出。
+- `文件`：打开游戏、最近游戏/清除最近游戏、重启游戏、暂停/恢复游戏、保存截图、保存即时存档/读取即时存档、存档管理器、退出。
 - `选项 > 视频`：1x、2x、3x、窗口化全屏、抗锯齿、正常、黑白、反色、柔化、锐化、色彩增强、怀旧褐色、像素网格、LCD 扫描线、轻量 CRT、亮度、对比度、伽马、饱和度、最小化时、竖屏模式和显示 FPS。
-- `选项 > 音频`：主音量、音频缓冲、音频效果和禁用音频。
-- `选项 > 输入`：禁用输入法、显示虚拟按键和按键映射。
-- `设置`：CPU 后端、CPU 时钟、运行速度、延迟比例、金手指、语言和恢复默认设置。
+- `选项 > 音频`：主音量、音频缓冲、音频效果、数字降噪和禁用音频。
+- `选项 > 输入`：禁用系统输入法、显示虚拟按键和按键映射。
+- `设置`：CPU 执行模式、CPU 时钟、游戏速度、系统延迟比例、金手指、语言和恢复默认设置。
 - `调试`：调试控制台、性能日志、打开调试日志、资源监视器、内存搜索器和调试器。
 - `帮助`：关于 丁果派 DingooPie。
 
-设置会自动保存。视频、音频、输入、CPU 时钟、运行速度、延迟比例、金手指、
-语言和调试选项会立即生效。修改 CPU 后端会自动重启当前游戏。
+设置会自动保存。视频、音频、输入、CPU 时钟、游戏速度、系统延迟比例、金手指、
+语言和调试选项会立即生效。修改 CPU 执行模式会自动重启当前游戏。
 暂停/恢复游戏只冻结当前游戏执行和音频输出。
 即时存档提供 15 个档位，存档文件名使用游戏名，格式为
 `游戏名.slot1.dps`，保存到游戏所在目录旁的 `savestates` 文件夹。菜单会显示
@@ -102,8 +103,8 @@ Windows 版本信息：
 
 ### 金手指
 
-金手指按当前游戏同名 `.cht` 文件加载，即 `游戏名.app` 对应
-`cheats\游戏名.cht`。没有同名文件时游戏正常运行；如果金手指文件不匹配当前游戏，
+金手指按当前游戏格式加载，即 `游戏名.app` 对应 `cheats\游戏名.app.cht`，
+`游戏名.cc` 对应 `cheats\游戏名.cc.cht`。没有同名文件时游戏正常运行；如果金手指文件不匹配当前游戏，
 模拟器会提示并停用该文件。金手指总开关默认关闭；具体功能默认不勾选，勾选状态
 按游戏保存，并在下次启动同一游戏时自动恢复。
 
@@ -123,7 +124,7 @@ Windows 版本信息：
 
 ### 源码目录
 
-所有项目源码都位于 `dingoo_pie/` 目录。
+公共模拟核心位于 `native/core/`，PC 前端、平台适配和调试功能位于 `native/pc/`。
 
 - `main.cpp`：进程启动和整体启动流程。
 - `emulator_core.*`：游戏加载、运行时初始化、AppMain 入口调用和致命错误诊断。
@@ -199,7 +200,7 @@ does not ship game samples; users must provide legally obtained files.
 Windows version information:
 
 - File description: Dingoo Game Emulator
-- File version: 1.6
+- File version: 1.7
 - Product name: DingooPie
 - Powered by: BL2CK Software
 - Copyright: Copyright (c) 2026 BL2CK
@@ -232,12 +233,12 @@ A `.app` path can also be passed on the command line:
 | Audio buffer | 2048 samples |
 | Audio effect | Off |
 | Disable audio | Off |
-| Disable IME | On |
-| Virtual controls | Off |
-| CPU backend | Auto, defaults to PPSSPP IR JIT |
+| Disable System IME | On |
+| Show Virtual Controls | Off |
+| CPU Execution Mode | Auto, defaults to PPSSPP IR JIT |
 | CPU Clock | Auto, defaults to 336 MHz |
-| Runtime Speed | Auto, defaults to 65% |
-| Delay Scale | Auto, defaults to 1.0 |
+| Game Speed | Auto, defaults to 65% |
+| System Delay Scale | Auto, defaults to 1.0 |
 | Cheats | Off |
 | UI language | Chinese |
 | Debug Console | Off |
@@ -250,17 +251,17 @@ The frontend menu is ordered as `File`, `Options`, `Settings`, `Debug`, and
 `Help`; the Chinese UI displays them as `文件`, `选项`, `设置`, `调试`, and
 `帮助`.
 
-- `File`: Open Game, Recent Games/Clear Recent Games, Restart Game, Pause/Resume Game, Save Screenshot, Save Slot/Load Slot, Save Manager, and Exit.
+- `File`: Open Game, Recent Games/Clear Recent Games, Restart Game, Pause/Resume Game, Save Screenshot, Save State/Load State, Save Manager, and Exit.
 - `Options > Video`: 1x, 2x, 3x, windowed fullscreen, anti-aliasing, normal, black and white, invert, soft blur, sharpen, vivid, sepia, pixel grid, LCD scanline, light CRT, brightness, contrast, gamma, saturation, minimized behavior, portrait mode, and FPS overlay.
-- `Options > Audio`: master volume, audio buffer, audio effect, and disable audio.
-- `Options > Input`: disable IME, show virtual controls, and input mapping.
-- `Settings`: CPU Backend, CPU Clock, Runtime Speed, Delay Scale, Cheats, Cheat Manager, Language, and Restore Default Settings.
+- `Options > Audio`: master volume, audio buffer, audio effect, digital noise reduction, and disable audio.
+- `Options > Input`: Disable System IME, Show Virtual Controls, and Input Mapping.
+- `Settings`: CPU Execution Mode, CPU Clock, Game Speed, System Delay Scale, Cheats, Cheat Manager, Language, and Restore Default Settings.
 - `Debug`: Debug Console, Performance Log, Open Debug Log, Resource Monitor, Memory Searcher, and Debugger.
 - `Help`: About DingooPie.
 
-Settings are saved automatically. Video, audio, input, CPU clock, runtime speed,
-delay scale, cheats, language, and debug options apply immediately. Changing the
-CPU backend automatically restarts the current game. Pause/Resume Game freezes
+Settings are saved automatically. Video, audio, input, CPU clock, game speed,
+system delay scale, cheats, language, and debug options apply immediately. Changing the
+CPU Execution Mode automatically restarts the current game. Pause/Resume Game freezes
 current game execution and audio output.
 Save/Load State provides 15 slots per game. Save files use names like
 `GameName.slot1.dps` and are stored in a `savestates` folder next to the game
@@ -271,7 +272,7 @@ game and runtime-state layout. If the game is still at a title or selection
 stage, enter the same scene as the saved state before loading.
 
 `Options > Input > Input Mapping` opens a standalone keyboard/controller mapping
-window. Choose `Set Key` or `Set Gamepad` on a control row, then press the target
+window. Choose `Set Key` or `Set Controller` on a control row, then press the target
 keyboard key, controller button, stick direction, or trigger. Restore defaults
 clears the custom mapping for that device.
 
@@ -299,9 +300,10 @@ SELECT/START, and shoulder buttons/triggers map to the shoulders. Use
 
 ### Cheats
 
-Cheats are loaded from the same-name `.cht` file for the running app:
-`GameName.app` maps to `cheats\GameName.cht`. If no same-name file exists, the
-game runs normally. If a cheat file does not match the current game, DingooPie
+Cheats are loaded from the format-specific `.cht` file for the running game:
+`GameName.app` maps to `cheats\GameName.app.cht`, and `GameName.cc` maps to
+`cheats\GameName.cc.cht`. If no matching file exists, the
+game runs normally. If a cheat file is not for the current game, DingooPie
 warns and disables that file.
 The global cheat switch is off by default. Individual features start unchecked;
 selections are saved per game and restored when the same game starts again.
@@ -320,11 +322,11 @@ an additional diagnostic log.
 - `Debug > Open Debug Log`: opens the current debug log file.
 - `Debug > Resource Monitor`: shows internal resources and external files while a game is running; upper/lower lists show loaded and unloaded entries, and the status line reports read count and read bytes. When checked, it opens immediately and automatically for later games.
 - `Debug > Memory Searcher`: searches u8/u16/u32 values and narrows candidates by value changes; selected addresses can be refreshed, written once, or copied as `.cht` records. Memory Searcher is available while a game is running.
-- `Debug > Debugger`: opens a live inspection panel with disassembly, registers, memory bytes, PC hit counters, and write hits. PC hits and write hits only record hits and do not pause or single-step the CPU. Debugger is available while a game is running.
+- `Debug > Debugger`: APP exposes disassembly, registers, memory, PC hit counters, and write hits; CC exposes ARM32 registers and memory inspection. Hit counters do not pause or single-step the CPU.
 
 ### Source Layout
 
-All project source files live in `dingoo_pie/`.
+Shared emulation code lives in `native/core/`; PC frontend, platform, and debug code lives in `native/pc/`.
 
 - `main.cpp`: process startup and high-level boot flow.
 - `emulator_core.*`: app loading, runtime initialization, AppMain handoff, and fatal diagnostics.

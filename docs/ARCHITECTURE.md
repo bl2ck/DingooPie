@@ -192,8 +192,9 @@ override.
 `runtime.cheats_enabled=0` is the default. The frontend persists this global
 cheat switch and the selected cheat feature names per game. Individual cheat
 features remain unchecked until selected by the user, then restore when the same
-game is loaded again. Cheat lookup uses the app base name, such as
-`GameName.app` -> `cheats\GameName.cht`. The optional `app_sha256` field is
+game is loaded again. Cheat lookup preserves the game format suffix, such as
+`GameName.app` -> `cheats\GameName.app.cht` and
+`GameName.cc` -> `cheats\GameName.cc.cht`. The optional `app_sha256` field is
 validation only and never a lookup key. Missing cheat files are silent; SHA
 mismatches disable the loaded file and show the user a warning.
 `audio.buffer_samples` controls only the SDL output device buffer request; the
