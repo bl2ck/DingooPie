@@ -26,7 +26,10 @@ uint8_t s_LcdFrameBufferPtr[VM_LCD_FB_SIZE] = { 0 };
 // submitted snapshots so it never presents a frame while the guest is halfway
 // through a large blit or tile update.
 static uint8_t s_presentedFrameBuffers[2][VM_LCD_FB_SIZE] = { 0 };
+static uint8_t s_deferredFrameBuffer[VM_LCD_FB_SIZE] = { 0 };
 static std::atomic<int> s_presentedFrameIndex(0);
+static std::atomic<bool> s_transientPartialProtectionEnabled(false);
+static bool s_hasDeferredFrame = false;
 static std::mutex s_presentedFrameMutex;
 static std::atomic<int> s_FbUpdateRequested(1);
 static std::atomic<uint64_t> s_FbWriteCount(0);
@@ -164,6 +167,83 @@ static uint64_t paceFramebufferSubmission(void)
     }
     s_FramePacingLastMicros = nowMicros;
     return nowMicros;
+}
+
+static bool framebufferLooksLikeTransientPartial(const uint8_t* current,
+    const uint8_t* previous)
+{
+    if (!current || !previous)
+    {
+        return false;
+    }
+    const uint16_t* currentPixels = (const uint16_t*)current;
+    const uint16_t* previousPixels = (const uint16_t*)previous;
+    const uint32_t pixelCount = SCREEN_WIDTH * SCREEN_HEIGHT;
+    uint32_t changedPixels = 0;
+    uint32_t unchangedPixels = 0;
+    uint32_t firstChangedRow = SCREEN_HEIGHT;
+    uint32_t lastChangedRow = 0;
+    uint32_t longestChangedRun = 0;
+    uint32_t changedRun = 0;
+    for (uint32_t y = 0; y < SCREEN_HEIGHT; ++y)
+    {
+        uint32_t rowChanged = 0;
+        for (uint32_t x = 0; x < SCREEN_WIDTH; ++x)
+        {
+            if (currentPixels[y * SCREEN_WIDTH + x] ==
+                previousPixels[y * SCREEN_WIDTH + x])
+            {
+                ++unchangedPixels;
+            }
+            else
+            {
+                ++changedPixels;
+                ++rowChanged;
+            }
+        }
+        if (rowChanged >= SCREEN_WIDTH * 9u / 10u)
+        {
+            if (firstChangedRow == SCREEN_HEIGHT)
+            {
+                firstChangedRow = y;
+            }
+            lastChangedRow = y;
+            ++changedRun;
+            if (changedRun > longestChangedRun)
+            {
+                longestChangedRun = changedRun;
+            }
+        }
+        else
+        {
+            changedRun = 0;
+        }
+    }
+    if (firstChangedRow == SCREEN_HEIGHT || longestChangedRun < 8u ||
+        changedPixels < SCREEN_WIDTH * 8u ||
+        changedPixels * 100u > pixelCount * 45u ||
+        unchangedPixels * 100u < pixelCount * 55u ||
+        lastChangedRow < firstChangedRow)
+    {
+        return false;
+    }
+    for (uint32_t y = firstChangedRow; y <= lastChangedRow; ++y)
+    {
+        uint16_t dominant = currentPixels[y * SCREEN_WIDTH];
+        uint32_t dominantCount = 0;
+        for (uint32_t x = 0; x < SCREEN_WIDTH; ++x)
+        {
+            if (currentPixels[y * SCREEN_WIDTH + x] == dominant)
+            {
+                ++dominantCount;
+            }
+        }
+        if (dominantCount * 100u < SCREEN_WIDTH * 90u)
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 static void resetFramebufferPacing(void)
@@ -308,6 +388,9 @@ void framebufferReset(void)
 {
     memset(s_LcdFrameBufferPtr, 0, sizeof(s_LcdFrameBufferPtr));
     memset(s_presentedFrameBuffers, 0, sizeof(s_presentedFrameBuffers));
+    memset(s_deferredFrameBuffer, 0, sizeof(s_deferredFrameBuffer));
+    s_hasDeferredFrame = false;
+    s_transientPartialProtectionEnabled.store(false, std::memory_order_release);
     s_presentedFrameIndex.store(0, std::memory_order_release);
     s_SubmittedFrameCount.store(0, std::memory_order_release);
     resetFramebufferPacing();
@@ -426,6 +509,25 @@ void requestFbUpdate(void)
 
     std::lock_guard<std::mutex> lock(s_presentedFrameMutex);
     int nextIndex = s_presentedFrameIndex.load(std::memory_order_relaxed) ^ 1;
+    const uint8_t* previous = s_presentedFrameBuffers[
+        s_presentedFrameIndex.load(std::memory_order_relaxed) & 1];
+    bool isTransientPartial =
+        s_transientPartialProtectionEnabled.load(std::memory_order_acquire) &&
+        framebufferLooksLikeTransientPartial(s_LcdFrameBufferPtr, previous);
+    if (s_hasDeferredFrame &&
+        memcmp(s_deferredFrameBuffer, s_LcdFrameBufferPtr,
+            sizeof(s_deferredFrameBuffer)) == 0 && isTransientPartial)
+    {
+        return;
+    }
+    s_hasDeferredFrame = false;
+    if (isTransientPartial)
+    {
+        memcpy(s_deferredFrameBuffer, s_LcdFrameBufferPtr,
+            sizeof(s_deferredFrameBuffer));
+        s_hasDeferredFrame = true;
+        return;
+    }
     memcpy(s_presentedFrameBuffers[nextIndex], s_LcdFrameBufferPtr, sizeof(s_presentedFrameBuffers[nextIndex]));
     uint32_t frameNumber = s_SubmittedFrameCount.fetch_add(1, std::memory_order_acq_rel) + 1;
     s_SubmittedFrameProfileCount.fetch_add(1, std::memory_order_relaxed);
@@ -433,6 +535,16 @@ void requestFbUpdate(void)
     s_presentedFrameIndex.store(nextIndex, std::memory_order_release);
     s_FbUpdateRequested.store(1, std::memory_order_release);
     s_FramebufferCopyMicros.fetch_add(framebufferNowMicros() - beginMicros, std::memory_order_relaxed);
+}
+
+void framebufferSetTransientPartialProtectionEnabled(bool enabled)
+{
+    std::lock_guard<std::mutex> lock(s_presentedFrameMutex);
+    s_transientPartialProtectionEnabled.store(enabled, std::memory_order_release);
+    if (!enabled)
+    {
+        s_hasDeferredFrame = false;
+    }
 }
 
 void framebufferPresentRestoredFrame(void)

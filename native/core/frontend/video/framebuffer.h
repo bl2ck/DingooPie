@@ -34,7 +34,7 @@ void framebufferSetProfileEnabled(bool enabled);
 void framebufferReset(void);
 inline void* framebufferPixels(void) { return getFramebuffPtr(); }
 inline void framebufferRequestUpdate(void) { requestFbUpdate(); }
-inline void framebufferSetTransientPartialProtectionEnabled(bool) {}
+void framebufferSetTransientPartialProtectionEnabled(bool enabled);
 inline uint64_t framebufferConsumeSubmittedCount(void) { return consumeFramebufferSubmittedCount(); }
 inline uint64_t framebufferConsumeCopyMicros(void) { return consumeFramebufferCopyMicros(); }
 inline void framebufferConsumeTimingStats(uint64_t* totalIntervalMicros,

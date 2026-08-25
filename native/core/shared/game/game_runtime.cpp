@@ -4,6 +4,7 @@
 #include "cc/runtime/cc_runtime.h"
 #include "cc/save/cc_save_state.h"
 #include "app_save_state.h"
+#include "shared/services/audio_output.h"
 #include "runtime_resource_monitor.h"
 
 #include <mutex>
@@ -139,6 +140,7 @@ void gameRuntimeStop(void)
         ccRuntimeRequestStop();
         joinCcRuntimeThread();
     }
+    audioOutputResetAfterRuntimeStop();
     std::lock_guard<std::mutex> lock(g_gameRuntimeMutex);
     g_activeFormat = GAME_FORMAT_UNKNOWN;
 }

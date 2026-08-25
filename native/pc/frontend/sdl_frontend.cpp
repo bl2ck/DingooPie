@@ -2631,7 +2631,7 @@ static void applyFrontendPauseState(bool refreshMenu)
     {
         appRuntimeNotifyPauseRequested();
     }
-    MixerSetFrontendPaused(paused);
+    audioOutputSetFrontendPaused(paused);
     printf("frontend: game pause %s\n", paused ? "on" : "off");
     if (refreshMenu)
     {
@@ -4218,11 +4218,11 @@ void frontendApplyVideoSettings(const EmulatorSettings& settings)
 
 void frontendApplyAudioSettings(const EmulatorSettings& settings)
 {
-    MixerSetMasterVolumePercent(settings.audioVolumePercent);
-    MixerSetBufferSamples(settings.audioBufferSamples);
-    MixerSetBufferLatencyMode(settings.audioBufferLatency);
-    MixerSetAudioEffect(settings.audioEffect);
-    MixerSetNoiseReduction(settings.digitalNoiseReduction);
+    audioOutputSetMasterVolumePercent(settings.audioVolumePercent);
+    audioOutputSetBufferSamples(settings.audioBufferSamples);
+    audioOutputSetBufferLatencyMode(settings.audioBufferLatency);
+    audioOutputSetEffect(settings.audioEffect);
+    audioOutputSetNoiseReduction(settings.digitalNoiseReduction);
     printf("frontend: audio settings volume=%d buffer_samples=%d buffer_latency=%s effect=%s digital_noise_reduction=%s audio_disabled=%u\n",
         settings.audioVolumePercent,
         settings.audioBufferSamples,
@@ -5853,6 +5853,7 @@ void frontendShutdown(void)
 #endif
     g_frontendSettings = NULL;
     g_lastDisplayFrameValid = false;
+    audioOutputPrepareApplicationExit();
     SDL_Quit();
     printf("frontend: shutdown complete\n");
 }
