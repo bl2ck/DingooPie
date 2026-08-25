@@ -21,7 +21,7 @@
 
 #include "platform_win32.h"
 
-typedef EmulatorRuntimeMemorySearchCandidate MemorySearcherCandidate;
+typedef AppRuntimeMemorySearchCandidate MemorySearcherCandidate;
 
 struct MemorySearcherSavedAddress
 {
@@ -695,20 +695,20 @@ static void memorySearcherNewScan(void)
     refreshMemorySearcherResults();
 }
 
-static EmulatorRuntimeMemorySearchFilter runtimeFilterForMemorySearcher(MemorySearcherFilter filter)
+static AppRuntimeMemorySearchFilter runtimeFilterForMemorySearcher(MemorySearcherFilter filter)
 {
     switch (filter)
     {
     case MEMORY_SEARCHER_FILTER_EQUAL:
-        return EMULATOR_RUNTIME_MEMORY_SEARCH_EQUAL;
+        return APP_RUNTIME_MEMORY_SEARCH_EQUAL;
     case MEMORY_SEARCHER_FILTER_INCREASED:
-        return EMULATOR_RUNTIME_MEMORY_SEARCH_INCREASED;
+        return APP_RUNTIME_MEMORY_SEARCH_INCREASED;
     case MEMORY_SEARCHER_FILTER_DECREASED:
-        return EMULATOR_RUNTIME_MEMORY_SEARCH_DECREASED;
+        return APP_RUNTIME_MEMORY_SEARCH_DECREASED;
     case MEMORY_SEARCHER_FILTER_UNCHANGED:
-        return EMULATOR_RUNTIME_MEMORY_SEARCH_UNCHANGED;
+        return APP_RUNTIME_MEMORY_SEARCH_UNCHANGED;
     default:
-        return EMULATOR_RUNTIME_MEMORY_SEARCH_EQUAL;
+        return APP_RUNTIME_MEMORY_SEARCH_EQUAL;
     }
 }
 
@@ -1145,7 +1145,7 @@ static void refreshMemorySearcherAppInfoList(void)
     ListView_DeleteAllItems(g_memorySearcherAppInfoList);
 
     int row = 0;
-    EmulatorRuntimeAppInfo info;
+    AppRuntimeInfo info;
     if (!gameRuntimeGetGameInfo(&info))
     {
         appendMemorySearcherAppInfoRow(&row,

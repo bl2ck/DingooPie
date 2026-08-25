@@ -26,13 +26,13 @@ Technology; game files are external test inputs, not project assets.
    initializes SDL, and starts the guest runtime thread only when an app path
    was provided on the command line. Without a startup app, the frontend stays
    open and waits for `File/Open Game`.
-2. `emulator_core.cpp` parses the `.app`, computes its SHA256 identity, maps
+2. `app_runtime.cpp` parses the `.app`, computes its SHA256 identity, maps
    guest memory, initializes the HLE bridge and virtual file system, installs
    compatibility hooks, and jumps to the guest entry point.
-3. `native_runtime.cpp` owns the MIPS execution contract. It selects either the
+3. `mips_runtime.cpp` owns the MIPS execution contract. It selects either the
    PPSSPP IR JIT adapter or the in-tree interpreter and dispatches hooks for
    mapped SDK imports and compatibility hooks.
-4. `sdk_hle.cpp` implements Dingoo SDK calls such as framebuffer submission,
+4. `app_hle.cpp` implements Dingoo SDK calls such as framebuffer submission,
    timers, input, task APIs, resources, audio, and formatted output.
 5. `sdl_frontend.cpp`, `framebuffer.cpp`, and `sdl_audio.cpp` present video,
    input, overlays, virtual controls, filters, screenshots, and audio on the
@@ -76,7 +76,7 @@ About.
 
 - `app_loader.*`: Dingoo Technology `.app` container parsing and app resource metadata.
 - `app_paths.*`: path normalization and app file-name helpers.
-- `emulator_core.*`: app bootstrapping, app identity logging,
+- `app_runtime.*`: app bootstrapping, app identity logging,
   and fatal runtime diagnostics.
 - `app_framebuffer_mapping.*`: APP runtime framebuffer alias mapping. The
   frontend framebuffer module owns only pixels, snapshots, pacing, and
@@ -84,18 +84,18 @@ About.
 - `emulator_options.*`: command-line and environment backend options.
 - `emulator_settings.*`: frontend settings, optional INI persistence, and
   environment synchronization.
-- `native_runtime.*`: backend-neutral MIPS runtime, register/memory access,
+- `mips_runtime.*`: backend-neutral MIPS runtime, register/memory access,
   hooks, and interpreter implementation.
-- `ppsspp_irjit_backend.*`, `ppsspp_shim.cpp`: PPSSPP IR/x64 JIT adapter and
+- `ppsspp_backend.*`, `ppsspp_bridge.cpp`: PPSSPP IR/x64 JIT adapter and
   Dingoo memory/HLE shim.
-- `instruction_compat.*`: exact instruction-level compatibility hooks and
+- `mips_compat.*`: exact instruction-level compatibility hooks and
   conservative software-rendering loop promotion for recognized MIPS patterns.
 - `compat_profile.*`: content-hash compatibility profile data used by HLE and
   file-system code.
-- `sdk_hle.*`: Dingoo SDK import bridge and high-level guest services.
+- `app_hle.*`: Dingoo SDK import bridge and high-level guest services.
 - `guest_filesystem.*`: guest file handles, resource-backed files, and
   app-specific resource views.
-- `task_scheduler.*`: Dingoo task APIs backed by host threads.
+- `app_task_scheduler.*`: Dingoo task APIs backed by host threads.
 - `input_controls.*`, `input_state.h`: host keyboard/mouse/virtual controls to
   Dingoo A320 and Gemei X760+ button state.
 - `framebuffer.*`, `sdl_frontend.*`: framebuffer storage and snapshots, SDL presentation,
@@ -103,7 +103,7 @@ About.
 - `resource_monitor_ui.*`, `runtime_resource_monitor.*`: Resource Monitor UI,
   runtime resource-load snapshots, and transient list highlight state.
 - `sdl_audio.*`, `guest_audio.*`: SDL audio output and waveout-compatible HLE.
-- `runtime_debug.*`, `debug_console.*`: register dumps, disassembly diagnostics,
+- `app_runtime_debug.*`, `debug_console.*`: register dumps, disassembly diagnostics,
   and optional Win32 debug console.
 - `platform_win32.*`: Windows file picker, UTF-8/UTF-16 conversion, and working
   directory setup.

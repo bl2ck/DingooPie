@@ -1,4 +1,4 @@
-#include "ppsspp_irjit_backend.h"
+#include "ppsspp_backend.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -13,10 +13,10 @@
 #include <unordered_map>
 #include <vector>
 
-#include "emulated_memory.h"
+#include "app_memory.h"
 #include "framebuffer.h"
 #include "pause_gate.h"
-#include "sdk_hle.h"
+#include "app_hle.h"
 #include "input_state.h"
 #include "guest_filesystem.h"
 #include "runtime_log.h"
@@ -1535,7 +1535,7 @@ static bool writeFastKeyStatus(uint32_t address)
             (unsigned long)status.pressed,
             (unsigned long)status.released,
             (unsigned long)status.status,
-            bridge_get_app_identity());
+            bridge_get_game_identity());
     }
     return true;
 }

@@ -71,8 +71,8 @@ list(APPEND targetName_src
 
 if(DINGOO_PIE_ENABLE_PPSSPP_IRJIT)
     set(dingoopie_ppsspp_adapter_src
-        "${CMAKE_CURRENT_SOURCE_DIR}/native/core/app/cpu/ppsspp_irjit_backend.cpp"
-        "${CMAKE_CURRENT_SOURCE_DIR}/native/core/app/cpu/ppsspp_shim.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/native/core/app/cpu/ppsspp_backend.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/native/core/app/cpu/ppsspp_bridge.cpp"
     )
     list(REMOVE_ITEM targetName_src ${dingoopie_ppsspp_adapter_src})
 

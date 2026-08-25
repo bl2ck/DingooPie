@@ -1,6 +1,6 @@
-#include "runtime_debug.h"
+#include "app_runtime_debug.h"
 #include <time.h>
-#include "emulated_memory.h"
+#include "app_memory.h"
 #include <capstone/capstone.h>
 #include <vector>
 

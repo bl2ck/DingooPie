@@ -1,4 +1,4 @@
-#include "ppsspp_irjit_backend.h"
+#include "ppsspp_backend.h"
 
 #include <stdio.h>
 #include <cstdlib>

@@ -1,4 +1,4 @@
-#include "save_state.h"
+#include "app_save_state.h"
 #include "shared/save/save_file_storage.h"
 #include "shared/save/save_state_format.h"
 
@@ -95,7 +95,7 @@ static void readHeapHeader(const SaveStateHeapHeader& in, VmHeapSnapshot* out)
 }
 
 static void writeRegisterHeader(SaveStateRegisterHeader* out,
-    const EmulatorRuntimeRegisterSnapshot& in)
+    const AppRuntimeRegisterSnapshot& in)
 {
     memset(out, 0, sizeof(*out));
     memcpy(out->gpr, in.gpr, sizeof(out->gpr));
@@ -110,7 +110,7 @@ static void writeRegisterHeader(SaveStateRegisterHeader* out,
 }
 
 static void readRegisterHeader(const SaveStateRegisterHeader& in,
-    EmulatorRuntimeRegisterSnapshot* out)
+    AppRuntimeRegisterSnapshot* out)
 {
     memset(out, 0, sizeof(*out));
     out->running = true;
@@ -606,7 +606,7 @@ static bool addPayloadArraySize(size_t* total, size_t count, size_t recordSize)
     return addPayloadSize(total, count * recordSize);
 }
 
-static bool estimateSaveStatePayloadSize(const EmulatorRuntimeState& state,
+static bool estimateSaveStatePayloadSize(const AppRuntimeState& state,
     size_t* out)
 {
     if (!out)
@@ -639,7 +639,7 @@ static bool estimateSaveStatePayloadSize(const EmulatorRuntimeState& state,
     return true;
 }
 
-static bool buildSaveStatePayload(const EmulatorRuntimeState& state,
+static bool buildSaveStatePayload(const AppRuntimeState& state,
     std::vector<uint8_t>* payload, std::string* error)
 {
     if (!payload)
@@ -655,7 +655,7 @@ static bool buildSaveStatePayload(const EmulatorRuntimeState& state,
     }
     for (size_t i = 0; i < state.regions.size(); ++i)
     {
-        const EmulatorRuntimeStateRegion& region = state.regions[i];
+        const AppRuntimeStateRegion& region = state.regions[i];
         if (region.size == 0 || region.data.size() != region.size)
         {
             if (error) *error = "invalid state region";
@@ -693,7 +693,7 @@ static bool buildSaveStatePayload(const EmulatorRuntimeState& state,
 
     for (size_t i = 0; i < state.regions.size(); ++i)
     {
-        const EmulatorRuntimeStateRegion& region = state.regions[i];
+        const AppRuntimeStateRegion& region = state.regions[i];
         SaveStateRegionHeader regionHeader;
         regionHeader.start = region.start;
         regionHeader.size = region.size;
@@ -703,7 +703,7 @@ static bool buildSaveStatePayload(const EmulatorRuntimeState& state,
 
     for (size_t i = 0; i < state.regions.size(); ++i)
     {
-        const EmulatorRuntimeStateRegion& region = state.regions[i];
+        const AppRuntimeStateRegion& region = state.regions[i];
         appendBytes(payload, region.data.data(), region.data.size());
     }
 
@@ -717,7 +717,7 @@ static bool buildSaveStatePayload(const EmulatorRuntimeState& state,
 
 static bool readTaskRegisterRecords(const std::vector<uint8_t>& records,
     size_t* offset, uint32_t count,
-    std::vector<EmulatorRuntimeRegisterSnapshot>* out, std::string* error)
+    std::vector<AppRuntimeRegisterSnapshot>* out, std::string* error)
 {
     if (!offset || !out ||
         !recordCountFits(records.size(), *offset, count,
@@ -738,7 +738,7 @@ static bool readTaskRegisterRecords(const std::vector<uint8_t>& records,
             return false;
         }
 
-        EmulatorRuntimeRegisterSnapshot taskSnapshot;
+        AppRuntimeRegisterSnapshot taskSnapshot;
         readRegisterHeader(taskHeader, &taskSnapshot);
         out->push_back(taskSnapshot);
     }
@@ -770,7 +770,7 @@ static bool readSemaphoreRecords(const std::vector<uint8_t>& records,
 
 static bool readRegionRecords(const std::vector<uint8_t>& records,
     size_t* offset, uint32_t count,
-    std::vector<EmulatorRuntimeStateRegion>* out, std::string* error)
+    std::vector<AppRuntimeStateRegion>* out, std::string* error)
 {
     if (!offset || !out || count == 0 ||
         !recordCountFits(records.size(), *offset, count,
@@ -812,7 +812,7 @@ static bool readRegionRecords(const std::vector<uint8_t>& records,
     for (uint32_t i = 0; i < count; ++i)
     {
         const SaveStateRegionHeader& regionHeader = regionHeaders[i];
-        EmulatorRuntimeStateRegion region;
+        AppRuntimeStateRegion region;
         region.start = regionHeader.start;
         region.size = regionHeader.size;
         region.perms = regionHeader.perms;
@@ -974,7 +974,7 @@ SaveStateSlotInfo saveStateSlotInfo(const std::string& appPath, int slot)
 }
 
 bool saveStateWriteSlot(const std::string& appPath, int slot,
-    const EmulatorRuntimeState& state, std::string* error,
+    const AppRuntimeState& state, std::string* error,
     SaveStateProgressCallback progressCallback, void* progressUserData)
 {
     if (!state.registers.running || state.regions.empty() || state.hleSemaphoreCounts.empty())
@@ -1063,7 +1063,7 @@ bool saveStateWriteSlot(const std::string& appPath, int slot,
 }
 
 bool saveStateReadSlot(const std::string& appPath, int slot,
-    EmulatorRuntimeState* state, std::string* error,
+    AppRuntimeState* state, std::string* error,
     SaveStateProgressCallback progressCallback, void* progressUserData)
 {
     if (!state)

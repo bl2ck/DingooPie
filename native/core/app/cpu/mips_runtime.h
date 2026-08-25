@@ -1,5 +1,5 @@
-#ifndef DINGOO_PIE_NATIVE_RUNTIME_H
-#define DINGOO_PIE_NATIVE_RUNTIME_H
+#ifndef DINGOO_PIE_APP_CPU_MIPS_RUNTIME_H
+#define DINGOO_PIE_APP_CPU_MIPS_RUNTIME_H
 
 #include <stddef.h>
 #include <stdint.h>

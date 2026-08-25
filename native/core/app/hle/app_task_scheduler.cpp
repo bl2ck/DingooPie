@@ -1,14 +1,14 @@
-#include "task_scheduler.h"
+#include "app_task_scheduler.h"
 #include <assert.h>
-#include "emulated_memory.h"
+#include "app_memory.h"
 #include <pthread.h>
 #include <SDL2/SDL.h>
-#include "native_runtime.h"
+#include "mips_runtime.h"
 #include "execution_backend.h"
 #include "framebuffer.h"
 #include "app/memory/app_framebuffer_mapping.h"
 #include "runtime_log.h"
-#include "sdk_hle.h"
+#include "app_hle.h"
 #include "app/runtime/app_loader.h"
 #include <cstdlib>
 #include <cstring>
@@ -292,9 +292,9 @@ void* subTaskRun(void* data)
         return NULL;
     }
 
-    if (InitVmMemSubTask(runtime))
+    if (appMemoryMapTaskRuntime(runtime))
     {
-        printf("task: InitVmMemSubTask failed\n");
+        printf("task: appMemoryMapTaskRuntime failed\n");
         return NULL;
     }
 

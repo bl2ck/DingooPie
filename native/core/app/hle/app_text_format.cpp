@@ -1,11 +1,11 @@
-#include "sdk_hle.h"
+#include "app_hle.h"
 #include <ctype.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include "native_runtime.h"
-#include "guest_format.h"
-#include "emulated_memory.h"
+#include "mips_runtime.h"
+#include "app_text_format.h"
+#include "app_memory.h"
 
 #include <float.h>
 
@@ -748,7 +748,7 @@ static int my_vsnprintf(
     return (int)idx;
 }
 
-void my_sprintf(NativeRuntime* runtime)
+void appTextFormatSprintf(NativeRuntime* runtime)
 {
     uint32_t a0, a1, a2, a3;
     uint32_t sp;
@@ -800,7 +800,7 @@ void my_sprintf(NativeRuntime* runtime)
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &pc);
 }
 
-void dingoo_debug(NativeRuntime* runtime)
+void appTextFormatDebugPrint(NativeRuntime* runtime)
 {
     uint32_t a0, a1, a2, a3;
     uint32_t sp;

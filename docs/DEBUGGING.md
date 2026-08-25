@@ -465,7 +465,7 @@ as a broken build environment even if CMake can still compile the emulator.
 
 The latest known smoke results are:
 
-- `Dicke Snake.app` (`22531CCED426F19232613C8235B44A3DD4CDECDA18CD6A517044DC05160C5D39`): the title screen is sensitive to short `OSTimeDly` jitter. Microsecond-level HLE delay pacing keeps framebuffer submissions near the display cadence without a content-hash rule. The interpreter backend also reaches stable frame pacing after exact-pattern RGB565/indexed-blit loop promotion in `instruction_compat.cpp`; use the interpreter profile threshold above to guard this fallback path.
+- `Dicke Snake.app` (`22531CCED426F19232613C8235B44A3DD4CDECDA18CD6A517044DC05160C5D39`): the title screen is sensitive to short `OSTimeDly` jitter. Microsecond-level HLE delay pacing keeps framebuffer submissions near the display cadence without a content-hash rule. The interpreter backend also reaches stable frame pacing after exact-pattern RGB565/indexed-blit loop promotion in `mips_compat.cpp`; use the interpreter profile threshold above to guard this fallback path.
 - `Snake.app`: frontend and HLE frame submission are aligned around 19-21 FPS after framebuffer snapshotting on the default Auto backend.
 - `PoPo Bash.app`: frontend submission is aligned with HLE at roughly 15-16 FPS. Remaining visible cadence is likely Dingoo timer/task/audio semantics rather than SDL presentation.
 - `Ultimate Drift.app`: remains a diagnostic sample for CPU/VFPU coverage and framebuffer behavior. This codebase no longer carries a game-specific Soft3D or 3D resource parser; investigate remaining 3D issues through guest execution traces, SDK/HLE calls, and framebuffer submissions.
@@ -478,8 +478,8 @@ user samples.
 ## Extension Points
 
 - Add sample-specific content-hash rules in `native/core/config/compatibility/compat_profile.cpp`.
-- Add SDK import handlers in `native/core/app/hle/sdk_hle.cpp`.
-- Add exact instruction compatibility hooks in `native/core/app/cpu/instruction_compat.cpp`.
-- Add CPU instruction support to `native/core/app/cpu/native_runtime.cpp` for interpreter checks.
-- Add PPSSPP shim or fast-memory work in `native/core/app/cpu/ppsspp_shim.cpp` and the patch files under `patches/`.
+- Add SDK import handlers in `native/core/app/hle/app_hle.cpp`.
+- Add exact instruction compatibility hooks in `native/core/app/cpu/mips_compat.cpp`.
+- Add CPU instruction support to `native/core/app/cpu/mips_runtime.cpp` for interpreter checks.
+- Add PPSSPP shim or fast-memory work in `native/core/app/cpu/ppsspp_bridge.cpp` and the patch files under `patches/`.
 - Keep subtask JIT disabled by default until PPSSPP globals such as `currentMIPS`, `coreState`, and `MIPSComp::jit` are isolated per runtime or per thread.

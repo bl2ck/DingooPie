@@ -1,12 +1,12 @@
-#include "sdk_hle.h"
+#include "app_hle.h"
 #include <ctype.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include "native_runtime.h"
-#include "runtime_debug.h"
+#include "mips_runtime.h"
+#include "app_runtime_debug.h"
 #include "app/runtime/app_loader.h"
-#include "emulated_memory.h"
+#include "app_memory.h"
 #include "input_controls.h"
 #include "semaphore.h"
 #include <assert.h>
@@ -14,9 +14,9 @@
 #include "pause_gate.h"
 #include "sdl_frontend.h"
 #include "guest_filesystem.h"
-#include "task_scheduler.h"
+#include "app_task_scheduler.h"
 #include "guest_audio.h"
-#include "guest_format.h"
+#include "app_text_format.h"
 #include "compat_profile.h"
 #include "runtime_log.h"
 #include "runtime_resource_monitor.h"
@@ -101,13 +101,13 @@ static bool hleProfileHasActivity(const HleProfileCounters& profile, uint64_t fb
         profile.dlResRead || profile.dlResReadBytes;
 }
 
-void bridge_set_app_identity(const char* sha256Hex)
+void bridge_set_game_identity(const char* sha256Hex)
 {
     s_bridgeAppSha256 = sha256Hex ? sha256Hex : "";
     bridge_apply_runtime_settings();
 }
 
-const char* bridge_get_app_identity(void)
+const char* bridge_get_game_identity(void)
 {
     return s_bridgeAppSha256.c_str();
 }
@@ -305,7 +305,7 @@ void bridge_apply_runtime_settings(void)
             printf("hle: host delay scale %.3f %s=%s\n",
                 delayScale,
                 strcmp(profileName, "default") == 0 ? "auto" : "app",
-                strcmp(profileName, "default") == 0 ? "global" : bridge_get_app_identity());
+                strcmp(profileName, "default") == 0 ? "global" : bridge_get_game_identity());
         }
     }
 
@@ -826,7 +826,7 @@ static void br__kbd_get_status(NativeRuntime* runtime)
                 (unsigned long)ks->pressed,
                 (unsigned long)ks->released,
                 (unsigned long)ks->status,
-                bridge_get_app_identity());
+                bridge_get_game_identity());
         }
     }
     else
@@ -1511,7 +1511,7 @@ static void br__kbd_get_key(NativeRuntime* runtime)
     if (shouldTraceKbdCallers() && ret)
     {
         printf("trace-kbd-key: pc=0x%08x ra=0x%08x sp=0x%08x ret=0x%08x app=%s\n",
-            pc, ra, sp, ret, bridge_get_app_identity());
+            pc, ra, sp, ret, bridge_get_game_identity());
     }
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &ra);
 }
@@ -1673,7 +1673,7 @@ uint32_t vm_sprintf(NativeRuntime* runtime, uint32_t buffPtr, uint32_t fmtPtr, u
 
 static void br_sprintf(NativeRuntime* runtime)
 {
-    my_sprintf(runtime);
+    appTextFormatSprintf(runtime);
 }
 
 //typedef void FSYS_FILE;

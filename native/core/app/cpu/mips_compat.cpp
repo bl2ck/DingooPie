@@ -1,4 +1,4 @@
-#include "instruction_compat.h"
+#include "mips_compat.h"
 
 #include <SDL2/SDL.h>
 #include <stdint.h>
@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <vector>
 
-#include "emulated_memory.h"
+#include "app_memory.h"
 #include "framebuffer.h"
 #include "runtime_log.h"
 

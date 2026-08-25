@@ -2,7 +2,7 @@
 #define DINGOO_PIE_CRASH_LOG_H
 
 #include "execution_backend.h"
-#include "native_runtime.h"
+#include "mips_runtime.h"
 
 #include <string>
 

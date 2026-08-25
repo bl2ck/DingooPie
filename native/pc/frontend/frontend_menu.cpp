@@ -4,10 +4,10 @@
 #include "cheat_manager_ui.h"
 #include "cheat_runtime.h"
 #include "debug_console.h"
-#include "emulator_core.h"
+#include "app_runtime.h"
 #include "input_controls.h"
 #include "runtime_log.h"
-#include "save_state.h"
+#include "app_save_state.h"
 #include "save_state_manager_ui.h"
 #include "sdl_frontend.h"
 #include "platform_win32.h"
@@ -2421,7 +2421,7 @@ static void clearRecentAppMenu(void)
     {
         if (emulatorSaveSettings(*g_menuSettings))
         {
-            suppressCurrentRunRecentAppSave();
+            appRuntimeSuppressRecentGameSave();
             rebuildMenu();
         }
         else

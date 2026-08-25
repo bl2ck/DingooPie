@@ -1,9 +1,9 @@
 #include "shared/game/game_runtime.h"
 
-#include "emulator_core.h"
+#include "app_runtime.h"
 #include "cc/runtime/cc_runtime.h"
 #include "cc/save/cc_save_state.h"
-#include "save_state.h"
+#include "app_save_state.h"
 #include "runtime_resource_monitor.h"
 
 #include <mutex>
@@ -80,7 +80,7 @@ bool gameRuntimeStart(const char* gamePath, const EmulatorOptions& options,
     }
     if (format == GAME_FORMAT_APP)
     {
-        bool started = startDingooPie(normalizedPath.c_str(), options,
+        bool started = appRuntimeStart(normalizedPath.c_str(), options,
             requireOptimizedBackend, resourceMonitorAutoOpen,
             enabledCheatFeatureKeys);
         if (started)
@@ -132,7 +132,7 @@ void gameRuntimeStop(void)
     }
     if (format == GAME_FORMAT_APP)
     {
-        stopDingooPie();
+        appRuntimeStop();
     }
     if (format == GAME_FORMAT_CC || g_ccRuntimeThread.joinable())
     {
@@ -158,14 +158,14 @@ uint32_t gameRuntimeActiveUnitCount(void)
         // pause gate observes one waiter regardless of guest task count.
         return ccRuntimeIsRunning() ? 1u : 0u;
     }
-    return emulatorRuntimeActiveThreadCount();
+    return appRuntimeActiveThreadCount();
 }
 
 void gameRuntimeNotifyPauseRequested(void)
 {
     if (gameRuntimeActiveFormat() == GAME_FORMAT_APP)
     {
-        emulatorRuntimeNotifyPauseRequested();
+        appRuntimeNotifyPauseRequested();
     }
 }
 
@@ -173,18 +173,18 @@ bool gameRuntimeReadMemory(uint32_t address, void* out, size_t size)
 {
     return gameRuntimeActiveFormat() == GAME_FORMAT_CC ?
         ccRuntimeReadMemory(address, out, size) :
-        emulatorRuntimeReadMemory(address, out, size);
+        appRuntimeReadMemory(address, out, size);
 }
 
 bool gameRuntimeWriteMemory(uint32_t address, const void* in, size_t size)
 {
     return gameRuntimeActiveFormat() == GAME_FORMAT_CC ?
         ccRuntimeWriteMemory(address, in, size) :
-        emulatorRuntimeWriteMemory(address, in, size);
+        appRuntimeWriteMemory(address, in, size);
 }
 
 bool gameRuntimeGetRegisterSnapshot(
-    EmulatorRuntimeRegisterSnapshot* out, bool* arm32)
+    AppRuntimeRegisterSnapshot* out, bool* arm32)
 {
     if (arm32)
     {
@@ -192,7 +192,7 @@ bool gameRuntimeGetRegisterSnapshot(
     }
     if (gameRuntimeActiveFormat() != GAME_FORMAT_CC)
     {
-        return emulatorRuntimeGetRegisterSnapshot(out);
+        return appRuntimeGetRegisterSnapshot(out);
     }
     if (!out)
     {
@@ -203,7 +203,7 @@ bool gameRuntimeGetRegisterSnapshot(
     {
         return false;
     }
-    *out = EmulatorRuntimeRegisterSnapshot();
+    *out = AppRuntimeRegisterSnapshot();
     out->running = cc.running;
     memcpy(out->gpr, cc.r, sizeof(cc.r));
     out->pc = cc.r[15];
@@ -216,17 +216,17 @@ bool gameRuntimeGetRegisterSnapshot(
 }
 
 bool gameRuntimeDisassemble(uint32_t address, uint32_t instructionCount,
-    std::vector<EmulatorRuntimeDisassemblyLine>* out)
+    std::vector<AppRuntimeDisassemblyLine>* out)
 {
     return gameRuntimeActiveFormat() != GAME_FORMAT_CC &&
-        emulatorRuntimeDisassemble(address, instructionCount, out);
+        appRuntimeDisassemble(address, instructionCount, out);
 }
 
-bool gameRuntimeGetGameInfo(EmulatorRuntimeAppInfo* out)
+bool gameRuntimeGetGameInfo(AppRuntimeInfo* out)
 {
     if (gameRuntimeActiveFormat() != GAME_FORMAT_CC)
     {
-        return emulatorRuntimeGetAppInfo(out);
+        return appRuntimeGetInfo(out);
     }
     if (!out)
     {
@@ -237,7 +237,7 @@ bool gameRuntimeGetGameInfo(EmulatorRuntimeAppInfo* out)
     {
         return false;
     }
-    *out = EmulatorRuntimeAppInfo();
+    *out = AppRuntimeInfo();
     out->running = cc.running;
     out->path = cc.path;
     out->fileName = gameFileNameFromPath(cc.path);
@@ -262,7 +262,7 @@ struct CcMemorySearchContext
     int width;
     uint32_t target;
     size_t maxCandidates;
-    std::vector<EmulatorRuntimeMemorySearchCandidate>* out;
+    std::vector<AppRuntimeMemorySearchCandidate>* out;
     bool* capped;
 };
 
@@ -302,7 +302,7 @@ static bool searchCcMemoryRegion(uint32_t start, uint32_t size, void* userData)
                 *context->capped = true;
                 return false;
             }
-            EmulatorRuntimeMemorySearchCandidate candidate = {};
+            AppRuntimeMemorySearchCandidate candidate = {};
             candidate.address = (uint32_t)address;
             candidate.previous = context->target;
             context->out->push_back(candidate);
@@ -313,11 +313,11 @@ static bool searchCcMemoryRegion(uint32_t start, uint32_t size, void* userData)
 
 bool gameRuntimeSearchMemoryValue(uint32_t begin, uint32_t end, int width,
     uint32_t target, size_t maxCandidates,
-    std::vector<EmulatorRuntimeMemorySearchCandidate>* out, bool* capped)
+    std::vector<AppRuntimeMemorySearchCandidate>* out, bool* capped)
 {
     if (gameRuntimeActiveFormat() != GAME_FORMAT_CC)
     {
-        return emulatorRuntimeSearchMemoryValue(begin, end, width, target,
+        return appRuntimeSearchMemoryValue(begin, end, width, target,
             maxCandidates, out, capped);
     }
     if (!out || !capped || begin > end ||
@@ -335,32 +335,32 @@ bool gameRuntimeSearchMemoryValue(uint32_t begin, uint32_t end, int width,
 }
 
 bool gameRuntimeFilterMemorySearchCandidates(int width, uint32_t target,
-    EmulatorRuntimeMemorySearchFilter filter,
-    std::vector<EmulatorRuntimeMemorySearchCandidate>* candidates)
+    AppRuntimeMemorySearchFilter filter,
+    std::vector<AppRuntimeMemorySearchCandidate>* candidates)
 {
     if (gameRuntimeActiveFormat() != GAME_FORMAT_CC)
     {
-        return emulatorRuntimeFilterMemorySearchCandidates(
+        return appRuntimeFilterMemorySearchCandidates(
             width, target, filter, candidates);
     }
     if (!candidates || (width != 1 && width != 2 && width != 4))
     {
         return false;
     }
-    std::vector<EmulatorRuntimeMemorySearchCandidate> filtered;
+    std::vector<AppRuntimeMemorySearchCandidate> filtered;
     filtered.reserve(candidates->size());
     uint8_t bytes[4] = {};
     for (size_t i = 0; i < candidates->size(); ++i)
     {
-        EmulatorRuntimeMemorySearchCandidate candidate = (*candidates)[i];
+        AppRuntimeMemorySearchCandidate candidate = (*candidates)[i];
         if (!ccRuntimeReadMemory(candidate.address, bytes, width))
         {
             continue;
         }
         uint32_t value = readLeValue(bytes, width);
-        bool keep = filter == EMULATOR_RUNTIME_MEMORY_SEARCH_EQUAL ? value == target :
-            filter == EMULATOR_RUNTIME_MEMORY_SEARCH_INCREASED ? value > candidate.previous :
-            filter == EMULATOR_RUNTIME_MEMORY_SEARCH_DECREASED ? value < candidate.previous :
+        bool keep = filter == APP_RUNTIME_MEMORY_SEARCH_EQUAL ? value == target :
+            filter == APP_RUNTIME_MEMORY_SEARCH_INCREASED ? value > candidate.previous :
+            filter == APP_RUNTIME_MEMORY_SEARCH_DECREASED ? value < candidate.previous :
             value == candidate.previous;
         if (keep)
         {
@@ -384,7 +384,7 @@ bool gameRuntimeEnableResourceMonitor(void)
         runtimeResourceMonitorSetActive(true);
         return ccRuntimeIsRunning();
     }
-    return emulatorRuntimeEnableResourceMonitor();
+    return appRuntimeEnableResourceMonitor();
 }
 
 bool gameRuntimeWriteState(const std::string& gamePath, int slot,
@@ -398,8 +398,8 @@ bool gameRuntimeWriteState(const std::string& gamePath, int slot,
             saveStateWriteCcSlot(gamePath, slot, state, error,
                 progressCallback, progressUserData);
     }
-    EmulatorRuntimeState state;
-    return emulatorRuntimeCaptureState(&state) &&
+    AppRuntimeState state;
+    return appRuntimeCaptureState(&state) &&
         saveStateWriteSlot(gamePath, slot, state, error,
             progressCallback, progressUserData);
 }
@@ -415,8 +415,8 @@ bool gameRuntimeReadState(const std::string& gamePath, int slot,
             progressCallback, progressUserData) &&
             ccRuntimeRestoreState(state, error);
     }
-    EmulatorRuntimeState state;
+    AppRuntimeState state;
     return saveStateReadSlot(gamePath, slot, &state, error,
         progressCallback, progressUserData) &&
-        emulatorRuntimeRestoreState(state);
+        appRuntimeRestoreState(state);
 }

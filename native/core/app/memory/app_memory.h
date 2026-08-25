@@ -1,14 +1,14 @@
-#ifndef DINGOO_PIE_EMULATED_MEMORY_H
-#define DINGOO_PIE_EMULATED_MEMORY_H
+#ifndef DINGOO_PIE_APP_MEMORY_APP_MEMORY_H
+#define DINGOO_PIE_APP_MEMORY_APP_MEMORY_H
 
 #include <stdint.h>
 #include "app/runtime/app_loader.h"
-#include "native_runtime.h"
-#include "vm_heap_snapshot.h"
+#include "mips_runtime.h"
+#include "app_heap_snapshot.h"
 
-int InitVmMem(NativeRuntime* runtime, app* _app);
+int appMemoryInitialize(NativeRuntime* runtime, app* _app);
 
-int InitVmMemSubTask(NativeRuntime* runtime);
+int appMemoryMapTaskRuntime(NativeRuntime* runtime);
 
 uint32_t vm_malloc(uint32_t len);
 void vm_free(uint32_t addr);

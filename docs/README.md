@@ -127,16 +127,16 @@ Windows 版本信息：
 公共模拟核心位于 `native/core/`，PC 前端、平台适配和调试功能位于 `native/pc/`。
 
 - `main.cpp`：进程启动和整体启动流程。
-- `emulator_core.*`：游戏加载、运行时初始化、AppMain 入口调用和致命错误诊断。
-- `native_runtime.*`：后端选择、内置 MIPS32 CPU、内存映射、寄存器和运行时回调。
-- `ppsspp_irjit_backend.*` 与 `ppsspp_shim.cpp`：PPSSPP IR/x64 JIT 适配层和 Dingoo 内存桥接。
-- `instruction_compat.*`：精确处理 break/cache 等兼容指令，不直接修改打包后的游戏数据。
+- `app_runtime.*`：游戏加载、运行时初始化、AppMain 入口调用和致命错误诊断。
+- `mips_runtime.*`：后端选择、内置 MIPS32 CPU、内存映射、寄存器和运行时回调。
+- `ppsspp_backend.*` 与 `ppsspp_bridge.cpp`：PPSSPP IR/x64 JIT 适配层和 Dingoo 内存桥接。
+- `mips_compat.*`：精确处理 break/cache 等兼容指令，不直接修改打包后的游戏数据。
 - `compat_profile.*`：基于内容 hash 的兼容性配置，用于样本相关的时序、资源和退出行为。
-- `sdk_hle.*`：丁果 SDK 导入桥接，供 A320 与 X760+ app 软件使用。
+- `app_hle.*`：丁果 SDK 导入桥接，供 A320 与 X760+ app 软件使用。
 - `app_loader.*`：解析丁果科技 CCDL/IMPT/EXPT/RAWD app 格式并查找资源。
-- `emulated_memory.*`：模拟堆、栈、寄存器、地址别名和指针映射。
+- `app_memory.*`：模拟堆、栈、寄存器、地址别名和指针映射。
 - `guest_filesystem.*`：虚拟文件和资源文件访问。
-- `task_scheduler.*`：使用宿主线程模拟丁果 SDK 任务创建。
+- `app_task_scheduler.*`：使用宿主线程模拟丁果 SDK 任务创建。
 - `sdl_frontend.*`：SDL2 窗口、输入轮询和帧缓冲显示。
 - `frontend_menu.*`：Windows 原生菜单创建和命令分发。
 - `resource_monitor_ui.*` 与 `runtime_resource_monitor.*`：资源监视器窗口、运行时资源加载快照和高亮状态。
@@ -144,8 +144,8 @@ Windows 版本信息：
 - `sdl_audio.*` 与 `guest_audio.*`：SDL 音频输出和 waveout 桥接。
 - `platform_win32.*`：文件选择器、路径编码和工作目录设置。
 - `input_controls.*`：SDL 键盘输入到丁果 A320 / 歌美 X760+ 按键状态的映射。
-- `guest_format.*`：兼容 guest 侧 `sprintf`。
-- `runtime_debug.*`：寄存器、内存和反汇编诊断。
+- `app_text_format.*`：兼容 guest 侧 `sprintf`。
+- `app_runtime_debug.*`：寄存器、内存和反汇编诊断。
 - `patches/`：项目维护的第三方源码补丁。
 - `scripts/`：依赖下载、构建、测试和打包脚本。
 - `docs/`：架构、调试和打包说明。
@@ -329,16 +329,16 @@ an additional diagnostic log.
 Shared emulation code lives in `native/core/`; PC frontend, platform, and debug code lives in `native/pc/`.
 
 - `main.cpp`: process startup and high-level boot flow.
-- `emulator_core.*`: app loading, runtime initialization, AppMain handoff, and fatal diagnostics.
-- `native_runtime.*`: backend selection, in-tree MIPS32 CPU, memory map, register, and runtime callback support.
-- `ppsspp_irjit_backend.*` and `ppsspp_shim.cpp`: PPSSPP IR/x64 JIT adapter and Dingoo memory shim.
-- `instruction_compat.*`: precise break/cache compatibility handling without mutating packed app data.
+- `app_runtime.*`: app loading, runtime initialization, AppMain handoff, and fatal diagnostics.
+- `mips_runtime.*`: backend selection, in-tree MIPS32 CPU, memory map, register, and runtime callback support.
+- `ppsspp_backend.*` and `ppsspp_bridge.cpp`: PPSSPP IR/x64 JIT adapter and Dingoo memory shim.
+- `mips_compat.*`: precise break/cache compatibility handling without mutating packed app data.
 - `compat_profile.*`: content-hash compatibility profiles for sample-specific timing, resource, and exit behavior.
-- `sdk_hle.*`: Dingoo SDK import bridge used by A320 and X760+ app software.
+- `app_hle.*`: Dingoo SDK import bridge used by A320 and X760+ app software.
 - `app_loader.*`: Dingoo Technology CCDL/IMPT/EXPT/RAWD app parsing and resource lookup.
-- `emulated_memory.*`: guest heap, stack, register, alias, and pointer mapping.
+- `app_memory.*`: guest heap, stack, register, alias, and pointer mapping.
 - `guest_filesystem.*`: virtual file and resource-backed file access.
-- `task_scheduler.*`: Dingoo SDK task creation backed by host pthreads.
+- `app_task_scheduler.*`: Dingoo SDK task creation backed by host pthreads.
 - `sdl_frontend.*`: SDL2 window, input polling, and framebuffer presentation.
 - `frontend_menu.*`: native Windows menu construction and command dispatch.
 - `resource_monitor_ui.*` and `runtime_resource_monitor.*`: Resource Monitor window, runtime resource-load snapshots, and highlight state.
@@ -346,8 +346,8 @@ Shared emulation code lives in `native/core/`; PC frontend, platform, and debug 
 - `sdl_audio.*` and `guest_audio.*`: SDL audio output and waveout bridge.
 - `platform_win32.*`: file picker, path encoding, and working-directory setup.
 - `input_controls.*`: SDL key mapping to Dingoo A320 and Gemei X760+ button state.
-- `guest_format.*`: guest `sprintf` compatibility.
-- `runtime_debug.*`: register, memory, and disassembly diagnostics.
+- `app_text_format.*`: guest `sprintf` compatibility.
+- `app_runtime_debug.*`: register, memory, and disassembly diagnostics.
 - `patches/`: project-owned patches applied to third-party source trees during bootstrap.
 - `scripts/`: bootstrap, build, test, and packaging scripts.
 - `docs/`: architecture, debugging, and packaging notes.

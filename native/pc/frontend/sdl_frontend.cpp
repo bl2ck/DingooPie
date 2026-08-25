@@ -4,17 +4,17 @@
 #include "input_mapping_ui.h"
 #include "memory_searcher_ui.h"
 #include "debugger_ui.h"
-#include "emulator_core.h"
+#include "app_runtime.h"
 #include "input_controls.h"
 #include "framebuffer.h"
 #include "frontend_menu.h"
 #include "pause_gate.h"
 #include "platform_win32.h"
 #include "resource_monitor_ui.h"
-#include "sdk_hle.h"
+#include "app_hle.h"
 #include "sdl_audio.h"
 #include "resource_ids.h"
-#include "save_state.h"
+#include "app_save_state.h"
 #include "ui_strings.h"
 #include "runtime_log.h"
 
@@ -2629,7 +2629,7 @@ static void applyFrontendPauseState(bool refreshMenu)
     pauseGateSetPaused(paused);
     if (paused)
     {
-        emulatorRuntimeNotifyPauseRequested();
+        appRuntimeNotifyPauseRequested();
     }
     MixerSetFrontendPaused(paused);
     printf("frontend: game pause %s\n", paused ? "on" : "off");
@@ -5956,7 +5956,7 @@ void frontendRunLoop(const EmulatorOptions& options)
                 printf("frontend: SDL_QUIT event received ignoreQuit=%u\n",
                     options.ignoreQuit ? 1u : 0u);
                 printf("frontend: close context app_sha256=%s input=0x%08x last_task=\"%s\" last_hle=\"%s\"\n",
-                    bridge_get_app_identity(),
+                    bridge_get_game_identity(),
                     inputGetCurrentStatus(),
                     bridge_get_last_task_stop_summary(),
                     bridge_get_last_hle_summary());

@@ -5,7 +5,7 @@
 #include <stdbool.h>
 #include "app/runtime/app_loader.h"
 #include "shared/services/guest_package.h"
-#include "native_runtime.h"
+#include "mips_runtime.h"
 
 typedef enum {
     _file_type_file,

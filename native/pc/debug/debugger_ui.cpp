@@ -2,7 +2,7 @@
 
 #ifdef _WIN32
 
-#include "emulator_core.h"
+#include "app_runtime.h"
 #include "shared/game/game_runtime.h"
 #include "platform_win32.h"
 #include "resource_ids.h"
@@ -465,7 +465,7 @@ static int selectedListAddress(HWND list)
 }
 
 static void refreshRegisters(
-    const EmulatorRuntimeRegisterSnapshot& snapshot, bool arm32)
+    const AppRuntimeRegisterSnapshot& snapshot, bool arm32)
 {
     static const wchar_t* kNames[32] = {
         L"zero", L"at", L"v0", L"v1", L"a0", L"a1", L"a2", L"a3",
@@ -510,7 +510,7 @@ static void refreshDisassembly(uint32_t address)
     {
         return;
     }
-    std::vector<EmulatorRuntimeDisassemblyLine> lines;
+    std::vector<AppRuntimeDisassemblyLine> lines;
     clearDebuggerList(g_disasmList);
     if (!gameRuntimeDisassemble(address & ~3u, 36, &lines))
     {
@@ -609,7 +609,7 @@ static void refreshDebugEntryLists(void)
     if (g_pcHitList)
     {
         clearDebuggerList(g_pcHitList);
-        std::vector<EmulatorRuntimeDebugEntry> pcHits = emulatorRuntimePcHits();
+        std::vector<AppRuntimeDebugEntry> pcHits = appRuntimePcHits();
         for (size_t i = 0; i < pcHits.size(); ++i)
         {
             wchar_t addressText[32] = {};
@@ -635,7 +635,7 @@ static void refreshDebugEntryLists(void)
     if (g_writeHitList)
     {
         clearDebuggerList(g_writeHitList);
-        std::vector<EmulatorRuntimeDebugEntry> writeHits = emulatorRuntimeWriteHits();
+        std::vector<AppRuntimeDebugEntry> writeHits = appRuntimeWriteHits();
         for (size_t i = 0; i < writeHits.size(); ++i)
         {
             wchar_t rangeText[64] = {};
@@ -666,7 +666,7 @@ static void refreshDebugEntryLists(void)
 
 static void refreshDebugger(void)
 {
-    EmulatorRuntimeRegisterSnapshot snapshot;
+    AppRuntimeRegisterSnapshot snapshot;
     bool arm32 = false;
     if (!gameRuntimeGetRegisterSnapshot(&snapshot, &arm32))
     {
@@ -732,19 +732,19 @@ static void addPcHitFromInput(void)
         setDebuggerStatus(debuggerChinese() ? L"PC \u547d\u4e2d\u5730\u5740\u65e0\u6548\u3002" : L"Invalid PC hit address.");
         return;
     }
-    emulatorRuntimeAddPcHit(address);
+    appRuntimeAddPcHit(address);
     refreshDebugEntryLists();
 }
 
 static void removeSelectedPcHit(void)
 {
-    std::vector<EmulatorRuntimeDebugEntry> pcHits = emulatorRuntimePcHits();
+    std::vector<AppRuntimeDebugEntry> pcHits = appRuntimePcHits();
     int row = selectedListAddress(g_pcHitList);
     if (row < 0 || (size_t)row >= pcHits.size())
     {
         return;
     }
-    emulatorRuntimeRemovePcHit(pcHits[(size_t)row].address);
+    appRuntimeRemovePcHit(pcHits[(size_t)row].address);
     refreshDebugEntryLists();
 }
 
@@ -771,7 +771,7 @@ static void addWriteHitFromInput(void)
         size = 0x10000;
         setHexEdit(kDebuggerIdWriteHitSize, size);
     }
-    if (!emulatorRuntimeAddWriteHit(address, size))
+    if (!appRuntimeAddWriteHit(address, size))
     {
         setDebuggerStatus(debuggerChinese() ? L"\u5199\u5165\u547d\u4e2d\u8303\u56f4\u8d85\u51fa\u5730\u5740\u7a7a\u95f4\u3002" : L"Write hit range is outside address space.");
         return;
@@ -781,13 +781,13 @@ static void addWriteHitFromInput(void)
 
 static void removeSelectedWriteHit(void)
 {
-    std::vector<EmulatorRuntimeDebugEntry> writeHits = emulatorRuntimeWriteHits();
+    std::vector<AppRuntimeDebugEntry> writeHits = appRuntimeWriteHits();
     int row = selectedListAddress(g_writeHitList);
     if (row < 0 || (size_t)row >= writeHits.size())
     {
         return;
     }
-    emulatorRuntimeRemoveWriteHit(writeHits[(size_t)row].address, writeHits[(size_t)row].size);
+    appRuntimeRemoveWriteHit(writeHits[(size_t)row].address, writeHits[(size_t)row].size);
     refreshDebugEntryLists();
 }
 
@@ -917,7 +917,7 @@ static LRESULT CALLBACK debuggerWindowProc(HWND hwnd, UINT msg, WPARAM wParam, L
             removeSelectedPcHit();
             return 0;
         case kDebuggerIdClearPcHits:
-            emulatorRuntimeClearPcHits();
+            appRuntimeClearPcHits();
             refreshDebugEntryLists();
             return 0;
         case kDebuggerIdAddWriteHit:
@@ -927,7 +927,7 @@ static LRESULT CALLBACK debuggerWindowProc(HWND hwnd, UINT msg, WPARAM wParam, L
             removeSelectedWriteHit();
             return 0;
         case kDebuggerIdClearWriteHits:
-            emulatorRuntimeClearWriteHits();
+            appRuntimeClearWriteHits();
             refreshDebugEntryLists();
             return 0;
         case kDebuggerIdClose:

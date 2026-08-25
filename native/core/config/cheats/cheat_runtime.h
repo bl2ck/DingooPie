@@ -1,7 +1,7 @@
 #ifndef DINGOO_PIE_CHEAT_RUNTIME_H
 #define DINGOO_PIE_CHEAT_RUNTIME_H
 
-#include "native_runtime.h"
+#include "mips_runtime.h"
 #include "cheat_engine.h"
 
 #include <stddef.h>

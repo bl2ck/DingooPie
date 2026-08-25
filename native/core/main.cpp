@@ -1,4 +1,4 @@
-#include "emulator_core.h"
+#include "app_runtime.h"
 #include "shared/game/game_paths.h"
 #include "cheat_runtime.h"
 #include "debug_console.h"

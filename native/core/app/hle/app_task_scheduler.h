@@ -1,11 +1,11 @@
-#ifndef DINGOO_PIE_TASK_SCHEDULER_H
-#define DINGOO_PIE_TASK_SCHEDULER_H
+#ifndef DINGOO_PIE_APP_HLE_APP_TASK_SCHEDULER_H
+#define DINGOO_PIE_APP_HLE_APP_TASK_SCHEDULER_H
 
 #include <stdint.h>
 #include <stdbool.h>
 #include <vector>
 #include "app/runtime/app_loader.h"
-#include "native_runtime.h"
+#include "mips_runtime.h"
 
 #define OS_NO_ERR 0x0
 

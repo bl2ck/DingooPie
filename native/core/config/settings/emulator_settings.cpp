@@ -4,9 +4,9 @@
 #include "framebuffer.h"
 #include "guest_filesystem.h"
 #include "platform_win32.h"
-#include "ppsspp_irjit_backend.h"
+#include "ppsspp_backend.h"
 #include "runtime_log.h"
-#include "sdk_hle.h"
+#include "app_hle.h"
 
 #include <stdio.h>
 #include <stdlib.h>

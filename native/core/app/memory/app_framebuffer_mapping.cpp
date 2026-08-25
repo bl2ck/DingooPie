@@ -1,6 +1,6 @@
 #include "app/memory/app_framebuffer_mapping.h"
 
-#include "app/cpu/native_runtime.h"
+#include "app/cpu/mips_runtime.h"
 #include "frontend/video/framebuffer.h"
 
 #include <stdio.h>

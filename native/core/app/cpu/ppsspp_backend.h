@@ -1,7 +1,7 @@
-#ifndef DINGOO_PIE_PPSSPP_IRJIT_BACKEND_H
-#define DINGOO_PIE_PPSSPP_IRJIT_BACKEND_H
+#ifndef DINGOO_PIE_APP_CPU_PPSSPP_BACKEND_H
+#define DINGOO_PIE_APP_CPU_PPSSPP_BACKEND_H
 
-#include "native_runtime.h"
+#include "mips_runtime.h"
 
 struct NativeRuntime;
 

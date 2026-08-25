@@ -6,7 +6,7 @@
 #include <ctype.h>
 #include <assert.h>
 #include <strings.h>
-#include "runtime_debug.h"
+#include "app_runtime_debug.h"
 
 static const uint32_t APP_PACKED_RECORD_SIZE = 36;
 static const uint32_t APP_PACKED_NAME_SIZE = 32;

@@ -4,7 +4,7 @@
 
 #include "platform_win32.h"
 #include "resource_ids.h"
-#include "save_state.h"
+#include "app_save_state.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN

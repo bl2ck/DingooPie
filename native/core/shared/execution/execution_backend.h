@@ -16,10 +16,10 @@ enum RuntimeExecutionMode
 
 static_assert(EXECUTION_BACKEND_COMPATIBILITY == 0 &&
     EXECUTION_BACKEND_PPSSPP_IRJIT == 1,
-    "ExecutionBackend values must stay aligned with Android");
+    "ExecutionBackend values must stay aligned across frontends");
 static_assert(RUNTIME_EXECUTION_MODE_AUTOMATIC == 0 &&
     RUNTIME_EXECUTION_MODE_COMPATIBILITY == 1,
-    "RuntimeExecutionMode values must stay aligned with Android");
+    "RuntimeExecutionMode values must stay aligned across frontends");
 
 const char* executionBackendName(ExecutionBackend backend);
 ExecutionBackend executionBackendFromName(const char* value, bool* recognized);

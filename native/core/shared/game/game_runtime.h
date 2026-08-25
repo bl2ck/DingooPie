@@ -2,7 +2,7 @@
 #define DINGOO_PIE_SHARED_GAME_GAME_RUNTIME_H
 
 #include "emulator_options.h"
-#include "emulator_core.h"
+#include "app_runtime.h"
 #include "shared/game/game_paths.h"
 #include "shared/save/save_slots.h"
 
@@ -19,16 +19,16 @@ void gameRuntimeNotifyPauseRequested(void);
 bool gameRuntimeReadMemory(uint32_t address, void* out, size_t size);
 bool gameRuntimeWriteMemory(uint32_t address, const void* in, size_t size);
 bool gameRuntimeGetRegisterSnapshot(
-    EmulatorRuntimeRegisterSnapshot* out, bool* arm32 = 0);
+    AppRuntimeRegisterSnapshot* out, bool* arm32 = 0);
 bool gameRuntimeDisassemble(uint32_t address, uint32_t instructionCount,
-    std::vector<EmulatorRuntimeDisassemblyLine>* out);
-bool gameRuntimeGetGameInfo(EmulatorRuntimeAppInfo* out);
+    std::vector<AppRuntimeDisassemblyLine>* out);
+bool gameRuntimeGetGameInfo(AppRuntimeInfo* out);
 bool gameRuntimeSearchMemoryValue(uint32_t begin, uint32_t end, int width,
     uint32_t target, size_t maxCandidates,
-    std::vector<EmulatorRuntimeMemorySearchCandidate>* out, bool* capped);
+    std::vector<AppRuntimeMemorySearchCandidate>* out, bool* capped);
 bool gameRuntimeFilterMemorySearchCandidates(int width, uint32_t target,
-    EmulatorRuntimeMemorySearchFilter filter,
-    std::vector<EmulatorRuntimeMemorySearchCandidate>* candidates);
+    AppRuntimeMemorySearchFilter filter,
+    std::vector<AppRuntimeMemorySearchCandidate>* candidates);
 bool gameRuntimeSupportsBreakpoints(void);
 bool gameRuntimeEnableResourceMonitor(void);
 bool gameRuntimeWriteState(const std::string& gamePath, int slot,

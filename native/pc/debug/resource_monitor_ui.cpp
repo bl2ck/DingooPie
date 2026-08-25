@@ -2,7 +2,7 @@
 
 #ifdef _WIN32
 
-#include "emulator_core.h"
+#include "app_runtime.h"
 #include "shared/game/game_runtime.h"
 #include "platform_win32.h"
 #include "resource_ids.h"
@@ -1203,8 +1203,8 @@ static void refreshResourceMonitorWindow(bool force)
         refreshResourceMonitorList(g_resourceMonitorLists[slot], g_resourceMonitorRows[slot]);
     }
 
-    EmulatorRuntimeAppInfo appInfo;
-    bool running = emulatorRuntimeGetAppInfo(&appInfo);
+    AppRuntimeInfo appInfo;
+    bool running = appRuntimeGetInfo(&appInfo);
     wchar_t status[320] = {};
     if (!running)
     {

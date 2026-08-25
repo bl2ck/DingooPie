@@ -95,7 +95,7 @@ index f495d4f..8ac3a94 100644
  #include "Core/MIPS/MIPSTracer.h"
  
 +#ifdef DINGOO_PIE_DINGOO_MEMORY
-+#include "ppsspp_irjit_backend.h"
++#include "ppsspp_backend.h"
 +#endif
 +
  
@@ -237,7 +237,7 @@ index 5cf4136..83107d0 100644
  #include "Core/MIPS/JitCommon/JitState.h"
  #include "Core/Core.h"
 +#ifdef DINGOO_PIE_DINGOO_MEMORY
-+#include "ppsspp_irjit_backend.h"
++#include "ppsspp_backend.h"
 +#endif
  
  namespace MIPSComp {
@@ -367,7 +367,7 @@ index 9b3eea1..856c7f0 100644
  #include "Core/MIPS/x86/X64IRJit.h"
  #include "Core/MIPS/x86/X64IRRegCache.h"
 +#ifdef DINGOO_PIE_DINGOO_MEMORY
-+#include "ppsspp_irjit_backend.h"
++#include "ppsspp_backend.h"
 +#endif
  
  // This file contains compilation for load/store instructions.
@@ -783,7 +783,7 @@ index fbfcf9f..d89420b 100644
  #include "Core/MIPS/x86/X64IRJit.h"
  #include "Core/MIPS/x86/X64IRRegCache.h"
 +#ifdef DINGOO_PIE_DINGOO_MEMORY
-+#include "ppsspp_irjit_backend.h"
++#include "ppsspp_backend.h"
 +#endif
  
  namespace MIPSComp {
@@ -839,7 +839,7 @@ index 6e9fa3b..e92fe5c 100644
  #include "Core/Opcode.h"
  
 +#ifdef DINGOO_PIE_DINGOO_MEMORY
-+#include "ppsspp_irjit_backend.h"
++#include "ppsspp_backend.h"
 +#endif
 +
  // PPSSPP is very aggressive about trying to do memory accesses directly, for speed.

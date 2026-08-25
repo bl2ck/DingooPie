@@ -1,7 +1,7 @@
 #include "platform_win32.h"
 
 #include "app/runtime/app_loader.h"
-#include "runtime_debug.h"
+#include "app_runtime_debug.h"
 
 #ifdef _WIN32
 #include <windows.h>

@@ -1,10 +1,10 @@
-#include "emulated_memory.h"
+#include "app_memory.h"
 #include <assert.h>
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <mutex>
-#include "runtime_debug.h"
+#include "app_runtime_debug.h"
 #include "framebuffer.h"
 #include <pthread.h>
 const uint32_t CPU_REGISTER_BASE_ADDR = 0xB0000000;
@@ -60,10 +60,10 @@ static int mapAliasIfNeeded(NativeRuntime* runtime, uint32_t addr, uint32_t size
     return 0;
 }
 
-void initMemoryManager(void* baseAddress, uint32_t len)
+void initializeVmHeapAllocator(void* baseAddress, uint32_t len)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_vmHeapMutex);
-	printf("initMemoryManager: baseAddress:0x%" PRIx64 " len: 0x%08x\n", (size_t)baseAddress, len);
+	printf("initializeVmHeapAllocator: baseAddress:0x%" PRIx64 " len: 0x%08x\n", (size_t)baseAddress, len);
 	Origin_LG_mem_base = baseAddress;
 	Origin_LG_mem_len = len;
 
@@ -80,13 +80,13 @@ void initMemoryManager(void* baseAddress, uint32_t len)
 	LG_mem_top = 0;
 #endif
 }
-void printMemoryInfo() {
+void printVmHeapInfo() {
     printf(".......total:%d, min:%d, free:%d, top:%d\n", LG_mem_len, LG_mem_min, LG_mem_left, LG_mem_top);
     printf(".......base:%p, end:%p\n", LG_mem_base, LG_mem_end);
     printf(".......obase:%p, olen:%d\n", Origin_LG_mem_base, Origin_LG_mem_len);
 }
 
-void* my_malloc(uint32_t len)
+void* allocateVmHeapBlock(uint32_t len)
 {
     std::lock_guard<std::recursive_mutex> lock(g_vmHeapMutex);
     LG_mem_free_t* previous, * nextfree, * l;
@@ -94,15 +94,15 @@ void* my_malloc(uint32_t len)
 
     len = (uint32_t)realLGmemSize(len);
     if (len >= LG_mem_left) {
-        printf("my_malloc no memory: len %08x\n", len);
+        printf("allocateVmHeapBlock no memory: len %08x\n", len);
         goto err;
     }
     if (!len) {
-        printf("my_malloc invalid memory request");
+        printf("allocateVmHeapBlock invalid memory request");
         goto err;
     }
     if ((size_t)LG_mem_base + LG_mem_free.next > (size_t)LG_mem_end) {
-        printf("my_malloc corrupted memory");
+        printf("allocateVmHeapBlock corrupted memory");
         goto err;
     }
     previous = &LG_mem_free;
@@ -138,20 +138,20 @@ void* my_malloc(uint32_t len)
         previous = nextfree;
         nextfree = (LG_mem_free_t*)((size_t)LG_mem_base + nextfree->next);
     }
-    printf("my_malloc no memory: len %08x\n", len);
+    printf("allocateVmHeapBlock no memory: len %08x\n", len);
 err:
     return 0;
 end:
     return ret;
 }
 
-void my_free(void* p, uint32_t len) {
+void freeVmHeapBlock(void* p, uint32_t len) {
     std::lock_guard<std::recursive_mutex> lock(g_vmHeapMutex);
     LG_mem_free_t* free, * n;
     len = (uint32_t)realLGmemSize(len);
 #ifdef MEM_DEBUG
     if (!len || !p || (char*)p < LG_mem_base || (char*)p >= LG_mem_end || (char*)p + len > LG_mem_end || (char*)p + len <= LG_mem_base) {
-        printf("my_free invalid\n");
+        printf("freeVmHeapBlock invalid\n");
         printf("p=%" PRIXPTR ", l=%d, base=%" PRIXPTR ",LG_mem_end=%" PRIXPTR "\n", (size_t)p, len, (size_t)LG_mem_base, (size_t)LG_mem_end);
         return;
     }
@@ -164,7 +164,7 @@ void my_free(void* p, uint32_t len) {
     }
 #ifdef MEM_DEBUG
     if (p == (void*)free || p == (void*)n) {
-        printf("my_free:already free\n");
+        printf("freeVmHeapBlock:already free\n");
         return;
     }
 #endif
@@ -189,28 +189,28 @@ void* my_realloc(void* p, uint32_t oldlen, uint32_t len) {
     unsigned long minsize = (oldlen > len) ? len : oldlen;
     void* newblock;
     if (p == NULL) {
-        return my_malloc(len);
+        return allocateVmHeapBlock(len);
     }
     if (len == 0) {
-        my_free(p, oldlen);
+        freeVmHeapBlock(p, oldlen);
         return NULL;
     }
-    newblock = my_malloc(len);
+    newblock = allocateVmHeapBlock(len);
     if (newblock == NULL) {
         return newblock;
     }
     memmove(newblock, p, minsize);
-    my_free(p, oldlen);
+    freeVmHeapBlock(p, oldlen);
     return newblock;
 }
 
-int InitVmMem(NativeRuntime *runtime, app *_app)
+int appMemoryInitialize(NativeRuntime *runtime, app *_app)
 {
 	RuntimeError err;
 
 	if (VM_APP_BEGIN_ADDRESS != _app->origin)
 	{
-		printf("memory: InitVmMem invalid origin 0x%08x\n", _app->origin);
+		printf("memory: appMemoryInitialize invalid origin 0x%08x\n", _app->origin);
 		return -1;
 	}
 
@@ -220,7 +220,7 @@ int InitVmMem(NativeRuntime *runtime, app *_app)
 	s_Heap_Begin_Address = ALIGN((_app->prog_size + _app->origin), 4096);
 
 	memset(s_HeapMemPtr, 0x00, VM_HEAP_SIZE);
-	initMemoryManager(s_HeapMemPtr, VM_HEAP_SIZE);
+	initializeVmHeapAllocator(s_HeapMemPtr, VM_HEAP_SIZE);
 
 	err = nativeRuntimeMapMemory(runtime, s_Heap_Begin_Address, VM_HEAP_SIZE, RUNTIME_PROT_ALL, s_HeapMemPtr);
 	if (err)
@@ -265,7 +265,7 @@ int InitVmMem(NativeRuntime *runtime, app *_app)
 	return 0;
 }
 
-int InitVmMemSubTask(NativeRuntime* runtime)
+int appMemoryMapTaskRuntime(NativeRuntime* runtime)
 {
     RuntimeError err;
 
@@ -306,7 +306,7 @@ int InitVmMemSubTask(NativeRuntime* runtime)
     return 0;
 }
 
-void* my_mallocExt(uint32_t len) {
+void* allocateTrackedVmHeapBlock(uint32_t len) {
     std::lock_guard<std::recursive_mutex> lock(g_vmHeapMutex);
     void* p = NULL;
     if (len == 0)
@@ -315,11 +315,11 @@ void* my_mallocExt(uint32_t len) {
     }
     if (len > UINT32_MAX - 15)
     {
-        printf("my_mallocExt invalid memory request: len %08x\n", len);
+        printf("allocateTrackedVmHeapBlock invalid memory request: len %08x\n", len);
         return NULL;
     }
 
-    p = my_malloc(len + 8);
+    p = allocateVmHeapBlock(len + 8);
     if (p)
     {
         ((uint32_t*)p)[0] = len;
@@ -393,7 +393,7 @@ static bool trackedAllocationLengthLocked(void* p, uint32_t* outLength)
     return true;
 }
 
-void my_freeExt(void* p)
+void freeTrackedVmHeapBlock(void* p)
 {
     if (!p)
     {
@@ -404,16 +404,16 @@ void my_freeExt(void* p)
     uint32_t length = 0;
     if (trackedAllocationLengthLocked(p, &length))
     {
-        my_free((uint8_t*)p - 8, length + 8);
+        freeVmHeapBlock((uint8_t*)p - 8, length + 8);
     }
 }
 
-void* my_reallocExt(void* p, uint32_t newLen) {
+void* reallocateTrackedVmHeapBlock(void* p, uint32_t newLen) {
     if (p == NULL) {
-        return my_mallocExt(newLen);
+        return allocateTrackedVmHeapBlock(newLen);
     }
     else if (newLen == 0) {
-        my_freeExt(p);
+        freeTrackedVmHeapBlock(p);
         return NULL;
     }
     else
@@ -425,20 +425,20 @@ void* my_reallocExt(void* p, uint32_t newLen) {
             return NULL;
         }
         size_t minsize = (oldlen < newLen) ? oldlen : newLen;
-        void* newblock = my_mallocExt(newLen);
+        void* newblock = allocateTrackedVmHeapBlock(newLen);
         if (newblock == NULL)
         {
             return newblock;
         }
         memmove(newblock, p, minsize);
-        my_freeExt(p);
+        freeTrackedVmHeapBlock(p);
         return newblock;
     }
 }
 
 uint32_t vm_malloc(uint32_t len)
 {
-    void* p = my_mallocExt(len);
+    void* p = allocateTrackedVmHeapBlock(len);
     if (!p)
     {
         return 0;
@@ -464,7 +464,7 @@ void vm_free(uint32_t addr)
         return;
     }
     void* p = toHostPtrRange(addr, 1);
-    my_freeExt(p);
+    freeTrackedVmHeapBlock(p);
 }
 
 uint32_t vm_realloc(uint32_t addr, uint32_t len)
@@ -484,7 +484,7 @@ uint32_t vm_realloc(uint32_t addr, uint32_t len)
     {
         return 0;
     }
-    void* retPtr = my_reallocExt(p, len);
+    void* retPtr = reallocateTrackedVmHeapBlock(p, len);
     if (!retPtr)
     {
         return 0;

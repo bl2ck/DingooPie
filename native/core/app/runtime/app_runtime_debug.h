@@ -1,5 +1,5 @@
-#ifndef DINGOO_PIE_RUNTIME_DEBUG_H
-#define DINGOO_PIE_RUNTIME_DEBUG_H
+#ifndef DINGOO_PIE_APP_RUNTIME_APP_RUNTIME_DEBUG_H
+#define DINGOO_PIE_APP_RUNTIME_APP_RUNTIME_DEBUG_H
 
 #include <ctype.h>
 #include <inttypes.h>
@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "native_runtime.h"
+#include "mips_runtime.h"
 
 #include <locale.h>
 #include <string>

@@ -1,5 +1,5 @@
-#ifndef DINGOO_PIE_SDK_HLE_H
-#define DINGOO_PIE_SDK_HLE_H
+#ifndef DINGOO_PIE_APP_HLE_APP_HLE_H
+#define DINGOO_PIE_APP_HLE_APP_HLE_H
 
 #include <ctype.h>
 #include <inttypes.h>
@@ -7,13 +7,13 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "runtime_debug.h"
+#include "app_runtime_debug.h"
 #include "app/runtime/app_loader.h"
 #include "shared/config/runtime_constants.h"
 
 // Wires Dingoo SDK imports to host-side HLE implementations.
-void bridge_set_app_identity(const char* sha256Hex);
-const char* bridge_get_app_identity(void);
+void bridge_set_game_identity(const char* sha256Hex);
+const char* bridge_get_game_identity(void);
 const char* bridge_get_last_task_stop_summary(void);
 const char* bridge_get_last_hle_summary(void);
 void bridge_apply_runtime_settings(void);

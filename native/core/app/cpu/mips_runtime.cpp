@@ -1,6 +1,6 @@
-#include "native_runtime.h"
+#include "mips_runtime.h"
 
-#include "ppsspp_irjit_backend.h"
+#include "ppsspp_backend.h"
 
 #include <algorithm>
 #include <atomic>

@@ -13,7 +13,7 @@ enum GameFormat
 
 static_assert(GAME_FORMAT_APP == 0 && GAME_FORMAT_CC == 1 &&
     GAME_FORMAT_UNKNOWN == 2,
-    "GameFormat values must stay aligned with Android");
+    "GameFormat values must stay aligned across frontends");
 
 GameFormat gameFormatFromPath(const std::string& path);
 bool gamePathHasAppExtension(const std::string& path);
