@@ -145,6 +145,19 @@ void gameRuntimeStop(void)
     g_activeFormat = GAME_FORMAT_UNKNOWN;
 }
 
+void gameRuntimeApplySettings(void)
+{
+    GameFormat format = gameRuntimeActiveFormat();
+    if (format == GAME_FORMAT_APP)
+    {
+        appRuntimeApplySettings();
+    }
+    else if (format == GAME_FORMAT_CC)
+    {
+        ccRuntimeApplySettings();
+    }
+}
+
 GameFormat gameRuntimeActiveFormat(void)
 {
     std::lock_guard<std::mutex> lock(g_gameRuntimeMutex);

@@ -81,6 +81,7 @@ bool appRuntimeStart(
     bool clearRecentOnStartupFailure,
     bool enableResourceMonitor,
     const std::vector<std::string>& enabledCheatFeatureKeys);
+void appRuntimeApplySettings(void);
 void appRuntimeStop(void);
 void appRuntimeSuppressRecentGameSave(void);
 bool appRuntimeReadMemory(uint32_t address, void* out, size_t size);

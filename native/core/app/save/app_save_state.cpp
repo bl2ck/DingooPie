@@ -879,10 +879,11 @@ std::string saveStatePathForSlot(const std::string& appPath, int slot)
         return "";
     }
 
-    std::string dir = parentDirectory(gamePathNormalize(appPath.c_str()));
+    std::string dir = platformGetAppSaveDirectory(
+        appPath, saveStateAppIdForPath(appPath));
     if (dir.empty())
     {
-        dir = ".";
+        return "";
     }
     dir += "\\savestates";
 

@@ -1644,6 +1644,24 @@ bool appRuntimeRestoreState(const AppRuntimeState& state)
     return ok;
 }
 
+void appRuntimeApplySettings(void)
+{
+    bridge_apply_runtime_settings();
+
+    pthread_mutex_lock(&g_runtimeThreadMutex);
+    NativeRuntime* runtime = g_mainRuntime;
+    ExecutionBackend backend = runtime ? nativeRuntimeGetBackend(runtime) :
+        EXECUTION_BACKEND_COMPATIBILITY;
+    pthread_mutex_unlock(&g_runtimeThreadMutex);
+
+#ifdef DINGOO_PIE_ENABLE_PPSSPP_IRJIT
+    if (backend == EXECUTION_BACKEND_PPSSPP_IRJIT)
+    {
+        ppssppShimApplyRuntimeSettings();
+    }
+#endif
+}
+
 void appRuntimeNotifyPauseRequested(void)
 {
     pthread_mutex_lock(&g_runtimeThreadMutex);

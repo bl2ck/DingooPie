@@ -251,9 +251,10 @@ for ($i = 0; $i -lt $apps.Count; ++$i) {
     Copy-RuntimeFiles $BuildDir $runDir
     $runApp = Join-Path $runDir $app.Name
     Copy-Item -LiteralPath $app.FullName -Destination $runApp -Force
-    $sourceSaveDir = Join-Path $app.DirectoryName "savestates"
+    $runAppId = (Get-FileHash -LiteralPath $runApp -Algorithm SHA256).Hash
+    $sourceSaveDir = Join-Path (Join-Path $app.DirectoryName "saves") "$runAppId\savestates"
     if (Test-Path -LiteralPath $sourceSaveDir -PathType Container) {
-        $runSaveDir = Join-Path $runDir "savestates"
+        $runSaveDir = Join-Path (Join-Path $runDir "saves") "$runAppId\savestates"
         New-Item -ItemType Directory -Path $runSaveDir -Force | Out-Null
         $saveStem = [System.IO.Path]::GetFileNameWithoutExtension($app.Name)
         Get-ChildItem -LiteralPath $sourceSaveDir -Filter "$saveStem.slot*.dps" -File |
@@ -426,7 +427,7 @@ backend=$Backend
     $saveChangedDiff = if ($saveFrame -and $beforeLoadFrame) { Measure-BmpDiff $saveFrame.path $beforeLoadFrame.path } else { $null }
 
     $saveStateFiles = @()
-    $saveDir = Join-Path $runDir "savestates"
+    $saveDir = Join-Path (Join-Path $runDir "saves") "$runAppId\savestates"
     if (Test-Path -LiteralPath $saveDir -PathType Container) {
         $saveStateFiles = @(Get-ChildItem -LiteralPath $saveDir -Filter "*.dps" -File | ForEach-Object {
             [pscustomobject]@{ name = $_.Name; length = $_.Length }

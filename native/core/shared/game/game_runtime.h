@@ -13,6 +13,7 @@ bool gameRuntimeStart(const char* gamePath, const EmulatorOptions& options,
     bool requireOptimizedBackend, bool resourceMonitorAutoOpen,
     const std::vector<std::string>& enabledCheatFeatureKeys);
 void gameRuntimeStop(void);
+void gameRuntimeApplySettings(void);
 GameFormat gameRuntimeActiveFormat(void);
 uint32_t gameRuntimeActiveUnitCount(void);
 void gameRuntimeNotifyPauseRequested(void);

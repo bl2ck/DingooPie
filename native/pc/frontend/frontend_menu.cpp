@@ -606,6 +606,7 @@ static void applyAndSaveRuntimeSettings(void)
 {
     emulatorApplySharedRuntimeSettings(*g_menuSettings);
     emulatorSaveSettings(*g_menuSettings);
+    gameRuntimeApplySettings();
 }
 
 static void applyAndSaveVideoSettings(void)
