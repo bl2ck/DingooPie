@@ -39,6 +39,16 @@ $Dependencies = @{
         Url = 'https://github.com/hrydgard/ppsspp/archive/refs/heads/master.zip'
         Sha256 = ''
     }
+    Dynarmic = @{
+        File = 'dynarmic-a41c380246d3d9f9874f0f792d234dc0cc17c180.zip'
+        Url = 'https://gitlab.com/suyu-emu/dynarmic/-/archive/a41c380246d3d9f9874f0f792d234dc0cc17c180/dynarmic-a41c380246d3d9f9874f0f792d234dc0cc17c180.zip'
+        Sha256 = ''
+    }
+    Boost = @{
+        File = 'boost.1.84.0.nupkg'
+        Url = 'https://api.nuget.org/v3-flatcontainer/boost/1.84.0/boost.1.84.0.nupkg'
+        Sha256 = '557f9d9eae8e3ffb8aac36004ca6ac978c0bdfa28cc8f4dc8a5919f4b8293ea5'
+    }
 }
 
 function New-Directory($Path) {
@@ -140,6 +150,59 @@ function Expand-W64Devkit($Archive, $Destination) {
     }
 }
 
+function Install-ZipSourceTree {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Archive,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Destination,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ExtractDirectory,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DirectoryPattern,
+
+        [string]$Sentinel = 'CMakeLists.txt'
+    )
+
+    $destinationSentinel = Join-Path $Destination $Sentinel
+    if ((Test-Path -LiteralPath $destinationSentinel -PathType Leaf) -and !$Force) {
+        return
+    }
+
+    if (Test-Path -LiteralPath $Destination) {
+        Remove-Item -LiteralPath $Destination -Recurse -Force
+    }
+    if (Test-Path -LiteralPath $ExtractDirectory) {
+        Remove-Item -LiteralPath $ExtractDirectory -Recurse -Force
+    }
+
+    try {
+        Expand-Zip $Archive $ExtractDirectory
+        $candidates = @(
+            Get-ChildItem -LiteralPath $ExtractDirectory -Directory |
+                Where-Object {
+                    $_.Name -like $DirectoryPattern -and
+                    (Test-Path -LiteralPath (Join-Path $_.FullName $Sentinel) -PathType Leaf)
+                }
+        )
+        if ($candidates.Count -ne 1) {
+            throw "Expected one source directory matching '$DirectoryPattern' in $Archive; found $($candidates.Count)."
+        }
+
+        Move-Item -LiteralPath $candidates[0].FullName -Destination $Destination
+        if (!(Test-Path -LiteralPath $destinationSentinel -PathType Leaf)) {
+            throw "Source tree sentinel was not found after extraction: $destinationSentinel"
+        }
+    } finally {
+        if (Test-Path -LiteralPath $ExtractDirectory) {
+            Remove-Item -LiteralPath $ExtractDirectory -Recurse -Force
+        }
+    }
+}
+
 function Test-DingooPatchApplied($RepoRoot) {
     $sentinels = @(
         @{
@@ -231,22 +294,24 @@ $sdlArchive = Get-Dependency $Dependencies.SDL2
 $capstoneArchive = Get-Dependency $Dependencies.Capstone
 $winpthreadArchive = Get-Dependency $Dependencies.Winpthread
 $ppssppArchive = Get-Dependency $Dependencies.PPSSPP
+$dynarmicArchive = Get-Dependency $Dependencies.Dynarmic
+$boostArchive = Get-Dependency $Dependencies.Boost
 Expand-Zip $sdlArchive (Join-Path $DepsDir 'SDL2')
 Expand-Tar $capstoneArchive (Join-Path $DepsDir 'capstone')
 Expand-Tar $winpthreadArchive (Join-Path $DepsDir 'winpthread')
-Expand-Zip $ppssppArchive $ThirdPartyDir
+Expand-Zip $boostArchive (Join-Path $DepsDir 'boost')
 
 $ppssppRoot = Join-Path $ThirdPartyDir 'ppsspp-master'
-if (!(Test-Path -LiteralPath $ppssppRoot)) {
-    $candidate = Get-ChildItem -LiteralPath $ThirdPartyDir -Directory | Where-Object { $_.Name -like 'ppsspp-*' } | Select-Object -First 1
-    if (!$candidate) {
-        throw 'PPSSPP source directory was not extracted.'
-    }
-    Rename-Item -LiteralPath $candidate.FullName -NewName 'ppsspp-master'
-}
+$ppssppExtract = Join-Path $ThirdPartyDir 'ppsspp-extract'
+Install-ZipSourceTree $ppssppArchive $ppssppRoot $ppssppExtract 'ppsspp-*'
+
+$dynarmicRoot = Join-Path $ThirdPartyDir 'dynarmic'
+$dynarmicExtract = Join-Path $ThirdPartyDir 'dynarmic-extract'
+Install-ZipSourceTree $dynarmicArchive $dynarmicRoot $dynarmicExtract 'dynarmic-*'
 
 Apply-PatchIfNeeded $ppssppRoot (Join-Path $PatchDir 'ppsspp-irjit-dingoo.patch')
 
 Write-Host 'Bootstrap complete.'
 Write-Host "Compiler: $(Join-Path $ProjectRoot 'w64devkit\bin\gcc.exe')"
 Write-Host "PPSSPP:   $ppssppRoot"
+Write-Host "Dynarmic: $dynarmicRoot"

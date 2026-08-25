@@ -187,6 +187,9 @@ Invoke-NativeCommand $CMake -S $ProjectRoot -B $BuildDir -G 'MinGW Makefiles' `
     "-DCMAKE_BUILD_TYPE=$Configuration" `
     "-DDINGOO_PIE_DEPS_ROOT=$(Join-Path $ProjectRoot 'deps_extract')" `
     "-DPPSSPP_SOURCE_ROOT=$(Join-Path $ProjectRoot 'third_party\ppsspp-master')" `
+    "-DDYNARMIC_SOURCE_ROOT=$(Join-Path $ProjectRoot 'third_party\dynarmic')" `
+    "-DDYNARMIC_BOOST_INCLUDE_DIR=$(Join-Path $ProjectRoot 'deps_extract\boost\lib\native\include')" `
+    -DDINGOO_PIE_ENABLE_ARM32_DYNARMIC=ON `
     -DDINGOO_PIE_ENABLE_PPSSPP_IRJIT=ON
 Write-Host "Building DingooPie ($Configuration)"
 Invoke-NativeCommand $CMake --build $BuildDir --config $Configuration -j 4

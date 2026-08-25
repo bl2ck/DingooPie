@@ -5,7 +5,10 @@ project(DingooPie LANGUAGES C CXX)
 set(targetName DingooPie)
 set(DINGOO_PIE_DEPS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/deps_extract" CACHE PATH "Extracted third-party dependency root")
 set(PPSSPP_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ppsspp-master" CACHE PATH "PPSSPP source tree used for the IR JIT backend")
+set(DYNARMIC_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/dynarmic" CACHE PATH "Dynarmic source tree used for the ARM32 JIT backend")
+set(DYNARMIC_BOOST_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps_extract/boost/lib/native/include" CACHE PATH "Boost include directory used by Dynarmic")
 option(DINGOO_PIE_ENABLE_PPSSPP_IRJIT "Compile the PPSSPP IR/x64 JIT backend adapter" ON)
+option(DINGOO_PIE_ENABLE_ARM32_DYNARMIC "Compile the Dynarmic ARM32 JIT backend" ON)
 option(DINGOO_PIE_CONSOLE_SUBSYSTEM "Build DingooPie as a console executable for log-capturing validation runs" OFF)
 
 set(DINGOO_PIE_SOURCE_INCLUDE_DIRS
@@ -32,10 +35,15 @@ set(DINGOO_PIE_SOURCE_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}/native/pc/resources"
 )
 
+set(DINGOO_PIE_ARM32_DYNARMIC_SOURCE
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/core/cc/cpu/arm32_dynarmic.cpp")
+
 file(GLOB_RECURSE targetName_src CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/native/core/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/native/pc/*.cpp"
 )
+
+list(REMOVE_ITEM targetName_src ${DINGOO_PIE_ARM32_DYNARMIC_SOURCE})
 
 if(WIN32)
     list(APPEND targetName_src
@@ -136,6 +144,50 @@ set_target_properties(${targetName} PROPERTIES
     CXX_STANDARD_REQUIRED YES
     CXX_EXTENSIONS YES
 )
+
+function(dingoopie_configure_arm32_dynarmic application_target)
+    if(NOT DINGOO_PIE_ENABLE_ARM32_DYNARMIC)
+        message(STATUS "DingooPie ARM32 backend: interpreter (Dynarmic disabled)")
+        return()
+    endif()
+
+    set(missing_dependencies)
+    if(NOT EXISTS "${DYNARMIC_SOURCE_ROOT}/CMakeLists.txt")
+        list(APPEND missing_dependencies "Dynarmic source: ${DYNARMIC_SOURCE_ROOT}")
+    endif()
+    if(NOT EXISTS "${DYNARMIC_BOOST_INCLUDE_DIR}/boost/version.hpp")
+        list(APPEND missing_dependencies "Boost headers: ${DYNARMIC_BOOST_INCLUDE_DIR}")
+    endif()
+    if(missing_dependencies)
+        string(JOIN "; " missing_dependency_summary ${missing_dependencies})
+        message(WARNING
+            "DingooPie ARM32 backend: interpreter. Dynarmic was requested but dependencies are missing: "
+            "${missing_dependency_summary}. Run scripts/bootstrap_windows.ps1 to install them.")
+        return()
+    endif()
+
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+    set(DYNARMIC_USE_BUNDLED_EXTERNALS ON CACHE BOOL "" FORCE)
+    set(DYNARMIC_TESTS OFF CACHE BOOL "" FORCE)
+    set(DYNARMIC_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
+    set(Boost_INCLUDE_DIR "${DYNARMIC_BOOST_INCLUDE_DIR}" CACHE PATH "" FORCE)
+    add_subdirectory("${DYNARMIC_SOURCE_ROOT}" "${CMAKE_BINARY_DIR}/dynarmic" EXCLUDE_FROM_ALL)
+    add_library(dingoopie_dynarmic_adapter STATIC
+        ${DINGOO_PIE_ARM32_DYNARMIC_SOURCE})
+    set_target_properties(dingoopie_dynarmic_adapter PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED YES
+        CXX_EXTENSIONS YES)
+    target_include_directories(dingoopie_dynarmic_adapter PRIVATE
+        ${DINGOO_PIE_SOURCE_INCLUDE_DIRS}
+        "${DYNARMIC_SOURCE_ROOT}/src")
+    target_link_libraries(dingoopie_dynarmic_adapter PUBLIC dynarmic)
+    target_compile_definitions(${application_target} PRIVATE DINGOO_PIE_ARM32_DYNARMIC)
+    target_link_libraries(${application_target} PRIVATE dingoopie_dynarmic_adapter)
+    message(STATUS "DingooPie ARM32 backend: Dynarmic")
+endfunction()
+
+dingoopie_configure_arm32_dynarmic(${targetName})
 
 target_compile_definitions(${targetName} PRIVATE _WIN32_WINNT=0x0601 SDL_MAIN_HANDLED)
 

@@ -101,6 +101,18 @@ struct CcRuntimeContext;
 static CcRuntimeContext* s_activeRuntime = NULL;
 static std::string sha256Hex(const uint8_t* data, uint32_t size);
 
+static bool environmentFlagEnabled(const char* name)
+{
+    const char* value = getenv(name);
+    return value && value[0] && strcmp(value, "0") != 0;
+}
+
+static bool runtimeCollectsInterpreterProfileSamples()
+{
+    return runtimeLogProfileEnabled() &&
+        !environmentFlagEnabled("DINGOO_PIE_CC_DYNARMIC_PROFILE");
+}
+
 struct CcRuntimeContext
 {
     struct HeapBlock
@@ -2207,7 +2219,7 @@ static bool initializeRuntime(CcRuntimeContext* runtime, const char* path)
     runtime->bus.instructionCache = runtime->instructionCache.data();
     runtime->bus.instructionCacheCount =
         (uint32_t)runtime->instructionCache.size();
-    if (runtimeLogProfileEnabled())
+    if (runtimeCollectsInterpreterProfileSamples())
     {
         runtime->profilePcSamples.resize(runtime->instructionCache.size());
         runtime->profileLrSamples.resize(runtime->instructionCache.size());
@@ -2560,7 +2572,7 @@ void ccRuntimeApplySettings(void)
 #endif
     bool useOptimizedBackend = optimizedBackendAvailable &&
         runtimeExecutionModeUsesOptimizedBackend(executionMode) &&
-        !runtimeLogProfileEnabled();
+        !runtimeCollectsInterpreterProfileSamples();
     s_useOptimizedBackend.store(useOptimizedBackend);
     const char* effectiveBackend = useOptimizedBackend ?
         "dynarmic" : "arm32_interpreter";
