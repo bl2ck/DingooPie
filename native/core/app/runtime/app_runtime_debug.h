@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "mips_runtime.h"
+#include "app/cpu/mips_runtime.h"
 
 #include <locale.h>
 #include <string>
@@ -46,14 +46,14 @@ using namespace std;
 
 int wstrlen(char* txt);
 void cpsrToStr(uint32_t v, char* out);
-const char* memTypeStr(RuntimeMemoryAccess type);
-void dumpREG(NativeRuntime* runtime);
-void dumpStackCall(NativeRuntime* runtime, uint32_t stack_start_address);
-void dumpAsm(NativeRuntime* runtime);
+const char* appRuntimeMemoryAccessName(RuntimeMemoryAccess type);
+void appRuntimeDebugDumpRegisters(NativeRuntime* runtime);
+void appRuntimeDebugDumpStack(NativeRuntime* runtime, uint32_t stackStartAddress);
+void appRuntimeDebugDumpReturnDisassembly(NativeRuntime* runtime);
 void dumpAsmRange(NativeRuntime* runtime, uint32_t address, uint32_t bytes);
-void dumpREG2File(NativeRuntime* runtime, FILE* fp);
+void appRuntimeDebugDumpRegistersToFile(NativeRuntime* runtime, FILE* file);
 void dumpMemStr(void* ptr, size_t len);
-void dumpMem(void* buffer, uint32_t count);
+void appRuntimeDebugDumpMemory(const void* buffer, uint32_t count);
 char* getSplitStr(char* str, char split, int n);
 
 void toHexString(void* buff, int count, char* out);

@@ -694,13 +694,13 @@ static bool hookMemInvalid(NativeRuntime* runtime, RuntimeMemoryAccess type, uin
     FILE* debugLog = debugLogFile();
 
     fprintf(debugLog, ">>> mem_invalid type:%s addr:0x%" PRIx64 " size:0x%x value:0x%" PRIx64 "\n",
-        memTypeStr(type), address, size, value);
-    dumpREG2File(runtime, debugLog);
-    dumpAsm(runtime);
+        appRuntimeMemoryAccessName(type), address, size, value);
+    appRuntimeDebugDumpRegistersToFile(runtime, debugLog);
+    appRuntimeDebugDumpReturnDisassembly(runtime);
 
     printf(">>> mem_invalid type:%s addr:0x%" PRIx64 " size:0x%x value:0x%" PRIx64 "\n",
-        memTypeStr(type), address, size, value);
-    dumpREG(runtime);
+        appRuntimeMemoryAccessName(type), address, size, value);
+    appRuntimeDebugDumpRegisters(runtime);
     return false;
 }
 

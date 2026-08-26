@@ -5094,7 +5094,7 @@ void updateFb(void)
 {
     // Called by the HLE LCD bridge when the guest has submitted a complete
     // frame. The frontend consumes this signal without polling the live buffer.
-    requestFbUpdate();
+    framebufferRequestUpdate();
 }
 
 bool frontendSaveScreenshot(const char* path)
@@ -5649,7 +5649,7 @@ void frontendRunLoop(const EmulatorOptions& options)
         updateVirtualMouseReleaseTimer();
         inputPollKeyboardState();
 
-        if (consumeFbUpdateRequest() != 0)
+        if (framebufferConsumeUpdateRequest() != 0)
         {
             pendingFrameRequest = true;
         }
@@ -5702,7 +5702,7 @@ void frontendRunLoop(const EmulatorOptions& options)
         }
         else if (gameRunning && ((pendingFrameRequest && gamePresentDue) || !hasPresentedFrame))
         {
-            copyPresentedFramebuff(frameCopy, sizeof(frameCopy));
+            framebufferCopyPresented(frameCopy, sizeof(frameCopy));
             uint32_t frameHash = hashFramePixels(frameCopy);
             bool contentChanged = !hasPresentedFrame || frameHash != lastFrameHash;
             if (contentChanged)

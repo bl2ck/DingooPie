@@ -407,7 +407,7 @@ uint32_t framebufferGuestAlias(size_t index)
         kLcdFramebufferAliases[index] : 0;
 }
 
-uint32_t _lcd_get_frame(void)
+uint32_t framebufferGuestAddress(void)
 {
     return VM_LCD_FB_ADDRESS;
 }
@@ -445,18 +445,18 @@ bool framebufferVmPointer(void* ptr, uint32_t* out)
     return false;
 }
 
-void* getFramebuffPtr(void)
+void* framebufferPixels(void)
 {
     return s_LcdFrameBufferPtr;
 }
 
-void* getPresentedFramebuffPtr(void)
+void* framebufferPresentedPixels(void)
 {
     int index = s_presentedFrameIndex.load(std::memory_order_acquire);
     return s_presentedFrameBuffers[index & 1];
 }
 
-void copyPresentedFramebuff(void* dst, uint32_t size)
+void framebufferCopyPresented(void* dst, uint32_t size)
 {
     if (!dst)
     {
@@ -467,10 +467,10 @@ void copyPresentedFramebuff(void* dst, uint32_t size)
         size = VM_LCD_FB_SIZE;
     }
     std::lock_guard<std::mutex> lock(s_presentedFrameMutex);
-    memcpy(dst, getPresentedFramebuffPtr(), size);
+    memcpy(dst, framebufferPresentedPixels(), size);
 }
 
-void requestFbUpdate(void)
+void framebufferRequestUpdate(void)
 {
     // Snapshot on lcd_set_frame/lcd_flip boundaries. This keeps visual pacing
     // tied to the Dingoo SDK frame submission point instead of host refresh.
@@ -560,22 +560,22 @@ void framebufferPresentRestoredFrame(void)
     s_FbUpdateRequested.store(1, std::memory_order_release);
 }
 
-int consumeFbUpdateRequest(void)
+int framebufferConsumeUpdateRequest(void)
 {
     return s_FbUpdateRequested.exchange(0, std::memory_order_acq_rel);
 }
 
-uint64_t consumeFramebufferSubmittedCount(void)
+uint64_t framebufferConsumeSubmittedCount(void)
 {
     return s_SubmittedFrameProfileCount.exchange(0, std::memory_order_acq_rel);
 }
 
-uint64_t consumeFramebufferCopyMicros(void)
+uint64_t framebufferConsumeCopyMicros(void)
 {
     return s_FramebufferCopyMicros.exchange(0, std::memory_order_acq_rel);
 }
 
-void consumeFramebufferTimingStats(uint64_t* totalIntervalMicros, uint64_t* maxIntervalMicros,
+void framebufferConsumeTimingStats(uint64_t* totalIntervalMicros, uint64_t* maxIntervalMicros,
     uint64_t* over25msCount, uint64_t* over33msCount)
 {
     if (totalIntervalMicros)
@@ -596,7 +596,7 @@ void consumeFramebufferTimingStats(uint64_t* totalIntervalMicros, uint64_t* maxI
     }
 }
 
-void trackFramebufferWrite(uint32_t address, uint32_t size)
+void framebufferTrackWrite(uint32_t address, uint32_t size)
 {
     if (!framebufferWriteProfileEnabled())
     {
@@ -626,12 +626,12 @@ bool framebufferAddressOverlaps(uint32_t address, uint32_t size)
     return false;
 }
 
-uint64_t consumeFramebufferWriteCount(void)
+uint64_t framebufferConsumeWriteCount(void)
 {
     return s_FbWriteCount.exchange(0, std::memory_order_acq_rel);
 }
 
-uint64_t consumeFramebufferWriteBytes(void)
+uint64_t framebufferConsumeWriteBytes(void)
 {
     return s_FbWriteBytes.exchange(0, std::memory_order_acq_rel);
 }

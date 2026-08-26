@@ -4,9 +4,9 @@
 #include <capstone/capstone.h>
 #include <vector>
 
-void runtimeDebugDumpRegistersToFile(NativeRuntime* runtime, FILE* fp);
+void appRuntimeDebugDumpRegistersToFile(NativeRuntime* runtime, FILE* file);
 
-const char* runtimeMemoryAccessName(RuntimeMemoryAccess type)
+const char* appRuntimeMemoryAccessName(RuntimeMemoryAccess type)
 {
     // clang-format off
     switch (type)
@@ -26,7 +26,7 @@ const char* runtimeMemoryAccessName(RuntimeMemoryAccess type)
     return "<error type>";
 }
 
-void runtimeDebugDumpStack(NativeRuntime* runtime, uint32_t stackStartAddress)
+void appRuntimeDebugDumpStack(NativeRuntime* runtime, uint32_t stackStartAddress)
 {
     if (!runtime)
     {
@@ -76,16 +76,16 @@ void runtimeDebugDumpStack(NativeRuntime* runtime, uint32_t stackStartAddress)
     printf("==============================================================\n");
 }
 
-void runtimeDebugDumpRegisters(NativeRuntime* runtime)
+void appRuntimeDebugDumpRegisters(NativeRuntime* runtime)
 {
-    runtimeDebugDumpRegistersToFile(runtime, stdout);
+    appRuntimeDebugDumpRegistersToFile(runtime, stdout);
 }
 
-void runtimeDebugDumpRegistersToFile(NativeRuntime* runtime, FILE* fp)
+void appRuntimeDebugDumpRegistersToFile(NativeRuntime* runtime, FILE* file)
 {
-    if (!fp)
+    if (!file)
     {
-        fp = stdout;
+        file = stdout;
     }
 
     auto regValue = [runtime](int reg) -> uint32_t {
@@ -97,33 +97,33 @@ void runtimeDebugDumpRegistersToFile(NativeRuntime* runtime, FILE* fp)
         return v;
     };
 
-    fprintf(fp, "==========================REG=================================\n");
-    fprintf(fp, "AT=%08X\t", regValue(RUNTIME_REG_AT));
-    fprintf(fp, "V0=%08X\t", regValue(RUNTIME_REG_V0));
-    fprintf(fp, "V1=%08X\t\n", regValue(RUNTIME_REG_V1));
+    fprintf(file, "==========================REG=================================\n");
+    fprintf(file, "AT=%08X\t", regValue(RUNTIME_REG_AT));
+    fprintf(file, "V0=%08X\t", regValue(RUNTIME_REG_V0));
+    fprintf(file, "V1=%08X\t\n", regValue(RUNTIME_REG_V1));
 
-    fprintf(fp, "A0=%08X\t", regValue(RUNTIME_REG_A0));
-    fprintf(fp, "A1=%08X\t", regValue(RUNTIME_REG_A1));
-    fprintf(fp, "A2=%08X\t", regValue(RUNTIME_REG_A2));
-    fprintf(fp, "A3=%08X\t\n", regValue(RUNTIME_REG_A3));
+    fprintf(file, "A0=%08X\t", regValue(RUNTIME_REG_A0));
+    fprintf(file, "A1=%08X\t", regValue(RUNTIME_REG_A1));
+    fprintf(file, "A2=%08X\t", regValue(RUNTIME_REG_A2));
+    fprintf(file, "A3=%08X\t\n", regValue(RUNTIME_REG_A3));
 
-    fprintf(fp, "S0=%08X\t", regValue(RUNTIME_REG_S0));
-    fprintf(fp, "S1=%08X\t", regValue(RUNTIME_REG_S1));
-    fprintf(fp, "S2=%08X\t", regValue(RUNTIME_REG_S2));
-    fprintf(fp, "S3=%08X\t\n", regValue(RUNTIME_REG_S3));
-    fprintf(fp, "S4=%08X\t", regValue(RUNTIME_REG_S4));
-    fprintf(fp, "S5=%08X\t", regValue(RUNTIME_REG_S5));
-    fprintf(fp, "S6=%08X\t", regValue(RUNTIME_REG_S6));
-    fprintf(fp, "S7=%08X\t\n", regValue(RUNTIME_REG_S7));
+    fprintf(file, "S0=%08X\t", regValue(RUNTIME_REG_S0));
+    fprintf(file, "S1=%08X\t", regValue(RUNTIME_REG_S1));
+    fprintf(file, "S2=%08X\t", regValue(RUNTIME_REG_S2));
+    fprintf(file, "S3=%08X\t\n", regValue(RUNTIME_REG_S3));
+    fprintf(file, "S4=%08X\t", regValue(RUNTIME_REG_S4));
+    fprintf(file, "S5=%08X\t", regValue(RUNTIME_REG_S5));
+    fprintf(file, "S6=%08X\t", regValue(RUNTIME_REG_S6));
+    fprintf(file, "S7=%08X\t\n", regValue(RUNTIME_REG_S7));
 
-    fprintf(fp, "LO=%08X\t", regValue(RUNTIME_REG_LO));
-    fprintf(fp, "HI=%08X\t\n", regValue(RUNTIME_REG_HI));
+    fprintf(file, "LO=%08X\t", regValue(RUNTIME_REG_LO));
+    fprintf(file, "HI=%08X\t\n", regValue(RUNTIME_REG_HI));
 
-    fprintf(fp, "PC=%08X\t", regValue(RUNTIME_REG_PC));
-    fprintf(fp, "SP=%08X\t", regValue(RUNTIME_REG_SP));
-    fprintf(fp, "FP=%08X\t", regValue(RUNTIME_REG_FP));
-    fprintf(fp, "RA=%08X\t\n", regValue(RUNTIME_REG_RA));
-    fprintf(fp, "==============================================================\n");
+    fprintf(file, "PC=%08X\t", regValue(RUNTIME_REG_PC));
+    fprintf(file, "SP=%08X\t", regValue(RUNTIME_REG_SP));
+    fprintf(file, "FP=%08X\t", regValue(RUNTIME_REG_FP));
+    fprintf(file, "RA=%08X\t\n", regValue(RUNTIME_REG_RA));
+    fprintf(file, "==============================================================\n");
 }
 
 static bool runtimeDebugOpenDisassembler(csh* handle)
@@ -163,7 +163,7 @@ static void runtimeDebugDumpOneInstruction(csh handle, NativeRuntime* runtime, u
     }
 }
 
-void runtimeDebugDumpReturnDisassembly(NativeRuntime* runtime)
+void appRuntimeDebugDumpReturnDisassembly(NativeRuntime* runtime)
 {
     uint32_t ra = 0;
     printf("==========================DISASM==============================\n");
@@ -222,9 +222,9 @@ void runtimeDebugDumpDisassemblyRange(NativeRuntime* runtime, uint32_t address, 
     printf("==============================================================\n");
 }
 
-void runtimeDebugDumpMemory(void* buffer, uint32_t count)
+void appRuntimeDebugDumpMemory(const void* buffer, uint32_t count)
 {
-    uint8_t* d = (uint8_t*)buffer;
+    const uint8_t* d = (const uint8_t*)buffer;
     for (int i = 0; i < count; ++i)
     {
         printf("%02x ", d[i]);
@@ -246,39 +246,9 @@ void runtimeBytesToHexString(void* buff, int count, char* out)
     }
 }
 
-const char* memTypeStr(RuntimeMemoryAccess type)
-{
-    return runtimeMemoryAccessName(type);
-}
-
-void dumpStackCall(NativeRuntime* runtime, uint32_t stack_start_address)
-{
-    runtimeDebugDumpStack(runtime, stack_start_address);
-}
-
-void dumpREG(NativeRuntime* runtime)
-{
-    runtimeDebugDumpRegisters(runtime);
-}
-
-void dumpREG2File(NativeRuntime* runtime, FILE* fp)
-{
-    runtimeDebugDumpRegistersToFile(runtime, fp);
-}
-
-void dumpAsm(NativeRuntime* runtime)
-{
-    runtimeDebugDumpReturnDisassembly(runtime);
-}
-
 void dumpAsmRange(NativeRuntime* runtime, uint32_t address, uint32_t bytes)
 {
     runtimeDebugDumpDisassemblyRange(runtime, address, bytes);
-}
-
-void dumpMem(void* buffer, uint32_t count)
-{
-    runtimeDebugDumpMemory(buffer, count);
 }
 
 void toHexString(void* buff, int count, char* out)

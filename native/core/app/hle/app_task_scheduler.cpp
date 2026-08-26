@@ -181,9 +181,9 @@ static void hook_task_profile(NativeRuntime* runtime, uint64_t address, uint32_t
 static bool hook_mem_invalid(NativeRuntime* runtime, RuntimeMemoryAccess type, uint64_t address, int size, int64_t value, void* user_data)
 {
     printf(">>> mem_invalid type:%s addr:0x%" PRIx64 " size:0x%x value:0x%" PRIx64 "\n",
-        memTypeStr(type), address, size, value);
-    dumpREG(runtime);
-    dumpAsm(runtime);
+        appRuntimeMemoryAccessName(type), address, size, value);
+    appRuntimeDebugDumpRegisters(runtime);
+    appRuntimeDebugDumpReturnDisassembly(runtime);
     return false;
 }
 

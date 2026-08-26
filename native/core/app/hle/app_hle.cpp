@@ -167,8 +167,8 @@ void bridge_profile_tick(void)
 
 static void profilePrintHleAndReset(void)
 {
-    uint64_t fbWrites = consumeFramebufferWriteCount();
-    uint64_t fbWriteBytes = consumeFramebufferWriteBytes();
+    uint64_t fbWrites = framebufferConsumeWriteCount();
+    uint64_t fbWriteBytes = framebufferConsumeWriteBytes();
     uint64_t profile[HLE_PROFILE_COUNTER_COUNT] = {};
     for (int index = 0; index < HLE_PROFILE_COUNTER_COUNT; ++index)
     {
@@ -642,9 +642,9 @@ static void br_malloc(NativeRuntime* runtime)
     uint32_t p = vm_malloc(len);
     if (!p && len != 0)
     {
-        dumpREG(runtime);
-        dumpStackCall(runtime, 0xa0000000);
-        dumpAsm(runtime);
+        appRuntimeDebugDumpRegisters(runtime);
+        appRuntimeDebugDumpStack(runtime, 0xa0000000);
+        appRuntimeDebugDumpReturnDisassembly(runtime);
         assert(0);
     }
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &p);
@@ -1462,7 +1462,7 @@ static void br_waveout_set_volume(NativeRuntime* runtime)
 //void* _lcd_get_frame()
 static void br__lcd_get_frame(NativeRuntime* runtime)
 {
-    uint32_t ptr = _lcd_get_frame();
+    uint32_t ptr = framebufferGuestAddress();
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ptr);
 
     uint32_t pc;
@@ -1504,7 +1504,7 @@ static void br_lcd_get_cframe(NativeRuntime* runtime)
 static void br_lcd_flip(NativeRuntime* runtime)
 {
     hleProfileAdd(HLE_PROFILE_LCD_FLIP);
-    requestFbUpdate();
+    framebufferRequestUpdate();
     returnToRa(runtime);
 }
 
@@ -1956,7 +1956,7 @@ static void br_memcpy(NativeRuntime* runtime)
             printf("trace-copy: hle=memcpy dst=0x%08x src=0x%08x len=%u ra=0x%08x\n",
                 outDestPtr, inSrcPtr, inLength, ra);
             printf("trace-copy-src:\n");
-            dumpMem(inSrc, inLength < 0x40 ? inLength : 0x40);
+            appRuntimeDebugDumpMemory(inSrc, inLength < 0x40 ? inLength : 0x40);
         }
         void* out = memcpy(outDest, inSrc, inLength);
         ret = toVmPtr(out);
@@ -2995,9 +2995,9 @@ static void hook_code(NativeRuntime* runtime, uint64_t address, uint32_t size, v
     {
         printf("hle: missing implementation for %s at 0x%08x\n",
             hookFunc->name ? hookFunc->name : "<unnamed>", (uint32_t)address);
-        dumpREG(runtime);
-        dumpStackCall(runtime, 0xa0000000);
-        dumpAsm(runtime);
+        appRuntimeDebugDumpRegisters(runtime);
+        appRuntimeDebugDumpStack(runtime, 0xa0000000);
+        appRuntimeDebugDumpReturnDisassembly(runtime);
         frontendRequestQuit();
     }
 }

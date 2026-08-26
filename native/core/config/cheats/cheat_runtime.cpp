@@ -26,25 +26,18 @@ static bool g_cheatLoaded = false;
 static bool g_cheatEnabled = false;
 static bool g_cheatRequestedEnabled = false;
 static bool g_cheatShaMismatch = false;
-static NativeRuntime* g_cheatRuntime = NULL;
-static void* g_cheatMemoryUserData = NULL;
-static CheatReadCallback g_cheatReadCallback = NULL;
-static CheatWriteCallback g_cheatWriteCallback = NULL;
-static CheatFlushCallback g_cheatFlushCallback = NULL;
+struct CheatRuntimeBinding
+{
+    void* userData;
+    CheatReadCallback readCallback;
+    CheatWriteCallback writeCallback;
+    CheatFlushCallback flushCallback;
+};
+static CheatRuntimeBinding g_cheatBinding = {};
 static uint32_t g_lastFrameApplyCount = 0;
 static uint32_t g_cheatRevision = 0;
 static std::string g_currentGameSha256;
 static bool g_manualApplyPending = false;
-
-static bool runtimeReadCallback(void* userData, uint32_t address, void* out, size_t size)
-{
-    return nativeRuntimeReadRaw((NativeRuntime*)userData, address, out, size);
-}
-
-static bool runtimeWriteCallback(void* userData, uint32_t address, const void* in, size_t size)
-{
-    return nativeRuntimeWriteRaw((NativeRuntime*)userData, address, in, size);
-}
 
 static bool envEnabled(const char* name)
 {
@@ -364,9 +357,10 @@ static bool cheatAvailableLocked(void)
     return g_cheatLoaded && !g_cheatShaMismatch && !g_cheatSet.entries.empty();
 }
 
-static bool cheatCanApplyLocked(NativeRuntime* runtime)
+static bool cheatCanApplyLocked(void)
 {
-    return runtime && g_cheatEnabled && cheatAvailableLocked();
+    return g_cheatBinding.userData && g_cheatBinding.readCallback &&
+        g_cheatBinding.writeCallback && g_cheatEnabled && cheatAvailableLocked();
 }
 
 static void clearManualApplyLocked(void)
@@ -391,7 +385,7 @@ static void refreshEffectiveEnabledLocked(void)
     g_cheatEnabled = g_cheatRequestedEnabled && cheatAvailableLocked();
 }
 
-static void finishApplyLocked(NativeRuntime* runtime, const CheatApplyStats& stats)
+static void finishApplyLocked(const CheatApplyStats& stats)
 {
     if (stats.appliedOnce > 0)
     {
@@ -399,21 +393,26 @@ static void finishApplyLocked(NativeRuntime* runtime, const CheatApplyStats& sta
     }
     if (stats.applied > 0)
     {
-        nativeRuntimeFlushCodeCache(runtime);
+        if (g_cheatBinding.flushCallback)
+        {
+            g_cheatBinding.flushCallback(g_cheatBinding.userData);
+        }
     }
 }
 
-static void applyLocked(NativeRuntime* runtime, CheatApplyPhase phase, const char* reason)
+static CheatApplyStats applyLocked(CheatApplyPhase phase, const char* reason)
 {
-    if (!cheatCanApplyLocked(runtime))
+    CheatApplyStats stats = {};
+    if (!cheatCanApplyLocked())
     {
-        return;
+        return stats;
     }
 
-    CheatApplyStats stats = cheatApply(&g_cheatSet, runtimeReadCallback, runtimeWriteCallback,
-        runtime, phase);
+    stats = cheatApply(&g_cheatSet, g_cheatBinding.readCallback,
+        g_cheatBinding.writeCallback, g_cheatBinding.userData, phase);
     logApplyStats(reason, stats);
-    finishApplyLocked(runtime, stats);
+    finishApplyLocked(stats);
+    return stats;
 }
 
 void cheatRuntimeSetEnabled(bool enabled)
@@ -555,71 +554,35 @@ bool cheatRuntimeSetEntryEnabled(size_t index, bool enabled)
     return setFeatureGroupEnabledLocked(groups[index], enabled);
 }
 
-void cheatRuntimeBind(NativeRuntime* runtime)
-{
-    std::lock_guard<std::mutex> lock(g_cheatMutex);
-    g_cheatRuntime = runtime;
-}
-
 void cheatRuntimeBindMemory(void* userData, CheatReadCallback readCallback,
     CheatWriteCallback writeCallback, CheatFlushCallback flushCallback)
 {
     std::lock_guard<std::mutex> lock(g_cheatMutex);
-    g_cheatMemoryUserData = userData;
-    g_cheatReadCallback = readCallback;
-    g_cheatWriteCallback = writeCallback;
-    g_cheatFlushCallback = flushCallback;
+    g_cheatBinding.userData = userData;
+    g_cheatBinding.readCallback = readCallback;
+    g_cheatBinding.writeCallback = writeCallback;
+    g_cheatBinding.flushCallback = flushCallback;
 }
 
 void cheatRuntimeUnbindMemory(void* userData)
 {
     std::lock_guard<std::mutex> lock(g_cheatMutex);
-    if (!userData || g_cheatMemoryUserData == userData)
+    if (!userData || g_cheatBinding.userData == userData)
     {
-        g_cheatMemoryUserData = NULL;
-        g_cheatReadCallback = NULL;
-        g_cheatWriteCallback = NULL;
-        g_cheatFlushCallback = NULL;
+        g_cheatBinding = {};
     }
 }
 
 uint32_t cheatRuntimeApplyStartupBound(void)
 {
     std::lock_guard<std::mutex> lock(g_cheatMutex);
-    if (!g_cheatMemoryUserData || !g_cheatReadCallback || !g_cheatWriteCallback ||
-        !g_cheatEnabled || !cheatAvailableLocked())
-    {
-        return 0;
-    }
-    CheatApplyStats stats = cheatApply(&g_cheatSet, g_cheatReadCallback,
-        g_cheatWriteCallback, g_cheatMemoryUserData, CHEAT_APPLY_STARTUP);
-    if (stats.applied && g_cheatFlushCallback)
-    {
-        g_cheatFlushCallback(g_cheatMemoryUserData);
-    }
-    logApplyStats("startup", stats);
-    return stats.applied;
-}
-
-void cheatRuntimeUnbind(NativeRuntime* runtime)
-{
-    std::lock_guard<std::mutex> lock(g_cheatMutex);
-    if (!runtime || g_cheatRuntime == runtime)
-    {
-        g_cheatRuntime = NULL;
-    }
-}
-
-void cheatRuntimeApplyStartup(NativeRuntime* runtime)
-{
-    std::lock_guard<std::mutex> lock(g_cheatMutex);
-    applyLocked(runtime, CHEAT_APPLY_STARTUP, "startup");
+    return applyLocked(CHEAT_APPLY_STARTUP, "startup").applied;
 }
 
 void cheatRuntimeApplyNow(void)
 {
     std::lock_guard<std::mutex> lock(g_cheatMutex);
-    if (!cheatCanApplyLocked(g_cheatRuntime))
+    if (!cheatCanApplyLocked())
     {
         return;
     }
@@ -634,17 +597,16 @@ void cheatRuntimeApplyNow(void)
 void cheatRuntimeApplyFrame(void)
 {
     std::lock_guard<std::mutex> lock(g_cheatMutex);
-    NativeRuntime* runtime = g_cheatRuntime;
-    if (!cheatCanApplyLocked(runtime))
+    if (!cheatCanApplyLocked())
     {
         return;
     }
 
     bool manualApply = consumeManualApplyLocked();
-    CheatApplyStats stats = cheatApply(&g_cheatSet, runtimeReadCallback, runtimeWriteCallback,
-        runtime, CHEAT_APPLY_FRAME);
+    CheatApplyStats stats = cheatApply(&g_cheatSet, g_cheatBinding.readCallback,
+        g_cheatBinding.writeCallback, g_cheatBinding.userData, CHEAT_APPLY_FRAME);
     g_lastFrameApplyCount += stats.applied;
-    finishApplyLocked(runtime, stats);
+    finishApplyLocked(stats);
     if (manualApply)
     {
         logApplyStats("menu", stats);

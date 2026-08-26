@@ -506,13 +506,13 @@ static void profileInterpreterInstruction(NativeRuntime* runtime)
     uint64_t elapsedMicros = nowMicros - runtime->interpreterProfileLastMicros;
     if (elapsedMicros >= runtimeLogProfileIntervalUs())
     {
-        uint64_t submittedFrames = consumeFramebufferSubmittedCount();
-        uint64_t framebufferCopyMicros = consumeFramebufferCopyMicros();
+        uint64_t submittedFrames = framebufferConsumeSubmittedCount();
+        uint64_t framebufferCopyMicros = framebufferConsumeCopyMicros();
         uint64_t totalFrameIntervalMicros = 0;
         uint64_t maxFrameIntervalMicros = 0;
         uint64_t over25msCount = 0;
         uint64_t over33msCount = 0;
-        consumeFramebufferTimingStats(&totalFrameIntervalMicros, &maxFrameIntervalMicros,
+        framebufferConsumeTimingStats(&totalFrameIntervalMicros, &maxFrameIntervalMicros,
             &over25msCount, &over33msCount);
         uint64_t avgFrameIntervalMicros = submittedFrames ? totalFrameIntervalMicros / submittedFrames : 0;
         uint64_t ips = (runtime->interpreterProfileInstructions * 1000000ull) / elapsedMicros;
@@ -889,7 +889,7 @@ static bool writeMemRaw(NativeRuntime* runtime, uint32_t address, const void* in
         printf("\n");
     }
     memcpy(p, in, size);
-    trackFramebufferWrite(address, (uint32_t)size);
+    framebufferTrackWrite(address, (uint32_t)size);
     return true;
 }
 
@@ -949,7 +949,7 @@ static bool writeU8(NativeRuntime* runtime, uint32_t address, uint32_t value)
     }
     *p = (uint8_t)value;
     callValidMemoryHooks(runtime, RUNTIME_MEM_WRITE, address, 1, value & 0xffu);
-    trackFramebufferWrite(address, sizeof(uint8_t));
+    framebufferTrackWrite(address, sizeof(uint8_t));
     return true;
 }
 
@@ -970,7 +970,7 @@ static bool writeU16(NativeRuntime* runtime, uint32_t address, uint32_t value)
     }
     storeLe16(p, (uint16_t)value);
     callValidMemoryHooks(runtime, RUNTIME_MEM_WRITE, address, 2, value & 0xffffu);
-    trackFramebufferWrite(address, sizeof(uint16_t));
+    framebufferTrackWrite(address, sizeof(uint16_t));
     return true;
 }
 
@@ -992,7 +992,7 @@ static bool writeU32(NativeRuntime* runtime, uint32_t address, uint32_t value)
     }
     storeLe32(p, value);
     callValidMemoryHooks(runtime, RUNTIME_MEM_WRITE, address, 4, value);
-    trackFramebufferWrite(address, sizeof(uint32_t));
+    framebufferTrackWrite(address, sizeof(uint32_t));
     return true;
 }
 
