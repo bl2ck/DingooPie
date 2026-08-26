@@ -1,6 +1,7 @@
 #include "shared/game/game_runtime.h"
 
 #include "app_runtime.h"
+#include "app_hle.h"
 #include "cc/runtime/cc_runtime.h"
 #include "cc/save/cc_save_state.h"
 #include "app_save_state.h"
@@ -162,6 +163,39 @@ void gameRuntimeApplySettings(void)
     else if (format == GAME_FORMAT_CC)
     {
         ccRuntimeApplySettings();
+    }
+}
+
+void gameRuntimeCopyDiagnostics(char* identity, size_t identitySize,
+    char* lastTask, size_t lastTaskSize, char* lastHle, size_t lastHleSize)
+{
+    if (identity && identitySize)
+    {
+        snprintf(identity, identitySize, "%s",
+            gameRuntimeActiveFormat() == GAME_FORMAT_APP ?
+                bridge_get_game_identity() : "");
+    }
+    if (gameRuntimeActiveFormat() == GAME_FORMAT_APP)
+    {
+        if (lastTask && lastTaskSize)
+        {
+            snprintf(lastTask, lastTaskSize, "%s",
+                bridge_get_last_task_stop_summary());
+        }
+        if (lastHle && lastHleSize)
+        {
+            snprintf(lastHle, lastHleSize, "%s",
+                bridge_get_last_hle_summary());
+        }
+        return;
+    }
+    if (lastTask && lastTaskSize)
+    {
+        lastTask[0] = 0;
+    }
+    if (lastHle && lastHleSize)
+    {
+        lastHle[0] = 0;
     }
 }
 

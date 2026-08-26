@@ -5958,11 +5958,17 @@ void frontendRunLoop(const EmulatorOptions& options)
             {
                 printf("frontend: SDL_QUIT event received ignoreQuit=%u\n",
                     options.ignoreQuit ? 1u : 0u);
+                char diagnosticIdentity[80] = {};
+                char diagnosticTask[256] = {};
+                char diagnosticHle[256] = {};
+                gameRuntimeCopyDiagnostics(diagnosticIdentity, sizeof(diagnosticIdentity),
+                    diagnosticTask, sizeof(diagnosticTask),
+                    diagnosticHle, sizeof(diagnosticHle));
                 printf("frontend: close context app_sha256=%s input=0x%08x last_task=\"%s\" last_hle=\"%s\"\n",
-                    bridge_get_game_identity(),
+                    diagnosticIdentity,
                     inputGetCurrentStatus(),
-                    bridge_get_last_task_stop_summary(),
-                    bridge_get_last_hle_summary());
+                    diagnosticTask,
+                    diagnosticHle);
                 if (!options.ignoreQuit)
                 {
                     running = false;

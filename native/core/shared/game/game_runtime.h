@@ -14,6 +14,8 @@ bool gameRuntimeStart(const char* gamePath, const EmulatorOptions& options,
     const std::vector<std::string>& enabledCheatFeatureKeys);
 void gameRuntimeStop(void);
 void gameRuntimeApplySettings(void);
+void gameRuntimeCopyDiagnostics(char* identity, size_t identitySize,
+    char* lastTask, size_t lastTaskSize, char* lastHle, size_t lastHleSize);
 GameFormat gameRuntimeActiveFormat(void);
 uint32_t gameRuntimeActiveUnitCount(void);
 void gameRuntimeNotifyPauseRequested(void);
