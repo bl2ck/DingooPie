@@ -7,12 +7,10 @@
 #include <vector>
 
 #include "app_memory.h"
+#include "app/runtime/app_runtime_context.h"
 #include "framebuffer.h"
 #include "runtime_log.h"
 
-extern uint32_t s_AppDataAddr;
-extern uint32_t s_AppDataBuffSize;
-extern void* s_AppDataBuff;
 
 static EmulatorOptions g_options;
 static std::vector<uint32_t> g_objectFlagsPredicateAddresses;
@@ -980,10 +978,11 @@ static void patchCacheInstructions(app* appInfo, const EmulatorOptions& options,
 
 static bool readRuntimeInsn(NativeRuntime* runtime, uint64_t address, uint32_t* out)
 {
-    if (address >= s_AppDataAddr && address + sizeof(uint32_t) <= (uint64_t)s_AppDataAddr + s_AppDataBuffSize)
+    AppRuntimeProgramImage image = appRuntimeProgramImage();
+    if (address >= image.address && address + sizeof(uint32_t) <= (uint64_t)image.address + image.size)
     {
-        uint64_t offset = address - s_AppDataAddr;
-        *out = readLe32((const uint8_t*)s_AppDataBuff + offset);
+        uint64_t offset = address - image.address;
+        *out = readLe32((const uint8_t*)image.data + offset);
         return true;
     }
 

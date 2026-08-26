@@ -1,6 +1,7 @@
 #include "app_runtime.h"
 
 #include "app/runtime/app_loader.h"
+#include "app/runtime/app_runtime_context.h"
 #include "shared/game/game_paths.h"
 #include "cheat_runtime.h"
 #include "app/runtime/app_crash_report.h"
@@ -59,6 +60,16 @@ uint32_t s_AppDataAddr = 0;
 uint32_t s_AppDataBuffSize = 0;
 void* s_AppDataBuff = 0;
 app* s_app = NULL;
+
+AppRuntimeProgramImage appRuntimeProgramImage(void)
+{
+    AppRuntimeProgramImage image = {};
+    image.address = s_AppDataAddr;
+    image.size = s_AppDataBuffSize;
+    image.data = s_AppDataBuff;
+    image.package = s_app;
+    return image;
+}
 
 static uint32_t g_appMainEntry = 0;
 static uint32_t g_appMainInitCheckAddress = 0;

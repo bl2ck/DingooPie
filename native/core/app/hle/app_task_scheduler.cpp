@@ -10,14 +10,11 @@
 #include "runtime_log.h"
 #include "app_hle.h"
 #include "app/runtime/app_loader.h"
+#include "app/runtime/app_runtime_context.h"
 #include <cstdlib>
 #include <cstring>
 #include <vector>
 
-extern uint32_t s_AppDataAddr;
-extern uint32_t s_AppDataBuffSize;
-extern void* s_AppDataBuff;
-extern app* s_app;
 
 static SDL_atomic_t s_taskShutdownRequested;
 static pthread_mutex_t s_taskRuntimeMutex = PTHREAD_MUTEX_INITIALIZER;
@@ -277,15 +274,16 @@ void* subTaskRun(void* data)
     }
     printf("task: subTaskRun backend=%s\n", executionBackendName(backend));
 
-    err = nativeRuntimeMapMemory(runtime, s_AppDataAddr, s_AppDataBuffSize, RUNTIME_PROT_ALL, s_AppDataBuff);
+    AppRuntimeProgramImage image = appRuntimeProgramImage();
+    err = nativeRuntimeMapMemory(runtime, image.address, image.size, RUNTIME_PROT_ALL, image.data);
     if (err)
     {
         printf("task: failed to map app memory: %u (%s)\n", err, nativeRuntimeErrorString(err));
         return NULL;
     }
 
-    uint32_t appAliasAddr = s_AppDataAddr & 0x1fffffff;
-    err = nativeRuntimeMapMemory(runtime, appAliasAddr, s_AppDataBuffSize, RUNTIME_PROT_ALL, s_AppDataBuff);
+    uint32_t appAliasAddr = image.address & 0x1fffffff;
+    err = nativeRuntimeMapMemory(runtime, appAliasAddr, image.size, RUNTIME_PROT_ALL, image.data);
     if (err)
     {
         printf("task: failed to map app alias: %u (%s)\n", err, nativeRuntimeErrorString(err));
@@ -304,7 +302,7 @@ void* subTaskRun(void* data)
         return NULL;
     }
 
-    err = bridge_init_task(runtime, s_app, false);
+    err = bridge_init_task(runtime, image.package, false);
     if (err)
     {
         printf("task: bridge_init failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
