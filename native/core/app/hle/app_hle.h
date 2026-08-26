@@ -14,8 +14,8 @@
 // Wires Dingoo SDK imports to host-side HLE implementations.
 void bridge_set_game_identity(const char* sha256Hex);
 const char* bridge_get_game_identity(void);
-const char* bridge_get_last_task_stop_summary(void);
-const char* bridge_get_last_hle_summary(void);
+void bridge_copy_last_task_stop_summary(char* output, size_t outputSize);
+void bridge_copy_last_hle_summary(char* output, size_t outputSize);
 void bridge_apply_runtime_settings(void);
 uint32_t bridge_capture_os_ticks(void);
 void bridge_restore_os_ticks(uint32_t ticks);

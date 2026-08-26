@@ -177,16 +177,8 @@ void gameRuntimeCopyDiagnostics(char* identity, size_t identitySize,
     }
     if (gameRuntimeActiveFormat() == GAME_FORMAT_APP)
     {
-        if (lastTask && lastTaskSize)
-        {
-            snprintf(lastTask, lastTaskSize, "%s",
-                bridge_get_last_task_stop_summary());
-        }
-        if (lastHle && lastHleSize)
-        {
-            snprintf(lastHle, lastHleSize, "%s",
-                bridge_get_last_hle_summary());
-        }
+        bridge_copy_last_task_stop_summary(lastTask, lastTaskSize);
+        bridge_copy_last_hle_summary(lastHle, lastHleSize);
         return;
     }
     if (lastTask && lastTaskSize)

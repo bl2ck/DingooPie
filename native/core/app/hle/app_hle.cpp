@@ -19,6 +19,8 @@
 #include "app_text_format.h"
 #include "compat_profile.h"
 #include "runtime_log.h"
+#include "profile_counter.h"
+#include "runtime_shared_text.h"
 #include "runtime_resource_monitor.h"
 #include "runtime_tick_clock.h"
 #include <chrono>
@@ -41,8 +43,9 @@
 static void returnToRa(NativeRuntime* runtime);
 static app* s_bridgeApp = NULL;
 static std::string s_bridgeAppSha256;
-static char s_lastTaskStopSummary[192] = "";
-static char s_lastHleSummary[192] = "";
+static RuntimeSharedText<192> s_lastTaskStopSummary;
+static RuntimeSharedText<192> s_lastObservedHleSummary;
+static thread_local char s_threadLastHleSummary[192] = "";
 static RuntimeTickClock s_osTickClock;
 static std::atomic<bool> s_bridgeProfileEnabled(false);
 static std::atomic<double> s_runtimeSpeedScale(1.0);
@@ -60,45 +63,62 @@ struct RuntimeBridgeContext
 
 static std::vector<RuntimeBridgeContext> s_runtimeContexts;
 static pthread_mutex_t s_runtimeContextsMutex = PTHREAD_MUTEX_INITIALIZER;
+static std::mutex s_profileReportMutex;
 static void profilePrintAndReset(uint64_t now);
 
-struct HleProfileCounters
+enum HleProfileCounterId
 {
-    uint64_t lcdSetFrame;
-    uint64_t lcdFlip;
-    uint64_t osTimeGet;
-    uint64_t getTickCount;
-    uint64_t delayMs;
-    uint64_t delayMsTotal;
-    uint64_t udelay;
-    uint64_t udelayTotal;
-    uint64_t osTimeDly;
-    uint64_t osTimeDlyTotal;
-    uint64_t waveCanWrite;
-    uint64_t waveWrite;
-    uint64_t waveWriteBytes;
-    uint64_t semPend;
-    uint64_t semPost;
-    uint64_t semCreate;
-    uint64_t taskCreate;
-    uint64_t sysJudgeEvent;
-    uint64_t kbdStatus;
-    uint64_t dlResOpen;
-    uint64_t dlResRead;
-    uint64_t dlResReadBytes;
+    HLE_PROFILE_LCD_SET_FRAME = 0,
+    HLE_PROFILE_LCD_FLIP,
+    HLE_PROFILE_OS_TIME_GET,
+    HLE_PROFILE_GET_TICK_COUNT,
+    HLE_PROFILE_DELAY_MS,
+    HLE_PROFILE_DELAY_MS_TOTAL,
+    HLE_PROFILE_UDELAY,
+    HLE_PROFILE_UDELAY_TOTAL,
+    HLE_PROFILE_OS_TIME_DLY,
+    HLE_PROFILE_OS_TIME_DLY_TOTAL,
+    HLE_PROFILE_WAVE_CAN_WRITE,
+    HLE_PROFILE_WAVE_WRITE,
+    HLE_PROFILE_WAVE_WRITE_BYTES,
+    HLE_PROFILE_SEM_PEND,
+    HLE_PROFILE_SEM_POST,
+    HLE_PROFILE_SEM_CREATE,
+    HLE_PROFILE_TASK_CREATE,
+    HLE_PROFILE_SYS_JUDGE_EVENT,
+    HLE_PROFILE_KBD_STATUS,
+    HLE_PROFILE_DL_RES_OPEN,
+    HLE_PROFILE_DL_RES_READ,
+    HLE_PROFILE_DL_RES_READ_BYTES,
+    HLE_PROFILE_COUNTER_COUNT
 };
 
-static HleProfileCounters s_hleProfile = {};
+static RuntimeProfileCounter s_hleProfile[HLE_PROFILE_COUNTER_COUNT];
+static RuntimeProfileCounter s_bridgeProfileCalls;
 
-static bool hleProfileHasActivity(const HleProfileCounters& profile, uint64_t fbWrites, uint64_t fbWriteBytes)
+static void hleProfileAdd(HleProfileCounterId counter, uint64_t value = 1)
 {
-    return profile.lcdSetFrame || profile.lcdFlip || fbWrites || fbWriteBytes ||
-        profile.osTimeGet || profile.getTickCount || profile.delayMs || profile.delayMsTotal ||
-        profile.udelay || profile.udelayTotal || profile.osTimeDly || profile.osTimeDlyTotal ||
-        profile.waveCanWrite || profile.waveWrite || profile.waveWriteBytes ||
-        profile.semPend || profile.semPost || profile.semCreate || profile.taskCreate ||
-        profile.sysJudgeEvent || profile.kbdStatus || profile.dlResOpen ||
-        profile.dlResRead || profile.dlResReadBytes;
+    if (s_bridgeProfileEnabled.load(std::memory_order_relaxed))
+    {
+        s_hleProfile[counter].add(value);
+    }
+}
+
+static bool hleProfileHasActivity(
+    const uint64_t* profile, uint64_t fbWrites, uint64_t fbWriteBytes)
+{
+    if (fbWrites || fbWriteBytes)
+    {
+        return true;
+    }
+    for (int index = 0; index < HLE_PROFILE_COUNTER_COUNT; ++index)
+    {
+        if (profile[index])
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 void bridge_set_game_identity(const char* sha256Hex)
@@ -112,14 +132,27 @@ const char* bridge_get_game_identity(void)
     return s_bridgeAppSha256.c_str();
 }
 
-const char* bridge_get_last_task_stop_summary(void)
+void bridge_copy_last_task_stop_summary(char* output, size_t outputSize)
 {
-    return s_lastTaskStopSummary;
+    if (!output || !outputSize)
+    {
+        return;
+    }
+    s_lastTaskStopSummary.copy(output, outputSize);
 }
 
-const char* bridge_get_last_hle_summary(void)
+void bridge_copy_last_hle_summary(char* output, size_t outputSize)
 {
-    return s_lastHleSummary;
+    if (!output || !outputSize)
+    {
+        return;
+    }
+    if (s_threadLastHleSummary[0])
+    {
+        snprintf(output, outputSize, "%s", s_threadLastHleSummary);
+        return;
+    }
+    s_lastObservedHleSummary.copy(output, outputSize);
 }
 
 bool bridge_try_fast_return_hook(uint32_t address, uint32_t* returnValue);
@@ -132,29 +165,18 @@ void bridge_profile_tick(void)
     }
 }
 
-static void profilePrintAndReset(uint64_t now)
+static void profilePrintHleAndReset(void)
 {
-    static uint64_t lastTicks = 0;
-    if (!runtimeLogProfileEnabled() || !s_bridgeProfileEnabled.load())
-    {
-        return;
-    }
-    if (!lastTicks)
-    {
-        lastTicks = now;
-        return;
-    }
-    if (now - lastTicks < runtimeLogProfileIntervalMs())
-    {
-        return;
-    }
-
     uint64_t fbWrites = consumeFramebufferWriteCount();
     uint64_t fbWriteBytes = consumeFramebufferWriteBytes();
-    if (!hleProfileHasActivity(s_hleProfile, fbWrites, fbWriteBytes) &&
+    uint64_t profile[HLE_PROFILE_COUNTER_COUNT] = {};
+    for (int index = 0; index < HLE_PROFILE_COUNTER_COUNT; ++index)
+    {
+        profile[index] = s_hleProfile[index].take();
+    }
+    if (!hleProfileHasActivity(profile, fbWrites, fbWriteBytes) &&
         !runtimeLogShouldPrintEmptyProfile())
     {
-        lastTicks = now;
         return;
     }
 
@@ -163,33 +185,30 @@ static void profilePrintAndReset(uint64_t now)
         "ostimedly=%llu/%lluticks wave_can=%llu wave_write=%llu/%llub "
         "sem=%llu/%llu/%llu task=%llu sys_event=%llu kbd=%llu "
         "dl_res=%llu/%llu/%llub\n",
-        (unsigned long long)s_hleProfile.lcdSetFrame,
-        (unsigned long long)s_hleProfile.lcdFlip,
+        (unsigned long long)profile[HLE_PROFILE_LCD_SET_FRAME],
+        (unsigned long long)profile[HLE_PROFILE_LCD_FLIP],
         (unsigned long long)fbWrites,
         (unsigned long long)fbWriteBytes,
-        (unsigned long long)s_hleProfile.osTimeGet,
-        (unsigned long long)s_hleProfile.getTickCount,
-        (unsigned long long)s_hleProfile.delayMs,
-        (unsigned long long)s_hleProfile.delayMsTotal,
-        (unsigned long long)s_hleProfile.udelay,
-        (unsigned long long)s_hleProfile.udelayTotal,
-        (unsigned long long)s_hleProfile.osTimeDly,
-        (unsigned long long)s_hleProfile.osTimeDlyTotal,
-        (unsigned long long)s_hleProfile.waveCanWrite,
-        (unsigned long long)s_hleProfile.waveWrite,
-        (unsigned long long)s_hleProfile.waveWriteBytes,
-        (unsigned long long)s_hleProfile.semCreate,
-        (unsigned long long)s_hleProfile.semPend,
-        (unsigned long long)s_hleProfile.semPost,
-        (unsigned long long)s_hleProfile.taskCreate,
-        (unsigned long long)s_hleProfile.sysJudgeEvent,
-        (unsigned long long)s_hleProfile.kbdStatus,
-        (unsigned long long)s_hleProfile.dlResOpen,
-        (unsigned long long)s_hleProfile.dlResRead,
-        (unsigned long long)s_hleProfile.dlResReadBytes);
-
-    memset(&s_hleProfile, 0, sizeof(s_hleProfile));
-    lastTicks = now;
+        (unsigned long long)profile[HLE_PROFILE_OS_TIME_GET],
+        (unsigned long long)profile[HLE_PROFILE_GET_TICK_COUNT],
+        (unsigned long long)profile[HLE_PROFILE_DELAY_MS],
+        (unsigned long long)profile[HLE_PROFILE_DELAY_MS_TOTAL],
+        (unsigned long long)profile[HLE_PROFILE_UDELAY],
+        (unsigned long long)profile[HLE_PROFILE_UDELAY_TOTAL],
+        (unsigned long long)profile[HLE_PROFILE_OS_TIME_DLY],
+        (unsigned long long)profile[HLE_PROFILE_OS_TIME_DLY_TOTAL],
+        (unsigned long long)profile[HLE_PROFILE_WAVE_CAN_WRITE],
+        (unsigned long long)profile[HLE_PROFILE_WAVE_WRITE],
+        (unsigned long long)profile[HLE_PROFILE_WAVE_WRITE_BYTES],
+        (unsigned long long)profile[HLE_PROFILE_SEM_CREATE],
+        (unsigned long long)profile[HLE_PROFILE_SEM_PEND],
+        (unsigned long long)profile[HLE_PROFILE_SEM_POST],
+        (unsigned long long)profile[HLE_PROFILE_TASK_CREATE],
+        (unsigned long long)profile[HLE_PROFILE_SYS_JUDGE_EVENT],
+        (unsigned long long)profile[HLE_PROFILE_KBD_STATUS],
+        (unsigned long long)profile[HLE_PROFILE_DL_RES_OPEN],
+        (unsigned long long)profile[HLE_PROFILE_DL_RES_READ],
+        (unsigned long long)profile[HLE_PROFILE_DL_RES_READ_BYTES]);
 }
 
 static bool envTraceEnabled(const char* name)
@@ -557,10 +576,16 @@ static void stopCurrentGuestRuntime(NativeRuntime* runtime, const char* reason)
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &a0);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_PC, &pc);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_SP, &sp);
-    snprintf(s_lastTaskStopSummary, sizeof(s_lastTaskStopSummary),
+    char summary[192];
+    snprintf(summary, sizeof(summary),
         "%s pc=0x%08x ra=0x%08x a0=0x%08x sp=0x%08x main=%u",
         reason ? reason : "<unknown>", pc, ra, a0, sp,
         isMainRuntimeContext(runtime) ? 1u : 0u);
+    s_lastTaskStopSummary.set(summary);
+    if (s_threadLastHleSummary[0])
+    {
+        s_lastObservedHleSummary.set(s_threadLastHleSummary);
+    }
     CompatGuestExitDecision exitDecision = taskStopGuestExitDecision(ra);
     printf("hle: task stop reason=%s app_sha256=%s pc=0x%08x ra=0x%08x a0=0x%08x main=%u promoted=%u",
         reason ? reason : "<unknown>",
@@ -778,7 +803,7 @@ void bridge_restore_os_ticks(uint32_t ticks)
 
 static void br_GetTickCount(NativeRuntime* runtime)
 {
-    s_hleProfile.getTickCount++;
+    hleProfileAdd(HLE_PROFILE_GET_TICK_COUNT);
     uint64_t ticks = OSTimeGet();
     uint64_t value = (ticks * 1000000ull) / OS_TICKS_PER_SEC;
     uint32_t ret = value & 0xFFFFFFFF;
@@ -791,7 +816,7 @@ static void br_GetTickCount(NativeRuntime* runtime)
 
 static void br_OSTimeGet(NativeRuntime* runtime)
 {
-    s_hleProfile.osTimeGet++;
+    hleProfileAdd(HLE_PROFILE_OS_TIME_GET);
     uint32_t tick_time_10ms = OSTimeGet();
 
     uint32_t ret = tick_time_10ms;
@@ -804,7 +829,7 @@ static void br_OSTimeGet(NativeRuntime* runtime)
 
 static void br__kbd_get_status(NativeRuntime* runtime)
 {
-    s_hleProfile.kbdStatus++;
+    hleProfileAdd(HLE_PROFILE_KBD_STATUS);
 
     uint32_t ksPtr;
     uint32_t pc = 0;
@@ -1104,7 +1129,7 @@ static bool dingooSemaphorePost(DingooSemaphore* sem)
 //OS_EVENT* OSSemCreate(uint16_t cnt);
 static void br_OSSemCreate(NativeRuntime* runtime)
 {
-    s_hleProfile.semCreate++;
+    hleProfileAdd(HLE_PROFILE_SEM_CREATE);
 
     uint32_t cnt;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &cnt);
@@ -1128,7 +1153,7 @@ extern uint8_t   OSSemPost(OS_EVENT* event);
 
 static void br_OSSemPend(NativeRuntime* runtime)
 {
-    s_hleProfile.semPend++;
+    hleProfileAdd(HLE_PROFILE_SEM_PEND);
 
     uint32_t eventVal;
     uint32_t timeout;
@@ -1169,7 +1194,7 @@ static void br_OSSemPend(NativeRuntime* runtime)
 
 static void br_OSSemPost(NativeRuntime* runtime)
 {
-    s_hleProfile.semPost++;
+    hleProfileAdd(HLE_PROFILE_SEM_POST);
 
     uint32_t eventVal;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &eventVal);
@@ -1210,7 +1235,7 @@ bool bridge_fast_os_sem_pend(uint32_t eventVal, uint32_t timeout, uint32_t error
         return true;
     }
 
-    s_hleProfile.semPend++;
+    hleProfileAdd(HLE_PROFILE_SEM_PEND);
     DingooSemaphorePendResult result = dingooSemaphorePend(sem, runtime, timeout);
     if (result == DINGOO_SEMAPHORE_INTERRUPTED)
     {
@@ -1243,7 +1268,7 @@ bool bridge_fast_os_sem_post(uint32_t eventVal, uint32_t* returnValue)
         return true;
     }
 
-    s_hleProfile.semPost++;
+    hleProfileAdd(HLE_PROFILE_SEM_POST);
     if (!dingooSemaphorePost(sem))
     {
         return false;
@@ -1259,7 +1284,7 @@ bool bridge_fast_os_sem_post(uint32_t eventVal, uint32_t* returnValue)
 //uint8_t   OSTaskCreate(void (*task)(void* data), void* data, OS_STK* stack, uint8_t priority);
 static void br_OSTaskCreate(NativeRuntime* runtime)
 {
-    s_hleProfile.taskCreate++;
+    hleProfileAdd(HLE_PROFILE_TASK_CREATE);
 
     uint32_t taskFuncAddr;
     uint32_t dataPtr;
@@ -1319,8 +1344,8 @@ static void br_waveout_write(NativeRuntime* runtime)
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &instPtr);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A1, &bufferPtr);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A2, &count);
-    s_hleProfile.waveWrite++;
-    s_hleProfile.waveWriteBytes += count;
+    hleProfileAdd(HLE_PROFILE_WAVE_WRITE);
+    hleProfileAdd(HLE_PROFILE_WAVE_WRITE_BYTES, count);
 
     uint32_t ret = 1;
     if (!waveout_skips_audio_output())
@@ -1374,7 +1399,7 @@ static void br_HP_Mute_sw(NativeRuntime* runtime)
 //int waveout_can_write();
 static void br_waveout_can_write(NativeRuntime* runtime)
 {
-    s_hleProfile.waveCanWrite++;
+    hleProfileAdd(HLE_PROFILE_WAVE_CAN_WRITE);
     uint32_t ret = waveout_can_write();
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ret);
 
@@ -1385,8 +1410,8 @@ static void br_waveout_can_write(NativeRuntime* runtime)
 
 bool bridge_fast_waveout_write(uint32_t instPtr, uint32_t bufferPtr, uint32_t count, uint32_t* returnValue)
 {
-    s_hleProfile.waveWrite++;
-    s_hleProfile.waveWriteBytes += count;
+    hleProfileAdd(HLE_PROFILE_WAVE_WRITE);
+    hleProfileAdd(HLE_PROFILE_WAVE_WRITE_BYTES, count);
 
     uint32_t ret = 1;
     if (!waveout_skips_audio_output())
@@ -1417,7 +1442,7 @@ bool bridge_fast_waveout_write(uint32_t instPtr, uint32_t bufferPtr, uint32_t co
 
 uint32_t bridge_fast_waveout_can_write(void)
 {
-    s_hleProfile.waveCanWrite++;
+    hleProfileAdd(HLE_PROFILE_WAVE_CAN_WRITE);
     return waveout_can_write();
 }
 
@@ -1455,7 +1480,7 @@ extern void updateFb(void);
 //void _lcd_set_frame()
 static void br__lcd_set_frame(NativeRuntime* runtime)
 {
-    s_hleProfile.lcdSetFrame++;
+    hleProfileAdd(HLE_PROFILE_LCD_SET_FRAME);
     updateFb();
 
     br_common(runtime);
@@ -1478,7 +1503,7 @@ static void br_lcd_get_cframe(NativeRuntime* runtime)
 
 static void br_lcd_flip(NativeRuntime* runtime)
 {
-    s_hleProfile.lcdFlip++;
+    hleProfileAdd(HLE_PROFILE_LCD_FLIP);
     requestFbUpdate();
     returnToRa(runtime);
 }
@@ -1530,8 +1555,8 @@ static void br_delay_ms(NativeRuntime* runtime)
 {
     uint32_t ms;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &ms);
-    s_hleProfile.delayMs++;
-    s_hleProfile.delayMsTotal += ms;
+    hleProfileAdd(HLE_PROFILE_DELAY_MS);
+    hleProfileAdd(HLE_PROFILE_DELAY_MS_TOTAL, ms);
     sleepScaledHostDelayMicros((uint64_t)ms * 1000ull);
     returnToRa(runtime);
 }
@@ -1540,8 +1565,8 @@ static void br_udelay(NativeRuntime* runtime)
 {
     uint32_t us;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &us);
-    s_hleProfile.udelay++;
-    s_hleProfile.udelayTotal += us;
+    hleProfileAdd(HLE_PROFILE_UDELAY);
+    hleProfileAdd(HLE_PROFILE_UDELAY_TOTAL, us);
     sleepScaledHostDelayMicros(us);
     returnToRa(runtime);
 }
@@ -1822,7 +1847,7 @@ static void br_fsys_feof(NativeRuntime* runtime)
 // Reports whether there is a pending input/system event.
 static void br__sys_judge_event(NativeRuntime* runtime)
 {
-    s_hleProfile.sysJudgeEvent++;
+    hleProfileAdd(HLE_PROFILE_SYS_JUDGE_EVENT);
 
     uint32_t inPtr;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &inPtr);
@@ -1847,8 +1872,8 @@ static void br_OSTimeDly(NativeRuntime* runtime)
 {
     uint32_t ticks;
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &ticks);
-    s_hleProfile.osTimeDly++;
-    s_hleProfile.osTimeDlyTotal += ticks;
+    hleProfileAdd(HLE_PROFILE_OS_TIME_DLY);
+    hleProfileAdd(HLE_PROFILE_OS_TIME_DLY_TOTAL, ticks);
 
     uint64_t delayUs = ((uint64_t)ticks * 1000000ull) / OS_TICKS_PER_SEC;
     sleepScaledHostDelayMicros(delayUs);
@@ -2364,8 +2389,8 @@ static void br_dl_res_get_data(NativeRuntime* runtime)
                 memcpy(dst, resourceData + h->offset, copySize);
                 h->offset += copySize;
                 ret = readLen ? (copySize / readLen) : copySize;
-                s_hleProfile.dlResRead++;
-                s_hleProfile.dlResReadBytes += copySize;
+                hleProfileAdd(HLE_PROFILE_DL_RES_READ);
+                hleProfileAdd(HLE_PROFILE_DL_RES_READ_BYTES, copySize);
                 if (runtimeResourceMonitorIsCapturing())
                 {
                     runtimeResourceMonitorRecordLoadContent(
@@ -2410,8 +2435,8 @@ static void br_dl_res_get_data(NativeRuntime* runtime)
             ret = h->dataPtr;
             if (ret)
             {
-                s_hleProfile.dlResRead++;
-                s_hleProfile.dlResReadBytes += h->entry->size;
+                hleProfileAdd(HLE_PROFILE_DL_RES_READ);
+                hleProfileAdd(HLE_PROFILE_DL_RES_READ_BYTES, h->entry->size);
             }
             if (shouldTraceHle())
             {
@@ -2420,7 +2445,7 @@ static void br_dl_res_get_data(NativeRuntime* runtime)
             }
         }
     }
-    s_hleProfile.dlResOpen++;
+    hleProfileAdd(HLE_PROFILE_DL_RES_OPEN);
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ret);
     returnToRa(runtime);
 }
@@ -2473,8 +2498,8 @@ struct _hook_code_func_
     const char* name;
     br_func func;
     uint32_t lock;
-    uint32_t trigger_times;
-    uint32_t profile_times;
+    uint32_t reserved_trigger_count;
+    uint32_t reserved_profile_count;
     uint32_t fast_return_enabled;
     uint32_t fast_return_value;
 }_hook_code_func_map[] =
@@ -2654,6 +2679,10 @@ struct _hook_code_func_
     {0,"udc_attached",br_none, 1},
 };
 
+static const int kHookCodeFunctionCount =
+    sizeof(_hook_code_func_map) / sizeof(_hook_code_func_map[0]);
+static RuntimeProfileCounter s_hookProfileCounters[kHookCodeFunctionCount];
+
 bool bridge_try_fast_return_hook(uint32_t address, uint32_t* returnValue)
 {
     for (int i = 0; i < sizeof(_hook_code_func_map) / sizeof(_hook_code_func_map[0]); ++i)
@@ -2666,8 +2695,10 @@ bool bridge_try_fast_return_hook(uint32_t address, uint32_t* returnValue)
             {
                 return false;
             }
-            _hook_code_func_map[i].trigger_times++;
-            _hook_code_func_map[i].profile_times++;
+            if (s_bridgeProfileEnabled.load(std::memory_order_relaxed))
+            {
+                s_hookProfileCounters[i].increment();
+            }
             if (returnValue)
             {
                 *returnValue = _hook_code_func_map[i].fast_return_value;
@@ -2751,9 +2782,9 @@ static void profilePrintHookTopAndReset(void)
     };
 
     TopHook top[5] = {};
-    for (int i = 0; i < sizeof(_hook_code_func_map) / sizeof(_hook_code_func_map[0]); ++i)
+    for (int i = 0; i < kHookCodeFunctionCount; ++i)
     {
-        uint32_t count = _hook_code_func_map[i].profile_times;
+        uint32_t count = (uint32_t)s_hookProfileCounters[i].take();
         if (!count)
         {
             continue;
@@ -2776,10 +2807,6 @@ static void profilePrintHookTopAndReset(void)
 
     if (!top[0].count && !runtimeLogShouldPrintEmptyProfile())
     {
-        for (int i = 0; i < sizeof(_hook_code_func_map) / sizeof(_hook_code_func_map[0]); ++i)
-        {
-            _hook_code_func_map[i].profile_times = 0;
-        }
         return;
     }
 
@@ -2789,11 +2816,38 @@ static void profilePrintHookTopAndReset(void)
         printf(" %s=%u", top[i].name ? top[i].name : "<unnamed>", top[i].count);
     }
     printf("\n");
+}
 
-    for (int i = 0; i < sizeof(_hook_code_func_map) / sizeof(_hook_code_func_map[0]); ++i)
+static void profilePrintAndReset(uint64_t now)
+{
+    std::lock_guard<std::mutex> reportLock(s_profileReportMutex);
+    static uint64_t lastTicks = 0;
+    if (!runtimeLogProfileEnabled() ||
+        !s_bridgeProfileEnabled.load(std::memory_order_relaxed))
     {
-        _hook_code_func_map[i].profile_times = 0;
+        return;
     }
+    if (!lastTicks)
+    {
+        lastTicks = now;
+        return;
+    }
+
+    uint64_t elapsedMs = now - lastTicks;
+    if (elapsedMs < runtimeLogProfileIntervalMs())
+    {
+        return;
+    }
+
+    uint64_t bridgeCalls = s_bridgeProfileCalls.take();
+    if (bridgeCalls || runtimeLogShouldPrintEmptyProfile())
+    {
+        printf("profile:bridge calls=%llu/s\n",
+            (unsigned long long)runtimeLogRatePerSecond(bridgeCalls, elapsedMs));
+    }
+    profilePrintHleAndReset();
+    profilePrintHookTopAndReset();
+    lastTicks = now;
 }
 
 pthread_mutex_t hook_code_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -2801,24 +2855,20 @@ pthread_mutex_t hook_code_mutex = PTHREAD_MUTEX_INITIALIZER;
 static void hook_code(NativeRuntime* runtime, uint64_t address, uint32_t size, void* user_data)
 {
     (void)size;
-    static uint64_t lastTicks = 0;
-    static uint64_t bridgeCalls = 0;
-    if (runtimeLogProfileEnabled() && s_bridgeProfileEnabled.load())
+    static thread_local uint64_t lastTicks = 0;
+    if (runtimeLogProfileEnabled() &&
+        s_bridgeProfileEnabled.load(std::memory_order_relaxed))
     {
+        s_bridgeProfileCalls.increment();
         uint64_t now = SDL_GetTicks64();
         if (!lastTicks)
         {
             lastTicks = now;
         }
-        bridgeCalls++;
         uint64_t elapsedMs = now - lastTicks;
         if (elapsedMs >= runtimeLogProfileIntervalMs())
         {
-            printf("profile:bridge calls=%llu/s\n",
-                (unsigned long long)runtimeLogRatePerSecond(bridgeCalls, elapsedMs));
             profilePrintAndReset(now);
-            profilePrintHookTopAndReset();
-            bridgeCalls = 0;
             lastTicks = now;
         }
     }
@@ -2905,8 +2955,12 @@ static void hook_code(NativeRuntime* runtime, uint64_t address, uint32_t size, v
 
     if (hookFunc->func)
     {
-        hookFunc->trigger_times++;
-        hookFunc->profile_times++;
+        ptrdiff_t hookIndex = hookFunc - _hook_code_func_map;
+        if (hookIndex >= 0 && hookIndex < kHookCodeFunctionCount &&
+            s_bridgeProfileEnabled.load(std::memory_order_relaxed))
+        {
+            s_hookProfileCounters[hookIndex].increment();
+        }
         if (hookFunc->fast_return_enabled)
         {
             nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &hookFunc->fast_return_value);
@@ -2920,10 +2974,11 @@ static void hook_code(NativeRuntime* runtime, uint64_t address, uint32_t size, v
         nativeRuntimeReadRegister(runtime, RUNTIME_REG_RA, &ra);
         nativeRuntimeReadRegister(runtime, RUNTIME_REG_PC, &pc);
         nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &a0);
-        snprintf(s_lastHleSummary, sizeof(s_lastHleSummary),
+        snprintf(s_threadLastHleSummary, sizeof(s_threadLastHleSummary),
             "%s pc=0x%08x hook=0x%08x ra=0x%08x a0=0x%08x",
             hookFunc->name ? hookFunc->name : "<unnamed>",
             pc, (uint32_t)address, ra, a0);
+        s_lastObservedHleSummary.set(s_threadLastHleSummary);
 
         if (hookFunc->lock)
         {
@@ -2972,7 +3027,6 @@ static void hooks_init(NativeRuntime* runtime, app* _app)
             if (strcmp(name, _hook_code_func_map[j].name) == 0)
             {
                 _hook_code_func_map[j].offset = entry->offset;
-                _hook_code_func_map[j].trigger_times = 0;
                 if (_hook_code_func_map[j].fast_return_enabled &&
                     installFastReturnStub(runtime, entry->offset, _hook_code_func_map[j].fast_return_value))
                 {

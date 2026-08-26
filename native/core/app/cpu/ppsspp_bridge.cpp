@@ -1568,6 +1568,8 @@ static bool tryRunFastHle(uint32_t address)
         uint32_t len = currentMIPS->r[MIPS_REG_A0];
         if (len >= 0x02000000)
         {
+            char lastHle[192];
+            bridge_copy_last_hle_summary(lastHle, sizeof(lastHle));
             printf("ppsspp-fast-hle: large malloc len=0x%08x pc=0x%08x ra=0x%08x a1=0x%08x a2=0x%08x a3=0x%08x v0=0x%08x last_hle=\"%s\"\n",
                 len,
                 currentMIPS->pc,
@@ -1576,7 +1578,7 @@ static bool tryRunFastHle(uint32_t address)
                 currentMIPS->r[MIPS_REG_A2],
                 currentMIPS->r[MIPS_REG_A3],
                 currentMIPS->r[MIPS_REG_V0],
-                bridge_get_last_hle_summary());
+                lastHle);
         }
         ret = vm_malloc(len);
     }
