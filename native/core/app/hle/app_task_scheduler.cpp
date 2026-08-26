@@ -1,5 +1,6 @@
 #include "app_task_scheduler.h"
 #include <assert.h>
+#include "app_task_lifecycle.h"
 #include "app_memory.h"
 #include <pthread.h>
 #include <SDL2/SDL.h>
@@ -18,9 +19,7 @@
 
 static SDL_atomic_t s_taskShutdownRequested;
 static pthread_mutex_t s_taskRuntimeMutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t s_taskLifecycleCondition = PTHREAD_COND_INITIALIZER;
 static std::vector<NativeRuntime*> s_taskRuntimes;
-static size_t s_activeTaskThreads = 0;
 
 struct TaskStruct
 {
@@ -150,27 +149,6 @@ void taskSchedulerSnapshotRuntimes(std::vector<NativeRuntime*>* out)
     pthread_mutex_unlock(&s_taskRuntimeMutex);
 }
 
-static void taskSchedulerBeginThread(void)
-{
-    pthread_mutex_lock(&s_taskRuntimeMutex);
-    ++s_activeTaskThreads;
-    pthread_mutex_unlock(&s_taskRuntimeMutex);
-}
-
-static void taskSchedulerFinishThread(void)
-{
-    pthread_mutex_lock(&s_taskRuntimeMutex);
-    if (s_activeTaskThreads > 0)
-    {
-        --s_activeTaskThreads;
-    }
-    if (s_activeTaskThreads == 0)
-    {
-        pthread_cond_broadcast(&s_taskLifecycleCondition);
-    }
-    pthread_mutex_unlock(&s_taskRuntimeMutex);
-}
-
 static void hook_task_profile(NativeRuntime* runtime, uint64_t address, uint32_t size, void* user_data)
 {
     (void)runtime;
@@ -213,17 +191,13 @@ void* subTaskRun(void* data)
 {
     TaskStruct* taskStruct = (TaskStruct*)data;
 
-    int detachResult = pthread_detach(pthread_self());
-    if (detachResult != 0)
-    {
-        printf("task: pthread_detach failed: %d\n", detachResult);
-    }
+    taskThreadLifecycleDetachCurrent();
 
     struct TaskCompletionGuard
     {
         ~TaskCompletionGuard()
         {
-            taskSchedulerFinishThread();
+            taskThreadLifecycleFinish();
         }
     } completionGuard;
 
@@ -351,13 +325,13 @@ uint32_t OSTaskCreate(uint32_t taskFuncAddr, uint32_t dataPtr, uint32_t stackPtr
         return OS_NO_ERR;
     }
 
-    taskSchedulerBeginThread();
+    taskThreadLifecycleBegin();
 
     TaskStruct* taskStruct = (TaskStruct*)malloc(sizeof(TaskStruct));
     if (taskStruct == NULL)
     {
         printf("task: OSTaskCreate malloc failed\n");
-        taskSchedulerFinishThread();
+        taskThreadLifecycleCancelBegin();
         return -1;
     }
     taskStruct->dataPtr = dataPtr;
@@ -370,7 +344,7 @@ uint32_t OSTaskCreate(uint32_t taskFuncAddr, uint32_t dataPtr, uint32_t stackPtr
     {
         printf("task: pthread_create subTaskRun failed: %d\n", ret);
         free(taskStruct);
-        taskSchedulerFinishThread();
+        taskThreadLifecycleCancelBegin();
         assert(0);
         return (uint32_t)-1;
     }
@@ -380,10 +354,5 @@ uint32_t OSTaskCreate(uint32_t taskFuncAddr, uint32_t dataPtr, uint32_t stackPtr
 
 void taskSchedulerWaitForTasks(void)
 {
-    pthread_mutex_lock(&s_taskRuntimeMutex);
-    while (s_activeTaskThreads != 0)
-    {
-        pthread_cond_wait(&s_taskLifecycleCondition, &s_taskRuntimeMutex);
-    }
-    pthread_mutex_unlock(&s_taskRuntimeMutex);
+    taskThreadLifecycleWaitForAll();
 }
