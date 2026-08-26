@@ -248,8 +248,7 @@ RuntimeError ppssppIrJitFlushCodeCache(NativeRuntime* runtime)
 
 void ppssppIrJitRequestStop(NativeRuntime* runtime)
 {
-    (void)runtime;
 #ifdef DINGOO_PIE_ENABLE_PPSSPP_IRJIT
-    ppssppShimRequestStop();
+    ppssppShimRequestStop(runtime);
 #endif
 }

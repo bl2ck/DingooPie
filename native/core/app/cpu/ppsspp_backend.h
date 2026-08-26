@@ -15,7 +15,7 @@ void ppssppShimApplyRuntimeSettings(void);
 void ppssppShimAttachRuntime(NativeRuntime* runtime);
 void ppssppShimDetachRuntime(NativeRuntime* runtime);
 void ppssppShimSetRuntimeLimit(uint64_t beginTicks, uint64_t maxTicks);
-void ppssppShimRequestStop(void);
+void ppssppShimRequestStop(NativeRuntime* runtime);
 void ppssppShimRequestPause(NativeRuntime* runtime);
 bool ppssppShimWaitForPauseResume(NativeRuntime* runtime);
 void ppssppShimSyncStateToRuntime(NativeRuntime* runtime);

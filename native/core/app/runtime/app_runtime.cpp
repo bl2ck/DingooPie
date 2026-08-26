@@ -1,6 +1,7 @@
 #include "app_runtime.h"
 
 #include "app/runtime/app_loader.h"
+#include "app/runtime/app_cheat_adapter.h"
 #include "app/runtime/app_runtime_context.h"
 #include "shared/game/game_paths.h"
 #include "cheat_runtime.h"
@@ -356,7 +357,7 @@ static void clearMainRuntimeIfCurrent(NativeRuntime* runtime)
     {
         // Cheat runtime has its own mutex and can flush JIT state; keep it
         // outside g_runtimeThreadMutex to avoid frontend/runtime lock inversion.
-        cheatRuntimeUnbind(runtime);
+        appCheatUnbind(runtime);
     }
 }
 
@@ -1087,7 +1088,7 @@ static NativeRuntime* initDingooPie(void)
         return NULL;
     }
     seedResourceMonitorForAppIfCapturing(loadedApp);
-    cheatRuntimeBind(runtime);
+    appCheatBind(runtime);
 
     printf("DingooPie: init bridge begin\n");
     err = bridge_init(runtime, loadedApp);
@@ -1140,7 +1141,7 @@ static NativeRuntime* initDingooPie(void)
     }
     printf("DingooPie: install core hooks done\n");
     installDebuggerAutotestHooks(loadedApp->bin_entry, 0x00000000u, 0xffffffffu);
-    cheatRuntimeApplyStartup(runtime);
+    appCheatApplyStartup(runtime);
 
     err = nativeRuntimeWriteRegister(runtime, RUNTIME_REG_RA, &appMainEntry);
     if (err)

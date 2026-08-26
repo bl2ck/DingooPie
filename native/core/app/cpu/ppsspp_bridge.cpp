@@ -2065,8 +2065,12 @@ void ppssppShimSetRuntimeLimit(uint64_t beginTicks, uint64_t maxTicks)
     g_runtimeMaxTicks = maxTicks;
 }
 
-void ppssppShimRequestStop(void)
+void ppssppShimRequestStop(NativeRuntime* runtime)
 {
+    if (runtime && runtime != g_ppssppRuntime)
+    {
+        return;
+    }
     g_runtimeStopRequested.store(true, std::memory_order_release);
     g_runtimePauseRequested.store(false, std::memory_order_release);
     coreState = CORE_POWERDOWN;
