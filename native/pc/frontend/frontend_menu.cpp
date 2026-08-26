@@ -2797,6 +2797,7 @@ bool frontendMenuHandleCommand(unsigned int commandId)
     case MENU_AUDIO_DISABLE:
         g_menuSettings->audioDisabled = !g_menuSettings->audioDisabled;
         emulatorApplySharedRuntimeSettings(*g_menuSettings);
+        gameRuntimeApplySettings();
         frontendApplyAudioSettings(*g_menuSettings);
         emulatorSaveSettings(*g_menuSettings);
         printf("frontend: disable-audio setting applied as %u\n",
@@ -2976,6 +2977,7 @@ bool frontendMenuHandleCommand(unsigned int commandId)
         *g_menuSettings = emulatorDefaultSettings();
         bool settingsSaved = emulatorSaveSettings(*g_menuSettings);
         emulatorApplySharedRuntimeSettings(*g_menuSettings);
+        gameRuntimeApplySettings();
         cheatRuntimeSetEnabled(g_menuSettings->cheatsEnabled);
         debugConsoleClose();
         frontendApplyVideoSettings(*g_menuSettings);
@@ -3031,6 +3033,7 @@ bool frontendMenuHandleCommand(unsigned int commandId)
             }
         }
         emulatorApplySharedRuntimeSettings(*g_menuSettings);
+        gameRuntimeApplySettings();
         emulatorSaveSettings(*g_menuSettings);
         printf("frontend: performance log setting applied as %u\n",
             g_menuSettings->debugProfile ? 1u : 0u);
