@@ -1,5 +1,5 @@
-#include "input_controls.h"
-#include "keyboard_mapping.h"
+#include "frontend/input/input_controls.h"
+#include "frontend/input/keyboard_mapping.h"
 
 #include <memory.h>
 #include <ctype.h>
@@ -91,7 +91,7 @@ void inputResetKeyboardMapping(void)
     keyboardMappingReset();
 }
 
-void _kbd_get_status(KEY_STATUS* ks)
+void _kbd_get_status(GuestKeyStatus* ks)
 {
     if (!ks)
     {

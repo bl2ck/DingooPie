@@ -1,7 +1,7 @@
-#ifndef DINGOO_PIE_CHEAT_RUNTIME_H
-#define DINGOO_PIE_CHEAT_RUNTIME_H
+#ifndef DINGOO_PIE_CONFIG_CHEATS_CHEAT_RUNTIME_H
+#define DINGOO_PIE_CONFIG_CHEATS_CHEAT_RUNTIME_H
 
-#include "cheat_engine.h"
+#include "config/cheats/cheat_engine.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -39,7 +39,7 @@ void cheatRuntimeSetEnabled(bool enabled);
 bool cheatRuntimeEnabled(void);
 uint32_t cheatRuntimeRevision(void);
 void cheatRuntimeLoadForGame(
-    const char* gameSha256,
+    const char* appSha256,
     const char* gamePath,
     const std::vector<std::string>& enabledFeatureKeys);
 CheatRuntimeStatus cheatRuntimeGetStatus(void);

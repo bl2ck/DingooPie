@@ -1,4 +1,4 @@
-#include "runtime_log.h"
+#include "shared/diagnostics/runtime_log.h"
 
 #include <atomic>
 #include <errno.h>

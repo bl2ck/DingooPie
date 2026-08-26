@@ -1,8 +1,8 @@
-#include "guest_filesystem.h"
-#include "compat_profile.h"
+#include "shared/services/guest_filesystem.h"
+#include "config/compatibility/compat_profile.h"
 #include "shared/platform/storage_services.h"
 #include "shared/save/guest_save_transaction.h"
-#include "runtime_log.h"
+#include "shared/diagnostics/runtime_log.h"
 #include "runtime_resource_monitor.h"
 
 #include <assert.h>
@@ -14,39 +14,39 @@
 #include <atomic>
 #include <mutex>
 
-typedef enum {
-    vfile_type_none,
-    vfile_type_host,
-    vfile_type_resource
-} vfile_type_e;
+enum VirtualFileType {
+    VIRTUAL_FILE_TYPE_NONE,
+    VIRTUAL_FILE_TYPE_HOST,
+    VIRTUAL_FILE_TYPE_RESOURCE
+};
 
-typedef struct {
-    vfile_type_e type;
+struct VirtualFileEntry {
+    VirtualFileType type;
     FILE* fp;
     const uint8_t* data;
     uint8_t* ownedData;
-    app_resource_entry* resource;
-    bool isAppPackage;
+    GuestResourceEntry* resource;
+    bool isGuestPackage;
     char requestName[1024];
     uint32_t size;
     uint32_t offset;
-    uint8_t xor_key;
+    uint8_t xorKey;
     bool saveTransaction;
     char saveTransactionName[1024];
     bool writable;
     bool wroteData;
-} vfile_entry_t;
+};
 
-static vfile_entry_t s_FILE_Map[128];
-static app* s_fsys_app = NULL;
-static GuestPackage* s_fsys_guest_package = NULL;
-static const char* s_fsys_app_sha256 = "";
+static VirtualFileEntry s_fileMap[128];
+static GuestPackage* s_guestPackage = NULL;
+static const char* s_guestPackageSha256 = "";
+static std::string s_guestPackageName;
 static std::string s_saveDirectory;
 static std::atomic<bool> s_suspiciousOpenFailure(false);
 static std::atomic<bool> s_successfulSaveWrite(false);
 static std::recursive_mutex s_filesystemMutex;
 
-typedef struct {
+struct FilesystemProfile {
     uint64_t fopenCalls;
     uint64_t fcloseCalls;
     uint64_t freadCalls;
@@ -69,11 +69,11 @@ typedef struct {
     uint64_t slowFreadCalls;
     uint64_t slowFreadBytes;
     uint64_t slowFseekCalls;
-} fsys_profile_t;
+};
 
-static fsys_profile_t s_fsys_profile = {};
+static FilesystemProfile s_filesystemProfile = {};
 static thread_local int s_fastHleCallDepth = 0;
-static std::atomic<bool> s_fsysProfileEnabled(false);
+static std::atomic<bool> s_profileEnabled(false);
 
 static uint64_t fsysNowMs(void)
 {
@@ -83,13 +83,13 @@ static uint64_t fsysNowMs(void)
 
 static bool fsysProfileEnabled(void)
 {
-    return s_fsysProfileEnabled.load();
+    return s_profileEnabled.load();
 }
 
 void fsys_set_profile_enabled(bool enabled)
 {
     std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
-    s_fsysProfileEnabled.store(enabled);
+    s_profileEnabled.store(enabled);
 }
 
 static void fsysProfileTick(void)
@@ -111,17 +111,17 @@ static void fsysProfileTick(void)
         return;
     }
 
-    if (!s_fsys_profile.fopenCalls && !s_fsys_profile.hostOpens &&
-        !s_fsys_profile.resourceOpens && !s_fsys_profile.resourceCachedOpens &&
-        !s_fsys_profile.freadCalls && !s_fsys_profile.freadBytes &&
-        !s_fsys_profile.fseekCalls && !s_fsys_profile.fastFreadCalls &&
-        !s_fsys_profile.fastFreadBytes && !s_fsys_profile.fastFseekCalls &&
-        !s_fsys_profile.slowFreadCalls && !s_fsys_profile.slowFreadBytes &&
-        !s_fsys_profile.slowFseekCalls && !s_fsys_profile.hostReadCalls &&
-        !s_fsys_profile.hostReadBytes && !s_fsys_profile.hostSeekCalls &&
-        !s_fsys_profile.resourceReadCalls && !s_fsys_profile.resourceReadBytes &&
-        !s_fsys_profile.resourceSeekCalls && !s_fsys_profile.ftellCalls &&
-        !s_fsys_profile.feofCalls && !s_fsys_profile.fcloseCalls &&
+    if (!s_filesystemProfile.fopenCalls && !s_filesystemProfile.hostOpens &&
+        !s_filesystemProfile.resourceOpens && !s_filesystemProfile.resourceCachedOpens &&
+        !s_filesystemProfile.freadCalls && !s_filesystemProfile.freadBytes &&
+        !s_filesystemProfile.fseekCalls && !s_filesystemProfile.fastFreadCalls &&
+        !s_filesystemProfile.fastFreadBytes && !s_filesystemProfile.fastFseekCalls &&
+        !s_filesystemProfile.slowFreadCalls && !s_filesystemProfile.slowFreadBytes &&
+        !s_filesystemProfile.slowFseekCalls && !s_filesystemProfile.hostReadCalls &&
+        !s_filesystemProfile.hostReadBytes && !s_filesystemProfile.hostSeekCalls &&
+        !s_filesystemProfile.resourceReadCalls && !s_filesystemProfile.resourceReadBytes &&
+        !s_filesystemProfile.resourceSeekCalls && !s_filesystemProfile.ftellCalls &&
+        !s_filesystemProfile.feofCalls && !s_filesystemProfile.fcloseCalls &&
         !runtimeLogShouldPrintEmptyProfile())
     {
         lastTicks = now;
@@ -132,30 +132,30 @@ static void fsysProfileTick(void)
         "fread=%llu/%llub fseek=%llu fast=%llu/%llub/%llu "
         "slow=%llu/%llub/%llu host_io=%llu/%llub/%llu "
         "resource_io=%llu/%llub/%llu ftell=%llu feof=%llu fclose=%llu\n",
-        (unsigned long long)s_fsys_profile.fopenCalls,
-        (unsigned long long)s_fsys_profile.hostOpens,
-        (unsigned long long)s_fsys_profile.resourceOpens,
-        (unsigned long long)s_fsys_profile.resourceCachedOpens,
-        (unsigned long long)s_fsys_profile.freadCalls,
-        (unsigned long long)s_fsys_profile.freadBytes,
-        (unsigned long long)s_fsys_profile.fseekCalls,
-        (unsigned long long)s_fsys_profile.fastFreadCalls,
-        (unsigned long long)s_fsys_profile.fastFreadBytes,
-        (unsigned long long)s_fsys_profile.fastFseekCalls,
-        (unsigned long long)s_fsys_profile.slowFreadCalls,
-        (unsigned long long)s_fsys_profile.slowFreadBytes,
-        (unsigned long long)s_fsys_profile.slowFseekCalls,
-        (unsigned long long)s_fsys_profile.hostReadCalls,
-        (unsigned long long)s_fsys_profile.hostReadBytes,
-        (unsigned long long)s_fsys_profile.hostSeekCalls,
-        (unsigned long long)s_fsys_profile.resourceReadCalls,
-        (unsigned long long)s_fsys_profile.resourceReadBytes,
-        (unsigned long long)s_fsys_profile.resourceSeekCalls,
-        (unsigned long long)s_fsys_profile.ftellCalls,
-        (unsigned long long)s_fsys_profile.feofCalls,
-        (unsigned long long)s_fsys_profile.fcloseCalls);
+        (unsigned long long)s_filesystemProfile.fopenCalls,
+        (unsigned long long)s_filesystemProfile.hostOpens,
+        (unsigned long long)s_filesystemProfile.resourceOpens,
+        (unsigned long long)s_filesystemProfile.resourceCachedOpens,
+        (unsigned long long)s_filesystemProfile.freadCalls,
+        (unsigned long long)s_filesystemProfile.freadBytes,
+        (unsigned long long)s_filesystemProfile.fseekCalls,
+        (unsigned long long)s_filesystemProfile.fastFreadCalls,
+        (unsigned long long)s_filesystemProfile.fastFreadBytes,
+        (unsigned long long)s_filesystemProfile.fastFseekCalls,
+        (unsigned long long)s_filesystemProfile.slowFreadCalls,
+        (unsigned long long)s_filesystemProfile.slowFreadBytes,
+        (unsigned long long)s_filesystemProfile.slowFseekCalls,
+        (unsigned long long)s_filesystemProfile.hostReadCalls,
+        (unsigned long long)s_filesystemProfile.hostReadBytes,
+        (unsigned long long)s_filesystemProfile.hostSeekCalls,
+        (unsigned long long)s_filesystemProfile.resourceReadCalls,
+        (unsigned long long)s_filesystemProfile.resourceReadBytes,
+        (unsigned long long)s_filesystemProfile.resourceSeekCalls,
+        (unsigned long long)s_filesystemProfile.ftellCalls,
+        (unsigned long long)s_filesystemProfile.feofCalls,
+        (unsigned long long)s_filesystemProfile.fcloseCalls);
 
-    memset(&s_fsys_profile, 0x00, sizeof(s_fsys_profile));
+    memset(&s_filesystemProfile, 0x00, sizeof(s_filesystemProfile));
     lastTicks = now;
 }
 
@@ -189,65 +189,58 @@ static bool traceFsOpenEnabled(void)
     return value && value[0] && strcmp(value, "0") != 0;
 }
 
-static const char* vfileTypeName(vfile_type_e type)
+static const char* virtualFileTypeName(VirtualFileType type)
 {
     switch (type)
     {
-    case vfile_type_host:
+    case VIRTUAL_FILE_TYPE_HOST:
         return "host";
-    case vfile_type_resource:
+    case VIRTUAL_FILE_TYPE_RESOURCE:
         return "resource";
     default:
         return "none";
     }
 }
 
-void fsys_set_app(app* inApp)
+void fsys_set_guest_package(GuestPackage* guestPackage)
 {
     std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
-    s_fsys_app = inApp;
-    s_fsys_guest_package = NULL;
+    s_guestPackage = guestPackage;
     s_suspiciousOpenFailure.store(false);
     s_successfulSaveWrite.store(false);
 }
 
-void fsys_set_app_package(app* inApp)
+void fsys_reset_guest_package(GuestPackage* guestPackage)
 {
     std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
-    s_fsys_app = inApp;
-    s_fsys_guest_package = NULL;
-}
-
-void fsys_reset_guest_package(GuestPackage* package)
-{
-    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
-    s_fsys_guest_package = package;
-    s_fsys_app = NULL;
-    s_suspiciousOpenFailure.store(false);
-    s_successfulSaveWrite.store(false);
+    for (uint32_t index = 1; index < sizeof(s_fileMap) / sizeof(s_fileMap[0]); ++index)
+    {
+        if (s_fileMap[index].type != VIRTUAL_FILE_TYPE_NONE)
+        {
+            fsys_fclose(index);
+        }
+    }
+    fsys_set_guest_package(guestPackage);
 }
 
 void fsys_set_game_identity(const char* sha256Hex)
 {
     std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
-    fsys_set_app_identity(sha256Hex);
+    s_guestPackageSha256 = sha256Hex ? sha256Hex : "";
+    s_suspiciousOpenFailure.store(false);
 }
 
-void fsys_set_game_name(const char*)
+void fsys_set_game_name(const char* gameName)
 {
+    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
+    s_guestPackageName = gameName ? gameName : "";
+    s_suspiciousOpenFailure.store(false);
 }
 
 void fsys_set_save_directory(const char* directory)
 {
     std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     s_saveDirectory = directory ? directory : "";
-}
-
-void fsys_set_app_identity(const char* sha256Hex)
-{
-    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
-    s_fsys_app_sha256 = sha256Hex ? sha256Hex : "";
-    s_suspiciousOpenFailure.store(false);
 }
 
 bool fsys_saw_suspicious_open_failure(void)
@@ -264,7 +257,7 @@ bool fsys_saw_successful_save_write(void)
 
 static bool isBlockBreakerApp(void)
 {
-    return compatShouldUseBinResourceView(s_fsys_app_sha256);
+    return compatShouldUseBinResourceView(s_guestPackageSha256);
 }
 
 static const char* fsysPathBasenameLocal(const char* path)
@@ -345,22 +338,22 @@ static uint8_t* createBlockBreakerBinView(const uint8_t* data, uint32_t size, ui
     return view;
 }
 
-static uint32_t alloc_file_slot(void)
+static uint32_t allocateFileSlot(void)
 {
-    for (uint32_t index = 1; index < sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]); ++index)
+    for (uint32_t index = 1; index < sizeof(s_fileMap) / sizeof(s_fileMap[0]); ++index)
     {
-        if (s_FILE_Map[index].type == vfile_type_none)
+        if (s_fileMap[index].type == VIRTUAL_FILE_TYPE_NONE)
         {
             return index;
         }
     }
 
     printf("fsys: virtual file table exhausted capacity=%u\n",
-        (unsigned)(sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]) - 1));
+        (unsigned)(sizeof(s_fileMap) / sizeof(s_fileMap[0]) - 1));
     return 0;
 }
 
-static int mode_writes(const char* mode)
+static int modeAllowsWrites(const char* mode)
 {
     return mode && (strchr(mode, 'w') || strchr(mode, 'a') || strchr(mode, '+'));
 }
@@ -387,7 +380,7 @@ static bool pathLooksSuspiciousFailedRead(const char* path)
 
 static void recordOpenFailure(const char* name, const char* mode)
 {
-    if (!mode_writes(mode) && pathLooksSuspiciousFailedRead(name))
+    if (!modeAllowsWrites(mode) && pathLooksSuspiciousFailedRead(name))
     {
         s_suspiciousOpenFailure.store(true);
         if (traceFsEnabled() || traceFsOpenEnabled())
@@ -397,7 +390,7 @@ static void recordOpenFailure(const char* name, const char* mode)
     }
 }
 
-static bool normalize_host_file_mode(const char* mode, char* out, size_t outSize)
+static bool normalizeHostFileMode(const char* mode, char* out, size_t outSize)
 {
     if (!mode || !out || outSize == 0)
     {
@@ -436,7 +429,13 @@ static bool normalize_host_file_mode(const char* mode, char* out, size_t outSize
     return pos > 0;
 }
 
-static const char* path_basename(const char* path)
+static const char* normalizedHostFileMode(
+    const char* mode, char* buffer, size_t bufferSize)
+{
+    return normalizeHostFileMode(mode, buffer, bufferSize) ? buffer : NULL;
+}
+
+static const char* pathBaseName(const char* path)
 {
     if (!path)
     {
@@ -454,7 +453,7 @@ static const char* path_basename(const char* path)
     return base;
 }
 
-static void normalize_guest_path(const char* in, char* out, size_t outSize)
+static void normalizeGuestPath(const char* in, char* out, size_t outSize)
 {
     if (!out || outSize == 0)
     {
@@ -493,20 +492,25 @@ static void normalize_guest_path(const char* in, char* out, size_t outSize)
     out[pos] = 0;
 }
 
-static FILE* fopen_guest_mode(const char* name, const char* mode)
+static FILE* openGuestFile(const char* name, const char* mode)
 {
     char hostMode[16];
-    if (!normalize_host_file_mode(mode, hostMode, sizeof(hostMode)))
-    {
-        return NULL;
-    }
-    return name ? platformOpenHostFile(name, hostMode) : NULL;
+    const char* effectiveMode = normalizedHostFileMode(
+        mode, hostMode, sizeof(hostMode));
+    return name && effectiveMode ? platformOpenHostFile(name, effectiveMode) : NULL;
 }
 
-static FILE* try_host_open(const char* name, const char* mode,
+static FILE* tryOpenHostFile(const char* name, const char* mode,
     bool* saveTransaction, char* saveTransactionName,
     size_t saveTransactionNameSize)
 {
+    char normalizedMode[16];
+    const char* effectiveMode = normalizedHostFileMode(
+        mode, normalizedMode, sizeof(normalizedMode));
+    if (!effectiveMode)
+    {
+        return NULL;
+    }
     if (saveTransaction)
     {
         *saveTransaction = false;
@@ -518,17 +522,12 @@ static FILE* try_host_open(const char* name, const char* mode,
     if (name && !s_saveDirectory.empty() && name[0] != '/' && name[0] != '\\')
     {
         char normalized[1024];
-        normalize_guest_path(name, normalized, sizeof(normalized));
+        normalizeGuestPath(name, normalized, sizeof(normalized));
         if (normalized[0])
         {
-            char hostMode[16];
-            if (!normalize_host_file_mode(mode, hostMode, sizeof(hostMode)))
-            {
-                return NULL;
-            }
             bool transactional = false;
             FILE* saveFile = guestSaveOpenFile(
-                s_saveDirectory, normalized, hostMode, &transactional);
+                s_saveDirectory, normalized, effectiveMode, &transactional);
             if (saveFile)
             {
                 if (saveTransaction)
@@ -541,34 +540,34 @@ static FILE* try_host_open(const char* name, const char* mode,
                 }
                 return saveFile;
             }
-            if (mode_writes(hostMode))
+            if (modeAllowsWrites(effectiveMode))
             {
                 return NULL;
             }
         }
     }
 
-    FILE* fp = fopen_guest_mode(name, mode);
+    FILE* fp = openGuestFile(name, effectiveMode);
     if (fp)
     {
         return fp;
     }
 
     char normalized[1024];
-    normalize_guest_path(name, normalized, sizeof(normalized));
+    normalizeGuestPath(name, normalized, sizeof(normalized));
     if (normalized[0] && strcmp(normalized, name) != 0)
     {
-        fp = fopen_guest_mode(normalized, mode);
+        fp = openGuestFile(normalized, effectiveMode);
         if (fp)
         {
             return fp;
         }
     }
 
-    const char* base = path_basename(name);
+    const char* base = pathBaseName(name);
     if (base && base[0] && strcmp(base, name) != 0)
     {
-        fp = fopen_guest_mode(base, mode);
+        fp = openGuestFile(base, effectiveMode);
         if (fp)
         {
             return fp;
@@ -580,7 +579,7 @@ static FILE* try_host_open(const char* name, const char* mode,
 
 static bool shouldCacheHostFile(const char* name, const char* mode)
 {
-    if (mode_writes(mode))
+    if (modeAllowsWrites(mode))
     {
         return false;
     }
@@ -591,7 +590,7 @@ static bool shouldCacheHostFile(const char* name, const char* mode)
         return false;
     }
 
-    const char* base = path_basename(name);
+    const char* base = pathBaseName(name);
     const char* dot = base ? strrchr(base, '.') : NULL;
     if (!dot)
     {
@@ -604,7 +603,7 @@ static bool shouldCacheHostFile(const char* name, const char* mode)
         _stricmp(dot, ".bin") == 0;
 }
 
-static void setVfileRequestName(vfile_entry_t* entry, const char* name)
+static void setVirtualFileRequestName(VirtualFileEntry* entry, const char* name)
 {
     if (!entry)
     {
@@ -626,11 +625,11 @@ static void setVfileRequestName(vfile_entry_t* entry, const char* name)
     entry->requestName[length] = 0;
 }
 
-static bool hostFileMatchesCurrentApp(const uint8_t* data, uint32_t size)
+static bool hostFileMatchesGuestPackage(const uint8_t* data, uint32_t size)
 {
-    return s_fsys_app && data &&
-        size == s_fsys_app->file_size &&
-        memcmp(data, s_fsys_app->file_data, size) == 0;
+    return s_guestPackage && data &&
+        size == s_guestPackage->file_size &&
+        memcmp(data, s_guestPackage->file_data, size) == 0;
 }
 
 static uint8_t* readWholeHostFile(FILE* fp, uint32_t* outSize)
@@ -684,34 +683,34 @@ static uint8_t* readWholeHostFile(FILE* fp, uint32_t* outSize)
     return data;
 }
 
-static app_resource_entry* try_resource_open(const char* name)
+static GuestResourceEntry* tryOpenResource(const char* name)
 {
-    if (!s_fsys_app)
+    if (!s_guestPackage)
     {
         return NULL;
     }
 
-    app_resource_entry* res = app_find_resource(s_fsys_app, name);
+    GuestResourceEntry* res = guestPackageFindResource(s_guestPackage, name);
     if (res)
     {
         return res;
     }
 
     char normalized[1024];
-    normalize_guest_path(name, normalized, sizeof(normalized));
+    normalizeGuestPath(name, normalized, sizeof(normalized));
     if (normalized[0] && strcmp(normalized, name) != 0)
     {
-        res = app_find_resource(s_fsys_app, normalized);
+        res = guestPackageFindResource(s_guestPackage, normalized);
         if (res)
         {
             return res;
         }
     }
 
-    const char* base = path_basename(name);
+    const char* base = pathBaseName(name);
     if (base && base[0] && strcmp(base, name) != 0)
     {
-        return app_find_resource(s_fsys_app, base);
+        return guestPackageFindResource(s_guestPackage, base);
     }
 
     return NULL;
@@ -720,7 +719,7 @@ static app_resource_entry* try_resource_open(const char* name)
 uint32_t fsys_fopen(const char* name, const char* mode)
 {
     std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
-    s_fsys_profile.fopenCalls++;
+    s_filesystemProfile.fopenCalls++;
     fsysProfileTick();
 
     if (name == NULL || mode == NULL)
@@ -728,69 +727,45 @@ uint32_t fsys_fopen(const char* name, const char* mode)
         return 0;
     }
 
-    if (!mode_writes(mode) && s_fsys_guest_package)
+    if (!modeAllowsWrites(mode) && s_guestPackage)
     {
-        GuestResourceEntry* resource = guestPackageFindResource(s_fsys_guest_package, name);
-        if (resource)
+        GuestResourceEntry* res = tryOpenResource(name);
+        if (res && res->offset <= s_guestPackage->file_size &&
+            res->size <= s_guestPackage->file_size - res->offset)
         {
-            const uint8_t* data = guestPackageResourceData(s_fsys_guest_package, resource);
-            if (data)
-            {
-                uint32_t index = alloc_file_slot();
-                if (index == 0)
-                {
-                    return 0;
-                }
-                s_FILE_Map[index].type = vfile_type_resource;
-                s_FILE_Map[index].data = data;
-                s_FILE_Map[index].size = resource->size;
-                s_FILE_Map[index].offset = 0;
-                s_FILE_Map[index].xor_key = 0;
-                setVfileRequestName(&s_FILE_Map[index], name);
-                s_fsys_profile.resourceOpens++;
-                return index;
-            }
-        }
-    }
-
-    if (!mode_writes(mode) && s_fsys_app)
-    {
-        app_resource_entry* res = try_resource_open(name);
-        if (res && res->offset <= s_fsys_app->file_size && res->size <= s_fsys_app->file_size - res->offset)
-        {
-            const uint8_t* data = app_resource_data(s_fsys_app, res);
+            const uint8_t* data = guestPackageResourceData(s_guestPackage, res);
             if (!data)
             {
                 return 0;
             }
-            uint32_t index = alloc_file_slot();
+            uint32_t index = allocateFileSlot();
             if (index == 0)
             {
                 return 0;
             }
-            s_FILE_Map[index].type = vfile_type_resource;
-            s_FILE_Map[index].data = data;
-            s_FILE_Map[index].resource = res;
-            s_FILE_Map[index].size = res->size;
-            s_FILE_Map[index].offset = 0;
-            s_FILE_Map[index].xor_key = 0;
+            s_fileMap[index].type = VIRTUAL_FILE_TYPE_RESOURCE;
+            s_fileMap[index].data = data;
+            s_fileMap[index].resource = res;
+            s_fileMap[index].size = res->size;
+            s_fileMap[index].offset = 0;
+            s_fileMap[index].xorKey = 0;
             if (shouldUseBlockBreakerBinView(name, data, res->size))
             {
                 uint32_t viewSize = 0;
                 uint8_t* view = createBlockBreakerBinView(data, res->size, &viewSize);
                 if (view)
                 {
-                    s_FILE_Map[index].data = view;
-                    s_FILE_Map[index].ownedData = view;
-                    s_FILE_Map[index].size = viewSize;
+                    s_fileMap[index].data = view;
+                    s_fileMap[index].ownedData = view;
+                    s_fileMap[index].size = viewSize;
                     printf("fsys: applied Block Breaker .bin resource view name=%s original=0x%08x view=0x%08x\n",
                         name, res->size, viewSize);
                 }
             }
-            s_fsys_profile.resourceOpens++;
-            if (res->decoded_data || !res->xor_key)
+            s_filesystemProfile.resourceOpens++;
+            if (res->decoded_data || !res->xorKey)
             {
-                s_fsys_profile.resourceCachedOpens++;
+                s_filesystemProfile.resourceCachedOpens++;
             }
             if (runtimeResourceMonitorIsCapturing())
             {
@@ -798,13 +773,13 @@ uint32_t fsys_fopen(const char* name, const char* mode)
                     RUNTIME_RESOURCE_MONITOR_SOURCE_FSYS,
                     name,
                     res,
-                    res->decoded_data || !res->xor_key);
+                    res->decoded_data || !res->xorKey);
             }
             if (traceFsEnabled() || traceFsOpenEnabled())
             {
                 printf("trace-fs: fopen name=%s mode=%s -> %u resource=%s offset=0x%08x size=0x%08x xor=0x%02x\n",
-                    name, mode, index, res->name, res->offset, res->size, res->xor_key);
-                app_trace_resource_candidates(s_fsys_app, name);
+                    name, mode, index, res->name, res->offset, res->size, res->xorKey);
+                guestPackageTraceResourceCandidates(s_guestPackage, name);
             }
             return index;
         }
@@ -812,46 +787,46 @@ uint32_t fsys_fopen(const char* name, const char* mode)
 
     bool saveTransaction = false;
     char saveTransactionName[1024] = {};
-    FILE* fp = try_host_open(name, mode, &saveTransaction,
+    FILE* fp = tryOpenHostFile(name, mode, &saveTransaction,
         saveTransactionName, sizeof(saveTransactionName));
     if (fp)
     {
-        uint32_t index = alloc_file_slot();
+        uint32_t index = allocateFileSlot();
         if (index == 0)
         {
             fclose(fp);
             return 0;
         }
-        s_FILE_Map[index].type = vfile_type_host;
-        s_FILE_Map[index].saveTransaction = saveTransaction;
-        snprintf(s_FILE_Map[index].saveTransactionName,
-            sizeof(s_FILE_Map[index].saveTransactionName), "%s",
+        s_fileMap[index].type = VIRTUAL_FILE_TYPE_HOST;
+        s_fileMap[index].saveTransaction = saveTransaction;
+        snprintf(s_fileMap[index].saveTransactionName,
+            sizeof(s_fileMap[index].saveTransactionName), "%s",
             saveTransactionName);
-        s_FILE_Map[index].writable = mode_writes(mode);
-        setVfileRequestName(&s_FILE_Map[index], name);
+        s_fileMap[index].writable = modeAllowsWrites(mode);
+        setVirtualFileRequestName(&s_fileMap[index], name);
         if (shouldCacheHostFile(name, mode))
         {
             uint32_t fileSize = 0;
             uint8_t* fileData = readWholeHostFile(fp, &fileSize);
             if (fileData)
             {
-                s_FILE_Map[index].data = fileData;
-                s_FILE_Map[index].ownedData = fileData;
-                s_FILE_Map[index].size = fileSize;
-                s_FILE_Map[index].offset = 0;
-                s_FILE_Map[index].isAppPackage =
-                    hostFileMatchesCurrentApp(fileData, fileSize);
+                s_fileMap[index].data = fileData;
+                s_fileMap[index].ownedData = fileData;
+                s_fileMap[index].size = fileSize;
+                s_fileMap[index].offset = 0;
+                s_fileMap[index].isGuestPackage =
+                    hostFileMatchesGuestPackage(fileData, fileSize);
                 fclose(fp);
                 fp = NULL;
             }
         }
-        s_FILE_Map[index].fp = fp;
-        s_fsys_profile.hostOpens++;
+        s_fileMap[index].fp = fp;
+        s_filesystemProfile.hostOpens++;
         if (traceFsEnabled() || traceFsOpenEnabled())
         {
             printf("trace-fs: fopen name=%s mode=%s -> %u host%s size=0x%08x\n",
-                name, mode, index, s_FILE_Map[index].ownedData ? "-cached" : "",
-                s_FILE_Map[index].size);
+                name, mode, index, s_fileMap[index].ownedData ? "-cached" : "",
+                s_fileMap[index].size);
         }
         return index;
     }
@@ -864,52 +839,52 @@ uint32_t fsys_fopen(const char* name, const char* mode)
     return 0;
 }
 
-app_resource_entry* fsys_stream_resource(uint32_t stream)
+GuestResourceEntry* fsys_stream_resource(uint32_t stream)
 {
     std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
-    if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
+    if (stream == 0 || stream >= sizeof(s_fileMap) / sizeof(s_fileMap[0]))
     {
         return NULL;
     }
 
-    vfile_entry_t* entry = &s_FILE_Map[stream];
-    return entry->type == vfile_type_resource ? entry->resource : NULL;
+    VirtualFileEntry* entry = &s_fileMap[stream];
+    return entry->type == VIRTUAL_FILE_TYPE_RESOURCE ? entry->resource : NULL;
 }
 
-bool fsys_stream_is_app_package(uint32_t stream)
+bool fsys_stream_is_guest_package(uint32_t stream)
 {
     std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
-    if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
+    if (stream == 0 || stream >= sizeof(s_fileMap) / sizeof(s_fileMap[0]))
     {
         return false;
     }
 
-    vfile_entry_t* entry = &s_FILE_Map[stream];
-    return entry->type == vfile_type_host && entry->isAppPackage;
+    VirtualFileEntry* entry = &s_fileMap[stream];
+    return entry->type == VIRTUAL_FILE_TYPE_HOST && entry->isGuestPackage;
 }
 
 bool fsys_stream_is_external_file(uint32_t stream)
 {
     std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
-    if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
+    if (stream == 0 || stream >= sizeof(s_fileMap) / sizeof(s_fileMap[0]))
     {
         return false;
     }
 
-    vfile_entry_t* entry = &s_FILE_Map[stream];
-    return entry->type == vfile_type_host && !entry->isAppPackage;
+    VirtualFileEntry* entry = &s_fileMap[stream];
+    return entry->type == VIRTUAL_FILE_TYPE_HOST && !entry->isGuestPackage;
 }
 
 uint32_t fsys_stream_position(uint32_t stream)
 {
     std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
-    if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
+    if (stream == 0 || stream >= sizeof(s_fileMap) / sizeof(s_fileMap[0]))
     {
         return 0;
     }
 
-    vfile_entry_t* entry = &s_FILE_Map[stream];
-    if (entry->type == vfile_type_host && !entry->ownedData && entry->fp)
+    VirtualFileEntry* entry = &s_fileMap[stream];
+    if (entry->type == VIRTUAL_FILE_TYPE_HOST && !entry->ownedData && entry->fp)
     {
         long pos = ftell(entry->fp);
         return pos >= 0 ? (uint32_t)pos : 0;
@@ -921,13 +896,13 @@ const char* fsys_stream_request_name(uint32_t stream)
 {
     static thread_local std::string requestName;
     std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
-    if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
+    if (stream == 0 || stream >= sizeof(s_fileMap) / sizeof(s_fileMap[0]))
     {
         requestName.clear();
         return requestName.c_str();
     }
 
-    requestName = s_FILE_Map[stream].requestName;
+    requestName = s_fileMap[stream].requestName;
     return requestName.c_str();
 }
 
@@ -952,7 +927,7 @@ void fsys_record_load_to_guest(
         return;
     }
 
-    app_resource_entry* resource = fsys_stream_resource(stream);
+    GuestResourceEntry* resource = fsys_stream_resource(stream);
     if (resource)
     {
         runtimeResourceMonitorRecordLoadContent(
@@ -963,7 +938,7 @@ void fsys_record_load_to_guest(
             bytesLoaded,
             positionAfter);
     }
-    else if (fsys_stream_is_app_package(stream))
+    else if (fsys_stream_is_guest_package(stream))
     {
         runtimeResourceMonitorRecordPackageLoadContent(
             fsys_stream_request_name(stream),
@@ -985,7 +960,7 @@ void fsys_record_load_to_guest(
     }
 }
 
-static bool fsys_checked_read_size(uint32_t size, uint32_t count, uint32_t* requested)
+static bool checkedReadSize(uint32_t size, uint32_t count, uint32_t* requested)
 {
     if (!requested)
     {
@@ -1010,22 +985,22 @@ static bool fsys_checked_read_size(uint32_t size, uint32_t count, uint32_t* requ
 uint32_t vm_fread(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
 {
     std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
-    s_fsys_profile.freadCalls++;
+    s_filesystemProfile.freadCalls++;
     fsysProfileTick();
 
-    if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]) || ptr == NULL || size == 0 || count == 0)
+    if (stream == 0 || stream >= sizeof(s_fileMap) / sizeof(s_fileMap[0]) || ptr == NULL || size == 0 || count == 0)
     {
         return 0;
     }
 
     uint32_t requested = 0;
-    if (!fsys_checked_read_size(size, count, &requested))
+    if (!checkedReadSize(size, count, &requested))
     {
         return (uint32_t)-1;
     }
 
-    vfile_entry_t* entry = &s_FILE_Map[stream];
-    if (entry->type == vfile_type_host)
+    VirtualFileEntry* entry = &s_fileMap[stream];
+    if (entry->type == VIRTUAL_FILE_TYPE_HOST)
     {
         if (entry->ownedData)
         {
@@ -1036,18 +1011,18 @@ uint32_t vm_fread(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
                 memcpy(ptr, entry->data + entry->offset, bytesToRead);
                 entry->offset += bytesToRead;
             }
-            s_fsys_profile.freadBytes += bytesToRead;
-            s_fsys_profile.hostReadCalls++;
-            s_fsys_profile.hostReadBytes += bytesToRead;
+            s_filesystemProfile.freadBytes += bytesToRead;
+            s_filesystemProfile.hostReadCalls++;
+            s_filesystemProfile.hostReadBytes += bytesToRead;
             if (fsysInFastHleCall())
             {
-                s_fsys_profile.fastFreadCalls++;
-                s_fsys_profile.fastFreadBytes += bytesToRead;
+                s_filesystemProfile.fastFreadCalls++;
+                s_filesystemProfile.fastFreadBytes += bytesToRead;
             }
             else
             {
-                s_fsys_profile.slowFreadCalls++;
-                s_fsys_profile.slowFreadBytes += bytesToRead;
+                s_filesystemProfile.slowFreadCalls++;
+                s_filesystemProfile.slowFreadBytes += bytesToRead;
             }
             uint32_t ret = bytesToRead / size;
             if (traceFsEnabled())
@@ -1058,18 +1033,18 @@ uint32_t vm_fread(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
             return ret;
         }
         uint32_t ret = (uint32_t)fread(ptr, size, count, entry->fp);
-        s_fsys_profile.freadBytes += (uint64_t)ret * size;
-        s_fsys_profile.hostReadCalls++;
-        s_fsys_profile.hostReadBytes += (uint64_t)ret * size;
+        s_filesystemProfile.freadBytes += (uint64_t)ret * size;
+        s_filesystemProfile.hostReadCalls++;
+        s_filesystemProfile.hostReadBytes += (uint64_t)ret * size;
         if (fsysInFastHleCall())
         {
-            s_fsys_profile.fastFreadCalls++;
-            s_fsys_profile.fastFreadBytes += (uint64_t)ret * size;
+            s_filesystemProfile.fastFreadCalls++;
+            s_filesystemProfile.fastFreadBytes += (uint64_t)ret * size;
         }
         else
         {
-            s_fsys_profile.slowFreadCalls++;
-            s_fsys_profile.slowFreadBytes += (uint64_t)ret * size;
+            s_filesystemProfile.slowFreadCalls++;
+            s_filesystemProfile.slowFreadBytes += (uint64_t)ret * size;
         }
         if (traceFsEnabled())
         {
@@ -1079,7 +1054,7 @@ uint32_t vm_fread(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
         return ret;
     }
 
-    if (entry->type == vfile_type_resource)
+    if (entry->type == VIRTUAL_FILE_TYPE_RESOURCE)
     {
         uint32_t available = (entry->offset < entry->size) ? (entry->size - entry->offset) : 0;
         uint32_t bytesToRead = requested < available ? requested : available;
@@ -1088,18 +1063,18 @@ uint32_t vm_fread(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
             memcpy(ptr, entry->data + entry->offset, bytesToRead);
             entry->offset += bytesToRead;
         }
-        s_fsys_profile.freadBytes += bytesToRead;
-        s_fsys_profile.resourceReadCalls++;
-        s_fsys_profile.resourceReadBytes += bytesToRead;
+        s_filesystemProfile.freadBytes += bytesToRead;
+        s_filesystemProfile.resourceReadCalls++;
+        s_filesystemProfile.resourceReadBytes += bytesToRead;
         if (fsysInFastHleCall())
         {
-            s_fsys_profile.fastFreadCalls++;
-            s_fsys_profile.fastFreadBytes += bytesToRead;
+            s_filesystemProfile.fastFreadCalls++;
+            s_filesystemProfile.fastFreadBytes += bytesToRead;
         }
         else
         {
-            s_fsys_profile.slowFreadCalls++;
-            s_fsys_profile.slowFreadBytes += bytesToRead;
+            s_filesystemProfile.slowFreadCalls++;
+            s_filesystemProfile.slowFreadBytes += bytesToRead;
         }
         uint32_t ret = bytesToRead / size;
         if (traceFsEnabled())
@@ -1116,15 +1091,15 @@ uint32_t vm_fread(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
 uint32_t fsys_fclose(uint32_t stream)
 {
     std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
-    s_fsys_profile.fcloseCalls++;
+    s_filesystemProfile.fcloseCalls++;
     fsysProfileTick();
 
-    if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
+    if (stream == 0 || stream >= sizeof(s_fileMap) / sizeof(s_fileMap[0]))
     {
         return 0;
     }
 
-    vfile_entry_t* entry = &s_FILE_Map[stream];
+    VirtualFileEntry* entry = &s_fileMap[stream];
     uint32_t ret = 0;
     if (entry->ownedData)
     {
@@ -1132,7 +1107,7 @@ uint32_t fsys_fclose(uint32_t stream)
         entry->ownedData = NULL;
     }
     bool shouldRecordResourceEvent = runtimeResourceMonitorIsCapturing();
-    if (entry->type == vfile_type_resource)
+    if (entry->type == VIRTUAL_FILE_TYPE_RESOURCE)
     {
         if (shouldRecordResourceEvent)
         {
@@ -1141,9 +1116,9 @@ uint32_t fsys_fclose(uint32_t stream)
                 entry->resource);
         }
     }
-    else if (entry->type == vfile_type_host)
+    else if (entry->type == VIRTUAL_FILE_TYPE_HOST)
     {
-        if (shouldRecordResourceEvent && entry->isAppPackage)
+        if (shouldRecordResourceEvent && entry->isGuestPackage)
         {
             runtimeResourceMonitorRecordPackageClose(entry->requestName);
         }
@@ -1152,7 +1127,7 @@ uint32_t fsys_fclose(uint32_t stream)
             runtimeResourceMonitorRecordExternalClose(entry->requestName);
         }
     }
-    if (entry->type == vfile_type_host && entry->fp)
+    if (entry->type == VIRTUAL_FILE_TYPE_HOST && entry->fp)
     {
         ret = guestSaveCloseFile(s_saveDirectory,
             entry->saveTransactionName, entry->fp, entry->saveTransaction);
@@ -1164,7 +1139,7 @@ uint32_t fsys_fclose(uint32_t stream)
 
     if (traceFsEnabled() || traceFsOpenEnabled())
     {
-        printf("trace-fs: fclose stream=%u type=%s ret=%u\n", stream, vfileTypeName(entry->type), ret);
+        printf("trace-fs: fclose stream=%u type=%s ret=%u\n", stream, virtualFileTypeName(entry->type), ret);
     }
     memset(entry, 0x00, sizeof(*entry));
     return ret;
@@ -1173,16 +1148,16 @@ uint32_t fsys_fclose(uint32_t stream)
 uint32_t fsys_fseek(uint32_t stream, uint32_t offset, uint32_t origin)
 {
     std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
-    s_fsys_profile.fseekCalls++;
+    s_filesystemProfile.fseekCalls++;
     fsysProfileTick();
 
-    if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
+    if (stream == 0 || stream >= sizeof(s_fileMap) / sizeof(s_fileMap[0]))
     {
         return 0;
     }
 
-    vfile_entry_t* entry = &s_FILE_Map[stream];
-    if (entry->type == vfile_type_host)
+    VirtualFileEntry* entry = &s_fileMap[stream];
+    if (entry->type == VIRTUAL_FILE_TYPE_HOST)
     {
         if (entry->ownedData)
         {
@@ -1210,14 +1185,14 @@ uint32_t fsys_fseek(uint32_t stream, uint32_t offset, uint32_t origin)
                 return (uint32_t)-1;
             }
             entry->offset = (uint32_t)next;
-            s_fsys_profile.hostSeekCalls++;
+            s_filesystemProfile.hostSeekCalls++;
             if (fsysInFastHleCall())
             {
-                s_fsys_profile.fastFseekCalls++;
+                s_filesystemProfile.fastFseekCalls++;
             }
             else
             {
-                s_fsys_profile.slowFseekCalls++;
+                s_filesystemProfile.slowFseekCalls++;
             }
             if (traceFsEnabled())
             {
@@ -1227,14 +1202,14 @@ uint32_t fsys_fseek(uint32_t stream, uint32_t offset, uint32_t origin)
             return 0;
         }
         uint32_t ret = fseek(entry->fp, (long)(int32_t)offset, (int)origin);
-        s_fsys_profile.hostSeekCalls++;
+        s_filesystemProfile.hostSeekCalls++;
         if (fsysInFastHleCall())
         {
-            s_fsys_profile.fastFseekCalls++;
+            s_filesystemProfile.fastFseekCalls++;
         }
         else
         {
-            s_fsys_profile.slowFseekCalls++;
+            s_filesystemProfile.slowFseekCalls++;
         }
         if (traceFsEnabled())
         {
@@ -1244,7 +1219,7 @@ uint32_t fsys_fseek(uint32_t stream, uint32_t offset, uint32_t origin)
         return ret;
     }
 
-    if (entry->type == vfile_type_resource)
+    if (entry->type == VIRTUAL_FILE_TYPE_RESOURCE)
     {
         int64_t base = 0;
         if (origin == 0)
@@ -1270,7 +1245,7 @@ uint32_t fsys_fseek(uint32_t stream, uint32_t offset, uint32_t origin)
             return (uint32_t)-1;
         }
         entry->offset = (uint32_t)next;
-        s_fsys_profile.resourceSeekCalls++;
+        s_filesystemProfile.resourceSeekCalls++;
         if (runtimeResourceMonitorIsCapturing())
         {
             runtimeResourceMonitorRecordSeek(
@@ -1280,11 +1255,11 @@ uint32_t fsys_fseek(uint32_t stream, uint32_t offset, uint32_t origin)
         }
         if (fsysInFastHleCall())
         {
-            s_fsys_profile.fastFseekCalls++;
+            s_filesystemProfile.fastFseekCalls++;
         }
         else
         {
-            s_fsys_profile.slowFseekCalls++;
+            s_filesystemProfile.slowFseekCalls++;
         }
         if (traceFsEnabled())
         {
@@ -1297,7 +1272,7 @@ uint32_t fsys_fseek(uint32_t stream, uint32_t offset, uint32_t origin)
     return 0;
 }
 
-static bool vfileSeekMemory(vfile_entry_t* entry, uint32_t offset, uint32_t origin, uint32_t* ret)
+static bool vfileSeekMemory(VirtualFileEntry* entry, uint32_t offset, uint32_t origin, uint32_t* ret)
 {
     if (!entry || !ret)
     {
@@ -1338,22 +1313,22 @@ static bool vfileSeekMemory(vfile_entry_t* entry, uint32_t offset, uint32_t orig
 bool fsys_seek_cached(uint32_t stream, uint32_t offset, uint32_t origin, uint32_t* ret)
 {
     std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
-    if (!ret || stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
+    if (!ret || stream == 0 || stream >= sizeof(s_fileMap) / sizeof(s_fileMap[0]))
     {
         return false;
     }
 
-    vfile_entry_t* entry = &s_FILE_Map[stream];
-    if ((entry->type == vfile_type_host && entry->ownedData) || entry->type == vfile_type_resource)
+    VirtualFileEntry* entry = &s_fileMap[stream];
+    if ((entry->type == VIRTUAL_FILE_TYPE_HOST && entry->ownedData) || entry->type == VIRTUAL_FILE_TYPE_RESOURCE)
     {
-        s_fsys_profile.fseekCalls++;
+        s_filesystemProfile.fseekCalls++;
         fsysProfileTick();
         bool ok = vfileSeekMemory(entry, offset, origin, ret);
         if (ok && *ret == 0)
         {
-            if (entry->type == vfile_type_resource)
+            if (entry->type == VIRTUAL_FILE_TYPE_RESOURCE)
             {
-                s_fsys_profile.resourceSeekCalls++;
+                s_filesystemProfile.resourceSeekCalls++;
                 if (runtimeResourceMonitorIsCapturing())
                 {
                     runtimeResourceMonitorRecordSeek(
@@ -1364,21 +1339,21 @@ bool fsys_seek_cached(uint32_t stream, uint32_t offset, uint32_t origin, uint32_
             }
             else
             {
-                s_fsys_profile.hostSeekCalls++;
+                s_filesystemProfile.hostSeekCalls++;
             }
             if (fsysInFastHleCall())
             {
-                s_fsys_profile.fastFseekCalls++;
+                s_filesystemProfile.fastFseekCalls++;
             }
             else
             {
-                s_fsys_profile.slowFseekCalls++;
+                s_filesystemProfile.slowFseekCalls++;
             }
         }
         if (traceFsEnabled())
         {
             printf("trace-fs: cached-fseek stream=%u type=%s offset=%d origin=%u ret=%u next=0x%08x\n",
-                stream, vfileTypeName(entry->type), (int32_t)offset, origin, *ret, entry->offset);
+                stream, virtualFileTypeName(entry->type), (int32_t)offset, origin, *ret, entry->offset);
         }
         return ok;
     }
@@ -1390,20 +1365,20 @@ bool fsys_read_cached(uint32_t stream, uint32_t size, uint32_t count, const uint
 {
     std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     if (!data || !bytesRead || !itemsRead ||
-        stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]) ||
+        stream == 0 || stream >= sizeof(s_fileMap) / sizeof(s_fileMap[0]) ||
         size == 0 || count == 0)
     {
         return false;
     }
 
-    vfile_entry_t* entry = &s_FILE_Map[stream];
-    if (!((entry->type == vfile_type_host && entry->ownedData) || entry->type == vfile_type_resource))
+    VirtualFileEntry* entry = &s_fileMap[stream];
+    if (!((entry->type == VIRTUAL_FILE_TYPE_HOST && entry->ownedData) || entry->type == VIRTUAL_FILE_TYPE_RESOURCE))
     {
         return false;
     }
 
     uint32_t requested = 0;
-    if (!fsys_checked_read_size(size, count, &requested))
+    if (!checkedReadSize(size, count, &requested))
     {
         return false;
     }
@@ -1415,33 +1390,33 @@ bool fsys_read_cached(uint32_t stream, uint32_t size, uint32_t count, const uint
     *itemsRead = copySize / size;
     entry->offset += copySize;
 
-    s_fsys_profile.freadCalls++;
+    s_filesystemProfile.freadCalls++;
     fsysProfileTick();
-    s_fsys_profile.freadBytes += copySize;
-    if (entry->type == vfile_type_resource)
+    s_filesystemProfile.freadBytes += copySize;
+    if (entry->type == VIRTUAL_FILE_TYPE_RESOURCE)
     {
-        s_fsys_profile.resourceReadCalls++;
-        s_fsys_profile.resourceReadBytes += copySize;
+        s_filesystemProfile.resourceReadCalls++;
+        s_filesystemProfile.resourceReadBytes += copySize;
     }
     else
     {
-        s_fsys_profile.hostReadCalls++;
-        s_fsys_profile.hostReadBytes += copySize;
+        s_filesystemProfile.hostReadCalls++;
+        s_filesystemProfile.hostReadBytes += copySize;
     }
     if (fsysInFastHleCall())
     {
-        s_fsys_profile.fastFreadCalls++;
-        s_fsys_profile.fastFreadBytes += copySize;
+        s_filesystemProfile.fastFreadCalls++;
+        s_filesystemProfile.fastFreadBytes += copySize;
     }
     else
     {
-        s_fsys_profile.slowFreadCalls++;
-        s_fsys_profile.slowFreadBytes += copySize;
+        s_filesystemProfile.slowFreadCalls++;
+        s_filesystemProfile.slowFreadBytes += copySize;
     }
     if (traceFsEnabled())
     {
         printf("trace-fs: cached-fread stream=%u type=%s size=%u count=%u bytes=%u ret=%u offset=0x%08x\n",
-            stream, vfileTypeName(entry->type), size, count, copySize, *itemsRead, entry->offset);
+            stream, virtualFileTypeName(entry->type), size, count, copySize, *itemsRead, entry->offset);
     }
     return true;
 }
@@ -1449,16 +1424,16 @@ bool fsys_read_cached(uint32_t stream, uint32_t size, uint32_t count, const uint
 uint32_t fsys_ftell(uint32_t stream)
 {
     std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
-    s_fsys_profile.ftellCalls++;
+    s_filesystemProfile.ftellCalls++;
     fsysProfileTick();
 
-    if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
+    if (stream == 0 || stream >= sizeof(s_fileMap) / sizeof(s_fileMap[0]))
     {
         return 0;
     }
 
-    vfile_entry_t* entry = &s_FILE_Map[stream];
-    if (entry->type == vfile_type_host)
+    VirtualFileEntry* entry = &s_fileMap[stream];
+    if (entry->type == VIRTUAL_FILE_TYPE_HOST)
     {
         if (entry->ownedData)
         {
@@ -1466,7 +1441,7 @@ uint32_t fsys_ftell(uint32_t stream)
         }
         return (uint32_t)ftell(entry->fp);
     }
-    if (entry->type == vfile_type_resource)
+    if (entry->type == VIRTUAL_FILE_TYPE_RESOURCE)
     {
         return entry->offset;
     }
@@ -1476,13 +1451,13 @@ uint32_t fsys_ftell(uint32_t stream)
 uint32_t fsys_fwrite(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
 {
     std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
-    if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
+    if (stream == 0 || stream >= sizeof(s_fileMap) / sizeof(s_fileMap[0]))
     {
         return 0;
     }
 
-    vfile_entry_t* entry = &s_FILE_Map[stream];
-    if (entry->type == vfile_type_host)
+    VirtualFileEntry* entry = &s_fileMap[stream];
+    if (entry->type == VIRTUAL_FILE_TYPE_HOST)
     {
         uint32_t written = (uint32_t)fwrite(ptr, size, count, entry->fp);
         if (written > 0)
@@ -1498,16 +1473,16 @@ uint32_t fsys_fwrite(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
 uint32_t fsys_feof(uint32_t stream)
 {
     std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
-    s_fsys_profile.feofCalls++;
+    s_filesystemProfile.feofCalls++;
     fsysProfileTick();
 
-    if (stream == 0 || stream >= sizeof(s_FILE_Map) / sizeof(s_FILE_Map[0]))
+    if (stream == 0 || stream >= sizeof(s_fileMap) / sizeof(s_fileMap[0]))
     {
         return 0;
     }
 
-    vfile_entry_t* entry = &s_FILE_Map[stream];
-    if (entry->type == vfile_type_host)
+    VirtualFileEntry* entry = &s_fileMap[stream];
+    if (entry->type == VIRTUAL_FILE_TYPE_HOST)
     {
         if (entry->ownedData)
         {
@@ -1515,7 +1490,7 @@ uint32_t fsys_feof(uint32_t stream)
         }
         return (uint32_t)feof(entry->fp);
     }
-    if (entry->type == vfile_type_resource)
+    if (entry->type == VIRTUAL_FILE_TYPE_RESOURCE)
     {
         return entry->offset >= entry->size;
     }

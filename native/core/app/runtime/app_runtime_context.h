@@ -2,15 +2,15 @@
 #define DINGOO_PIE_APP_RUNTIME_APP_RUNTIME_CONTEXT_H
 
 #include <stdint.h>
-#include "app/runtime/app_loader.h"
 
+struct GuestPackage;
 
 struct AppRuntimeProgramImage
 {
     uint32_t address;
     uint32_t size;
     void* data;
-    app* package;
+    GuestPackage* package;
 };
 
 AppRuntimeProgramImage appRuntimeProgramImage(void);

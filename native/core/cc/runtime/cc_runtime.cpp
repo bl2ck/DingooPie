@@ -2471,6 +2471,7 @@ bool ccRuntimeRunFile(const char* path,
         crashContext.gameSha256 = gameSha256.c_str();
         crashContext.saveDirectory = saveDirectory.c_str();
         crashContext.error = stats->error;
+        crashContext.backend = s_useOptimizedBackend.load() ? "dynarmic" : "arm32_interpreter";
         crashContext.registers = crashState.r;
         crashContext.cpsr = crashState.cpsr;
         crashContext.unsupportedInstruction = crashState.unsupportedInstruction;

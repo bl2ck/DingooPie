@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include "app_runtime.h"
+#include "app/runtime/app_runtime_debug.h"
 #include "shared/game/game_runtime.h"
 #include "platform_win32.h"
 #include "resource_ids.h"

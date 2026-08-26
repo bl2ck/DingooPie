@@ -1,43 +1,46 @@
-#include "app_memory.h"
+#include "app/memory/app_memory.h"
 #include <assert.h>
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <mutex>
 #include "app_runtime_debug.h"
-#include "framebuffer.h"
+#include "frontend/video/framebuffer.h"
 #include <pthread.h>
-const uint32_t CPU_REGISTER_BASE_ADDR = 0xB0000000;
-const uint32_t CPU_REGISTER_SIZE = 0x04000000;
-const uint32_t VM_HEAP_SIZE = 64 * 1024 * 1024;
-const uint32_t VM_STACK_SIZE = 16 * 1024 * 1024;
-const uint32_t VM_STACK_UPPER_ADDRESS = 0xA0000000;
-const uint32_t VM_APP_BEGIN_ADDRESS = 0x80a00000;
-void* s_App_Prog_Ptr = 0;
-uint32_t s_App_Prog_Size = 0;
-uint32_t s_Heap_Begin_Address = 0;
+static const uint32_t kCpuRegisterBaseAddress = 0xB0000000;
+static const uint32_t kCpuRegisterSize = 0x04000000;
+static const uint32_t kVmHeapSize = 64 * 1024 * 1024;
+static const uint32_t kVmStackSize = 16 * 1024 * 1024;
+static const uint32_t kVmStackUpperAddress = 0xA0000000;
+static const uint32_t kVmAppBeginAddress = 0x80a00000;
+static void* s_appProgramData = 0;
+static uint32_t s_appProgramSize = 0;
+static uint32_t s_heapBeginAddress = 0;
 
-uint8_t s_HeapMemPtr[VM_HEAP_SIZE] = { 0 };
-uint8_t s_StackMemPtr[VM_STACK_SIZE] = { 0 };
-uint8_t s_RegisterMemPtr[CPU_REGISTER_SIZE] = { 0 };
+static uint8_t s_heapMemory[kVmHeapSize] = { 0 };
+static uint8_t s_stackMemory[kVmStackSize] = { 0 };
+static uint8_t s_registerMemory[kCpuRegisterSize] = { 0 };
 
-typedef struct {
+struct LegacyHeapFreeBlock {
     size_t next;
     size_t len;
-} LG_mem_free_t;
+};
 
-uint32_t LG_mem_min;
-uint32_t LG_mem_top;
-LG_mem_free_t LG_mem_free;
-void* LG_mem_base;
-uint32_t LG_mem_len;
-void* Origin_LG_mem_base;
-uint32_t Origin_LG_mem_len;
-void* LG_mem_end;
-uint32_t LG_mem_left;
-static std::recursive_mutex g_vmHeapMutex;
+static uint32_t s_legacyHeapMinimumFree;
+static uint32_t s_legacyHeapHighWaterOffset;
+static LegacyHeapFreeBlock s_legacyHeapFreeList;
+static void* s_legacyHeapBase;
+static uint32_t s_legacyHeapLength;
+static void* s_originalLegacyHeapBase;
+static uint32_t s_originalLegacyHeapLength;
+static void* s_legacyHeapEnd;
+static uint32_t s_legacyHeapFreeBytes;
+static std::recursive_mutex s_vmHeapMutex;
 
-#define realLGmemSize(x) (((x) + 7) & (0xfffffff8))
+static size_t alignedLegacyHeapSize(size_t size)
+{
+    return (size + 7u) & ~size_t(7u);
+}
 
 #define MEM_DEBUG
 
@@ -60,132 +63,137 @@ static int mapAliasIfNeeded(NativeRuntime* runtime, uint32_t addr, uint32_t size
     return 0;
 }
 
-void initializeVmHeapAllocator(void* baseAddress, uint32_t len)
+static void initializeVmHeapAllocator(void* baseAddress, uint32_t len)
 {
-	std::lock_guard<std::recursive_mutex> lock(g_vmHeapMutex);
-	printf("initializeVmHeapAllocator: baseAddress:0x%" PRIx64 " len: 0x%08x\n", (size_t)baseAddress, len);
-	Origin_LG_mem_base = baseAddress;
-	Origin_LG_mem_len = len;
+	std::lock_guard<std::recursive_mutex> lock(s_vmHeapMutex);
+	printf("memory: initialize heap base=%p length=0x%08x\n", baseAddress, len);
+	s_originalLegacyHeapBase = baseAddress;
+	s_originalLegacyHeapLength = len;
 
-	LG_mem_base = (void*)((size_t)((size_t)Origin_LG_mem_base + 3) & (~3));
-	LG_mem_len = (Origin_LG_mem_len - ((size_t)LG_mem_base - (size_t)Origin_LG_mem_base)) & (~3);
-	LG_mem_end = (void*)((size_t)LG_mem_base + LG_mem_len);
-	LG_mem_free.next = 0;
-	LG_mem_free.len = 0;
-	((LG_mem_free_t*)LG_mem_base)->next = LG_mem_len;
-	((LG_mem_free_t*)LG_mem_base)->len = LG_mem_len;
-	LG_mem_left = LG_mem_len;
+	s_legacyHeapBase = (void*)((size_t)((size_t)s_originalLegacyHeapBase + 3) & (~3));
+	s_legacyHeapLength = (s_originalLegacyHeapLength - ((size_t)s_legacyHeapBase - (size_t)s_originalLegacyHeapBase)) & (~3);
+	s_legacyHeapEnd = (void*)((size_t)s_legacyHeapBase + s_legacyHeapLength);
+	s_legacyHeapFreeList.next = 0;
+	s_legacyHeapFreeList.len = 0;
+	((LegacyHeapFreeBlock*)s_legacyHeapBase)->next = s_legacyHeapLength;
+	((LegacyHeapFreeBlock*)s_legacyHeapBase)->len = s_legacyHeapLength;
+	s_legacyHeapFreeBytes = s_legacyHeapLength;
 #ifdef MEM_DEBUG
-	LG_mem_min = LG_mem_len;
-	LG_mem_top = 0;
+	s_legacyHeapMinimumFree = s_legacyHeapLength;
+	s_legacyHeapHighWaterOffset = 0;
 #endif
 }
-void printVmHeapInfo() {
-    printf(".......total:%d, min:%d, free:%d, top:%d\n", LG_mem_len, LG_mem_min, LG_mem_left, LG_mem_top);
-    printf(".......base:%p, end:%p\n", LG_mem_base, LG_mem_end);
-    printf(".......obase:%p, olen:%d\n", Origin_LG_mem_base, Origin_LG_mem_len);
+void printVmHeapInfo()
+{
+    printf("memory: heap statistics total=%u minimum_free=%u free=%u high_water=%u\n",
+        s_legacyHeapLength, s_legacyHeapMinimumFree, s_legacyHeapFreeBytes,
+        s_legacyHeapHighWaterOffset);
+    printf("memory: heap range base=%p end=%p original_base=%p original_length=%u\n",
+        s_legacyHeapBase, s_legacyHeapEnd, s_originalLegacyHeapBase,
+        s_originalLegacyHeapLength);
 }
 
-void* allocateVmHeapBlock(uint32_t len)
+static void* allocateVmHeapBlock(uint32_t len)
 {
-    std::lock_guard<std::recursive_mutex> lock(g_vmHeapMutex);
-    LG_mem_free_t* previous, * nextfree, * l;
+    std::lock_guard<std::recursive_mutex> lock(s_vmHeapMutex);
+    LegacyHeapFreeBlock* previous, * nextfree, * l;
     void* ret;
 
-    len = (uint32_t)realLGmemSize(len);
-    if (len >= LG_mem_left) {
-        printf("allocateVmHeapBlock no memory: len %08x\n", len);
+    len = (uint32_t)alignedLegacyHeapSize(len);
+    if (len >= s_legacyHeapFreeBytes) {
+        printf("memory: heap allocation failed length=%08x\n", len);
         goto err;
     }
     if (!len) {
-        printf("allocateVmHeapBlock invalid memory request");
+        printf("memory: invalid zero-length heap allocation\n");
         goto err;
     }
-    if ((size_t)LG_mem_base + LG_mem_free.next > (size_t)LG_mem_end) {
-        printf("allocateVmHeapBlock corrupted memory");
+    if ((size_t)s_legacyHeapBase + s_legacyHeapFreeList.next > (size_t)s_legacyHeapEnd) {
+        printf("memory: heap free list is corrupted\n");
         goto err;
     }
-    previous = &LG_mem_free;
-    nextfree = (LG_mem_free_t*)((size_t)LG_mem_base + previous->next);
-    while ((char*)nextfree < LG_mem_end) {
+    previous = &s_legacyHeapFreeList;
+    nextfree = (LegacyHeapFreeBlock*)((size_t)s_legacyHeapBase + previous->next);
+    while ((char*)nextfree < s_legacyHeapEnd) {
         if (nextfree->len == len) {
             previous->next = nextfree->next;
-            LG_mem_left -= len;
+            s_legacyHeapFreeBytes -= len;
 #ifdef MEM_DEBUG
-            if (LG_mem_left < LG_mem_min)
-                LG_mem_min = LG_mem_left;
-            if (LG_mem_top < previous->next)
-                LG_mem_top = previous->next;
+            if (s_legacyHeapFreeBytes < s_legacyHeapMinimumFree)
+                s_legacyHeapMinimumFree = s_legacyHeapFreeBytes;
+            if (s_legacyHeapHighWaterOffset < previous->next)
+                s_legacyHeapHighWaterOffset = previous->next;
 #endif
             ret = (void*)nextfree;
             goto end;
         }
         if (nextfree->len > len) {
-            l = (LG_mem_free_t*)((char*)nextfree + len);
+            l = (LegacyHeapFreeBlock*)((char*)nextfree + len);
             l->next = nextfree->next;
             l->len = (size_t)(nextfree->len - len);
             previous->next += len;
-            LG_mem_left -= len;
+            s_legacyHeapFreeBytes -= len;
 #ifdef MEM_DEBUG
-            if (LG_mem_left < LG_mem_min)
-                LG_mem_min = LG_mem_left;
-            if (LG_mem_top < previous->next)
-                LG_mem_top = previous->next;
+            if (s_legacyHeapFreeBytes < s_legacyHeapMinimumFree)
+                s_legacyHeapMinimumFree = s_legacyHeapFreeBytes;
+            if (s_legacyHeapHighWaterOffset < previous->next)
+                s_legacyHeapHighWaterOffset = previous->next;
 #endif
             ret = (void*)nextfree;
             goto end;
         }
         previous = nextfree;
-        nextfree = (LG_mem_free_t*)((size_t)LG_mem_base + nextfree->next);
+        nextfree = (LegacyHeapFreeBlock*)((size_t)s_legacyHeapBase + nextfree->next);
     }
-    printf("allocateVmHeapBlock no memory: len %08x\n", len);
+    printf("memory: heap allocation failed length=%08x\n", len);
 err:
     return 0;
 end:
     return ret;
 }
 
-void freeVmHeapBlock(void* p, uint32_t len) {
-    std::lock_guard<std::recursive_mutex> lock(g_vmHeapMutex);
-    LG_mem_free_t* free, * n;
-    len = (uint32_t)realLGmemSize(len);
+static void freeVmHeapBlock(void* p, uint32_t len) {
+    std::lock_guard<std::recursive_mutex> lock(s_vmHeapMutex);
+    LegacyHeapFreeBlock* free, * n;
+    len = (uint32_t)alignedLegacyHeapSize(len);
 #ifdef MEM_DEBUG
-    if (!len || !p || (char*)p < LG_mem_base || (char*)p >= LG_mem_end || (char*)p + len > LG_mem_end || (char*)p + len <= LG_mem_base) {
-        printf("freeVmHeapBlock invalid\n");
-        printf("p=%" PRIXPTR ", l=%d, base=%" PRIXPTR ",LG_mem_end=%" PRIXPTR "\n", (size_t)p, len, (size_t)LG_mem_base, (size_t)LG_mem_end);
+    if (!len || !p || (char*)p < s_legacyHeapBase || (char*)p >= s_legacyHeapEnd || (char*)p + len > s_legacyHeapEnd || (char*)p + len <= s_legacyHeapBase) {
+        printf("memory: invalid heap free pointer=0x%" PRIXPTR
+            " length=%u base=0x%" PRIXPTR " end=0x%" PRIXPTR "\n",
+            (size_t)p, len, (size_t)s_legacyHeapBase, (size_t)s_legacyHeapEnd);
         return;
     }
 #endif
-    free = &LG_mem_free;
-    n = (LG_mem_free_t*)((size_t)LG_mem_base + free->next);
-    while (((char*)n < LG_mem_end) && ((void*)n < p)) {
+    free = &s_legacyHeapFreeList;
+    n = (LegacyHeapFreeBlock*)((size_t)s_legacyHeapBase + free->next);
+    while (((char*)n < s_legacyHeapEnd) && ((void*)n < p)) {
         free = n;
-        n = (LG_mem_free_t*)((size_t)LG_mem_base + n->next);
+        n = (LegacyHeapFreeBlock*)((size_t)s_legacyHeapBase + n->next);
     }
 #ifdef MEM_DEBUG
     if (p == (void*)free || p == (void*)n) {
-        printf("freeVmHeapBlock:already free\n");
+        printf("memory: heap block is already free\n");
         return;
     }
 #endif
-    if ((free != &LG_mem_free) && ((char*)free + free->len == p)) {
+    if ((free != &s_legacyHeapFreeList) && ((char*)free + free->len == p)) {
         free->len += len;
     }
     else {
-        free->next = (size_t)((char*)p - (char*)LG_mem_base);
-        free = (LG_mem_free_t*)p;
-        free->next = (size_t)((char*)n - (char*)LG_mem_base);
+        free->next = (size_t)((char*)p - (char*)s_legacyHeapBase);
+        free = (LegacyHeapFreeBlock*)p;
+        free->next = (size_t)((char*)n - (char*)s_legacyHeapBase);
         free->len = len;
     }
-    if (((char*)n < LG_mem_end) && ((char*)p + len == (char*)n)) {
+    if (((char*)n < s_legacyHeapEnd) && ((char*)p + len == (char*)n)) {
         free->next = n->next;
         free->len += n->len;
     }
-    LG_mem_left += len;
+    s_legacyHeapFreeBytes += len;
 }
 
 void* my_realloc(void* p, uint32_t oldlen, uint32_t len) {
-    std::lock_guard<std::recursive_mutex> lock(g_vmHeapMutex);
+    std::lock_guard<std::recursive_mutex> lock(s_vmHeapMutex);
     unsigned long minsize = (oldlen > len) ? len : oldlen;
     void* newblock;
     if (p == NULL) {
@@ -204,60 +212,60 @@ void* my_realloc(void* p, uint32_t oldlen, uint32_t len) {
     return newblock;
 }
 
-int appMemoryInitialize(NativeRuntime *runtime, app *_app)
+int appMemoryInitialize(NativeRuntime* runtime, GuestPackage* app)
 {
 	RuntimeError err;
 
-	if (VM_APP_BEGIN_ADDRESS != _app->origin)
+	if (kVmAppBeginAddress != app->origin)
 	{
-		printf("memory: appMemoryInitialize invalid origin 0x%08x\n", _app->origin);
+		printf("memory: appMemoryInitialize invalid origin 0x%08x\n", app->origin);
 		return -1;
 	}
 
-	s_App_Prog_Ptr = _app->bin_data;
-	s_App_Prog_Size = _app->bin_size;
+	s_appProgramData = app->bin_data;
+	s_appProgramSize = app->bin_size;
 
-	s_Heap_Begin_Address = ALIGN((_app->prog_size + _app->origin), 4096);
+	s_heapBeginAddress = ALIGN((app->prog_size + app->origin), 4096);
 
-	memset(s_HeapMemPtr, 0x00, VM_HEAP_SIZE);
-	initializeVmHeapAllocator(s_HeapMemPtr, VM_HEAP_SIZE);
+	memset(s_heapMemory, 0x00, kVmHeapSize);
+	initializeVmHeapAllocator(s_heapMemory, kVmHeapSize);
 
-	err = nativeRuntimeMapMemory(runtime, s_Heap_Begin_Address, VM_HEAP_SIZE, RUNTIME_PROT_ALL, s_HeapMemPtr);
+	err = nativeRuntimeMapMemory(runtime, s_heapBeginAddress, kVmHeapSize, RUNTIME_PROT_ALL, s_heapMemory);
 	if (err)
 	{
-		printf("memory: failed to map s_HeapMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
+		printf("memory: failed to map s_heapMemory: %u (%s)\n", err, nativeRuntimeErrorString(err));
 		return -1;
 	}
-	if (mapAliasIfNeeded(runtime, s_Heap_Begin_Address, VM_HEAP_SIZE, s_HeapMemPtr, "s_HeapMemPtr"))
+	if (mapAliasIfNeeded(runtime, s_heapBeginAddress, kVmHeapSize, s_heapMemory, "s_heapMemory"))
 	{
 		return -1;
 	}
 
-	memset(s_StackMemPtr, 0x00, VM_STACK_SIZE);
-	err = nativeRuntimeMapMemory(runtime, VM_STACK_UPPER_ADDRESS - VM_STACK_SIZE, VM_STACK_SIZE, RUNTIME_PROT_ALL, s_StackMemPtr);
+	memset(s_stackMemory, 0x00, kVmStackSize);
+	err = nativeRuntimeMapMemory(runtime, kVmStackUpperAddress - kVmStackSize, kVmStackSize, RUNTIME_PROT_ALL, s_stackMemory);
 	if (err)
 	{
-		printf("memory: failed to map s_StackMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
+		printf("memory: failed to map s_stackMemory: %u (%s)\n", err, nativeRuntimeErrorString(err));
 		return -1;
 	}
-	if (mapAliasIfNeeded(runtime, VM_STACK_UPPER_ADDRESS - VM_STACK_SIZE, VM_STACK_SIZE, s_StackMemPtr, "s_StackMemPtr"))
+	if (mapAliasIfNeeded(runtime, kVmStackUpperAddress - kVmStackSize, kVmStackSize, s_stackMemory, "s_stackMemory"))
 	{
 		return -1;
 	}
 
-	uint32_t value = VM_STACK_UPPER_ADDRESS - 0x20u;
+	uint32_t value = kVmStackUpperAddress - 0x20u;
 	nativeRuntimeWriteRegister(runtime, RUNTIME_REG_SP, &value);
 
 	// Map the emulated CPU register page used by SDK code.
-	memset(s_RegisterMemPtr, 0x00, CPU_REGISTER_SIZE);
-	*(uint32_t*)(s_RegisterMemPtr + 0x2020) = 0x00000004;
-	err = nativeRuntimeMapMemory(runtime, CPU_REGISTER_BASE_ADDR, CPU_REGISTER_SIZE, RUNTIME_PROT_ALL, s_RegisterMemPtr);
+	memset(s_registerMemory, 0x00, kCpuRegisterSize);
+	*(uint32_t*)(s_registerMemory + 0x2020) = 0x00000004;
+	err = nativeRuntimeMapMemory(runtime, kCpuRegisterBaseAddress, kCpuRegisterSize, RUNTIME_PROT_ALL, s_registerMemory);
 	if (err)
 	{
-		printf("memory: failed to map s_RegisterMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
+		printf("memory: failed to map s_registerMemory: %u (%s)\n", err, nativeRuntimeErrorString(err));
 		return -1;
 	}
-	if (mapAliasIfNeeded(runtime, CPU_REGISTER_BASE_ADDR, CPU_REGISTER_SIZE, s_RegisterMemPtr, "s_RegisterMemPtr"))
+	if (mapAliasIfNeeded(runtime, kCpuRegisterBaseAddress, kCpuRegisterSize, s_registerMemory, "s_registerMemory"))
 	{
 		return -1;
 	}
@@ -269,36 +277,36 @@ int appMemoryMapTaskRuntime(NativeRuntime* runtime)
 {
     RuntimeError err;
 
-    err = nativeRuntimeMapMemory(runtime, s_Heap_Begin_Address, VM_HEAP_SIZE, RUNTIME_PROT_ALL, s_HeapMemPtr);
+    err = nativeRuntimeMapMemory(runtime, s_heapBeginAddress, kVmHeapSize, RUNTIME_PROT_ALL, s_heapMemory);
     if (err)
     {
-        printf("memory: failed to map s_HeapMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("memory: failed to map s_heapMemory: %u (%s)\n", err, nativeRuntimeErrorString(err));
         return -1;
     }
-    if (mapAliasIfNeeded(runtime, s_Heap_Begin_Address, VM_HEAP_SIZE, s_HeapMemPtr, "s_HeapMemPtr"))
+    if (mapAliasIfNeeded(runtime, s_heapBeginAddress, kVmHeapSize, s_heapMemory, "s_heapMemory"))
     {
         return -1;
     }
 
-    err = nativeRuntimeMapMemory(runtime, VM_STACK_UPPER_ADDRESS - VM_STACK_SIZE, VM_STACK_SIZE, RUNTIME_PROT_ALL, s_StackMemPtr);
+    err = nativeRuntimeMapMemory(runtime, kVmStackUpperAddress - kVmStackSize, kVmStackSize, RUNTIME_PROT_ALL, s_stackMemory);
     if (err)
     {
-        printf("memory: failed to map s_StackMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("memory: failed to map s_stackMemory: %u (%s)\n", err, nativeRuntimeErrorString(err));
         return -1;
     }
-    if (mapAliasIfNeeded(runtime, VM_STACK_UPPER_ADDRESS - VM_STACK_SIZE, VM_STACK_SIZE, s_StackMemPtr, "s_StackMemPtr"))
+    if (mapAliasIfNeeded(runtime, kVmStackUpperAddress - kVmStackSize, kVmStackSize, s_stackMemory, "s_stackMemory"))
     {
         return -1;
     }
 
     // Reuse the shared emulated CPU register page for guest subtasks.
-    err = nativeRuntimeMapMemory(runtime, CPU_REGISTER_BASE_ADDR, CPU_REGISTER_SIZE, RUNTIME_PROT_ALL, s_RegisterMemPtr);
+    err = nativeRuntimeMapMemory(runtime, kCpuRegisterBaseAddress, kCpuRegisterSize, RUNTIME_PROT_ALL, s_registerMemory);
     if (err)
     {
-        printf("memory: failed to map s_RegisterMemPtr: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("memory: failed to map s_registerMemory: %u (%s)\n", err, nativeRuntimeErrorString(err));
         return -1;
     }
-    if (mapAliasIfNeeded(runtime, CPU_REGISTER_BASE_ADDR, CPU_REGISTER_SIZE, s_RegisterMemPtr, "s_RegisterMemPtr"))
+    if (mapAliasIfNeeded(runtime, kCpuRegisterBaseAddress, kCpuRegisterSize, s_registerMemory, "s_registerMemory"))
     {
         return -1;
     }
@@ -307,7 +315,7 @@ int appMemoryMapTaskRuntime(NativeRuntime* runtime)
 }
 
 void* allocateTrackedVmHeapBlock(uint32_t len) {
-    std::lock_guard<std::recursive_mutex> lock(g_vmHeapMutex);
+    std::lock_guard<std::recursive_mutex> lock(s_vmHeapMutex);
     void* p = NULL;
     if (len == 0)
     {
@@ -315,7 +323,7 @@ void* allocateTrackedVmHeapBlock(uint32_t len) {
     }
     if (len > UINT32_MAX - 15)
     {
-        printf("allocateTrackedVmHeapBlock invalid memory request: len %08x\n", len);
+        printf("memory: invalid tracked heap allocation length=0x%08x\n", len);
         return NULL;
     }
 
@@ -332,44 +340,44 @@ void* allocateTrackedVmHeapBlock(uint32_t len) {
 static bool allocationRangeIsAllocatedLocked(uint64_t blockOffset, uint64_t blockLength)
 {
     uint64_t blockEnd = blockOffset + blockLength;
-    size_t nextOffset = LG_mem_free.next;
-    size_t remainingNodes = LG_mem_len / 8u + 1u;
-    while (nextOffset < LG_mem_len && remainingNodes-- != 0)
+    size_t nextOffset = s_legacyHeapFreeList.next;
+    size_t remainingNodes = s_legacyHeapLength / 8u + 1u;
+    while (nextOffset < s_legacyHeapLength && remainingNodes-- != 0)
     {
         if ((nextOffset & 7u) != 0 ||
-            nextOffset > LG_mem_len - sizeof(LG_mem_free_t))
+            nextOffset > s_legacyHeapLength - sizeof(LegacyHeapFreeBlock))
         {
             return false;
         }
 
-        const LG_mem_free_t* freeBlock =
-            (const LG_mem_free_t*)((const uint8_t*)LG_mem_base + nextOffset);
+        const LegacyHeapFreeBlock* freeBlock =
+            (const LegacyHeapFreeBlock*)((const uint8_t*)s_legacyHeapBase + nextOffset);
         uint64_t freeLength = freeBlock->len;
         uint64_t freeEnd = (uint64_t)nextOffset + freeLength;
-        if (freeLength == 0 || freeEnd > LG_mem_len ||
+        if (freeLength == 0 || freeEnd > s_legacyHeapLength ||
             (blockOffset < freeEnd && nextOffset < blockEnd))
         {
             return false;
         }
-        if (freeBlock->next <= nextOffset || freeBlock->next > LG_mem_len)
+        if (freeBlock->next <= nextOffset || freeBlock->next > s_legacyHeapLength)
         {
             return false;
         }
         nextOffset = freeBlock->next;
     }
-    return nextOffset == LG_mem_len;
+    return nextOffset == s_legacyHeapLength;
 }
 
 static bool trackedAllocationLengthLocked(void* p, uint32_t* outLength)
 {
-    if (!p || !outLength || !LG_mem_base || !LG_mem_end)
+    if (!p || !outLength || !s_legacyHeapBase || !s_legacyHeapEnd)
     {
         return false;
     }
 
     uintptr_t userAddress = (uintptr_t)p;
-    uintptr_t heapBegin = (uintptr_t)LG_mem_base;
-    uintptr_t heapEnd = (uintptr_t)LG_mem_end;
+    uintptr_t heapBegin = (uintptr_t)s_legacyHeapBase;
+    uintptr_t heapEnd = (uintptr_t)s_legacyHeapEnd;
     if (userAddress < heapBegin + 8u || userAddress >= heapEnd)
     {
         return false;
@@ -381,9 +389,9 @@ static bool trackedAllocationLengthLocked(void* p, uint32_t* outLength)
         return false;
     }
     uint64_t blockOffset = (uint64_t)(userAddress - heapBegin) - 8u;
-    uint64_t blockLength = realLGmemSize((uint64_t)length + 8u);
-    if ((blockOffset & 7u) != 0 || blockOffset > LG_mem_len ||
-        blockLength > LG_mem_len - blockOffset ||
+    uint64_t blockLength = alignedLegacyHeapSize((uint64_t)length + 8u);
+    if ((blockOffset & 7u) != 0 || blockOffset > s_legacyHeapLength ||
+        blockLength > s_legacyHeapLength - blockOffset ||
         !allocationRangeIsAllocatedLocked(blockOffset, blockLength))
     {
         return false;
@@ -400,7 +408,7 @@ void freeTrackedVmHeapBlock(void* p)
         return;
     }
 
-    std::lock_guard<std::recursive_mutex> lock(g_vmHeapMutex);
+    std::lock_guard<std::recursive_mutex> lock(s_vmHeapMutex);
     uint32_t length = 0;
     if (trackedAllocationLengthLocked(p, &length))
     {
@@ -418,7 +426,7 @@ void* reallocateTrackedVmHeapBlock(void* p, uint32_t newLen) {
     }
     else
     {
-        std::lock_guard<std::recursive_mutex> lock(g_vmHeapMutex);
+        std::lock_guard<std::recursive_mutex> lock(s_vmHeapMutex);
         uint32_t oldlen = 0;
         if (!trackedAllocationLengthLocked(p, &oldlen))
         {
@@ -443,7 +451,7 @@ uint32_t vm_malloc(uint32_t len)
     {
         return 0;
     }
-    uint32_t ret =  (uint32_t)(((size_t)p - (size_t)s_HeapMemPtr) + s_Heap_Begin_Address);
+    uint32_t ret =  (uint32_t)(((size_t)p - (size_t)s_heapMemory) + s_heapBeginAddress);
     static int traceAllocEnabled = -1;
     if (traceAllocEnabled < 0)
     {
@@ -489,7 +497,7 @@ uint32_t vm_realloc(uint32_t addr, uint32_t len)
     {
         return 0;
     }
-    uint32_t ret = (uint32_t)(((size_t)retPtr - (size_t)s_HeapMemPtr) + s_Heap_Begin_Address);
+    uint32_t ret = (uint32_t)(((size_t)retPtr - (size_t)s_heapMemory) + s_heapBeginAddress);
     static int traceAllocEnabled = -1;
     if (traceAllocEnabled < 0)
     {
@@ -510,21 +518,21 @@ bool vmHeapCaptureSnapshot(VmHeapSnapshot* out)
         return false;
     }
 
-    std::lock_guard<std::recursive_mutex> lock(g_vmHeapMutex);
+    std::lock_guard<std::recursive_mutex> lock(s_vmHeapMutex);
     memset(out, 0, sizeof(*out));
-    if (!LG_mem_base || !LG_mem_end || LG_mem_len == 0)
+    if (!s_legacyHeapBase || !s_legacyHeapEnd || s_legacyHeapLength == 0)
     {
         return false;
     }
 
     out->valid = true;
-    out->beginAddress = s_Heap_Begin_Address;
-    out->size = LG_mem_len;
-    out->freeNext = (uint32_t)LG_mem_free.next;
-    out->freeLen = (uint32_t)LG_mem_free.len;
-    out->left = LG_mem_left;
-    out->min = LG_mem_min;
-    out->top = LG_mem_top;
+    out->beginAddress = s_heapBeginAddress;
+    out->size = s_legacyHeapLength;
+    out->freeNext = (uint32_t)s_legacyHeapFreeList.next;
+    out->freeLen = (uint32_t)s_legacyHeapFreeList.len;
+    out->left = s_legacyHeapFreeBytes;
+    out->min = s_legacyHeapMinimumFree;
+    out->top = s_legacyHeapHighWaterOffset;
     return true;
 }
 
@@ -535,31 +543,31 @@ bool vmHeapRestoreSnapshot(const VmHeapSnapshot& snapshot)
         return false;
     }
 
-    std::lock_guard<std::recursive_mutex> lock(g_vmHeapMutex);
-    if (!LG_mem_base || !LG_mem_end || LG_mem_len == 0 ||
-        snapshot.beginAddress != s_Heap_Begin_Address ||
-        snapshot.size != LG_mem_len ||
-        snapshot.freeNext > LG_mem_len ||
-        snapshot.freeLen > LG_mem_len ||
-        snapshot.left > LG_mem_len ||
-        snapshot.min > LG_mem_len ||
-        snapshot.top > LG_mem_len)
+    std::lock_guard<std::recursive_mutex> lock(s_vmHeapMutex);
+    if (!s_legacyHeapBase || !s_legacyHeapEnd || s_legacyHeapLength == 0 ||
+        snapshot.beginAddress != s_heapBeginAddress ||
+        snapshot.size != s_legacyHeapLength ||
+        snapshot.freeNext > s_legacyHeapLength ||
+        snapshot.freeLen > s_legacyHeapLength ||
+        snapshot.left > s_legacyHeapLength ||
+        snapshot.min > s_legacyHeapLength ||
+        snapshot.top > s_legacyHeapLength)
     {
         return false;
     }
 
-    LG_mem_free.next = snapshot.freeNext;
-    LG_mem_free.len = snapshot.freeLen;
-    LG_mem_left = snapshot.left;
-    LG_mem_min = snapshot.min;
-    LG_mem_top = snapshot.top;
+    s_legacyHeapFreeList.next = snapshot.freeNext;
+    s_legacyHeapFreeList.len = snapshot.freeLen;
+    s_legacyHeapFreeBytes = snapshot.left;
+    s_legacyHeapMinimumFree = snapshot.min;
+    s_legacyHeapHighWaterOffset = snapshot.top;
     return true;
 }
 
 // Framebuffer memory is owned by framebuffer.cpp and can also be translated
 // through the generic VM pointer helpers below.
-extern uint32_t VM_LCD_FB_ADDRESS;
-extern uint8_t s_LcdFrameBufferPtr[VM_LCD_FB_SIZE];
+extern uint32_t kLcdFramebufferAddress;
+extern uint8_t s_framebufferPixels[VM_LCD_FB_SIZE];
 
 static bool guestRangeFits(uint32_t addr, uint32_t size, uint32_t base, uint32_t regionSize)
 {
@@ -572,51 +580,51 @@ static bool guestRangeFits(uint32_t addr, uint32_t size, uint32_t base, uint32_t
 
 void* toHostPtrRange(uint32_t addr, uint32_t size)
 {
-    uint32_t heapAlias = s_Heap_Begin_Address & 0x1fffffff;
-    uint32_t stackBegin = VM_STACK_UPPER_ADDRESS - VM_STACK_SIZE;
+    uint32_t heapAlias = s_heapBeginAddress & 0x1fffffff;
+    uint32_t stackBegin = kVmStackUpperAddress - kVmStackSize;
     uint32_t stackAlias = stackBegin & 0x1fffffff;
-    uint32_t appAlias = VM_APP_BEGIN_ADDRESS & 0x1fffffff;
+    uint32_t appAlias = kVmAppBeginAddress & 0x1fffffff;
 
     // VM heap and its cached alias.
-    if (guestRangeFits(addr, size, s_Heap_Begin_Address, VM_HEAP_SIZE))
+    if (guestRangeFits(addr, size, s_heapBeginAddress, kVmHeapSize))
     {
-        void* p = (void*)((size_t)addr - (size_t)s_Heap_Begin_Address + (size_t)s_HeapMemPtr);
+        void* p = (void*)((size_t)addr - (size_t)s_heapBeginAddress + (size_t)s_heapMemory);
         return p;
     }
-    if (heapAlias != s_Heap_Begin_Address && guestRangeFits(addr, size, heapAlias, VM_HEAP_SIZE))
+    if (heapAlias != s_heapBeginAddress && guestRangeFits(addr, size, heapAlias, kVmHeapSize))
     {
-        void* p = (void*)((size_t)addr - (size_t)heapAlias + (size_t)s_HeapMemPtr);
+        void* p = (void*)((size_t)addr - (size_t)heapAlias + (size_t)s_heapMemory);
         return p;
     }
 
     // VM stack and its cached alias.
-    if (guestRangeFits(addr, size, stackBegin, VM_STACK_SIZE))
+    if (guestRangeFits(addr, size, stackBegin, kVmStackSize))
     {
-        void* p = (void*)((size_t)addr - (size_t)stackBegin + (size_t)s_StackMemPtr);
+        void* p = (void*)((size_t)addr - (size_t)stackBegin + (size_t)s_stackMemory);
         return p;
     }
-    if (stackAlias != stackBegin && guestRangeFits(addr, size, stackAlias, VM_STACK_SIZE))
+    if (stackAlias != stackBegin && guestRangeFits(addr, size, stackAlias, kVmStackSize))
     {
-        void* p = (void*)((size_t)addr - (size_t)stackAlias + (size_t)s_StackMemPtr);
+        void* p = (void*)((size_t)addr - (size_t)stackAlias + (size_t)s_stackMemory);
         return p;
     }
 
     // Loaded app image and its cached alias.
-    if (guestRangeFits(addr, size, VM_APP_BEGIN_ADDRESS, s_App_Prog_Size))
+    if (guestRangeFits(addr, size, kVmAppBeginAddress, s_appProgramSize))
     {
-        void* p = (void*)((size_t)addr - (size_t)VM_APP_BEGIN_ADDRESS + (size_t)s_App_Prog_Ptr);
+        void* p = (void*)((size_t)addr - (size_t)kVmAppBeginAddress + (size_t)s_appProgramData);
         return p;
     }
-    if (appAlias != VM_APP_BEGIN_ADDRESS && guestRangeFits(addr, size, appAlias, s_App_Prog_Size))
+    if (appAlias != kVmAppBeginAddress && guestRangeFits(addr, size, appAlias, s_appProgramSize))
     {
-        void* p = (void*)((size_t)addr - (size_t)appAlias + (size_t)s_App_Prog_Ptr);
+        void* p = (void*)((size_t)addr - (size_t)appAlias + (size_t)s_appProgramData);
         return p;
     }
     // LCD framebuffer region.
     void* framebufferPtr = NULL;
     if (framebufferHostPointer(addr, &framebufferPtr))
     {
-        size_t framebufferOffset = (size_t)framebufferPtr - (size_t)s_LcdFrameBufferPtr;
+        size_t framebufferOffset = (size_t)framebufferPtr - (size_t)s_framebufferPixels;
         uint64_t framebufferEnd = (uint64_t)framebufferOffset + (size ? size : 1u);
         if (framebufferOffset < VM_LCD_FB_SIZE && framebufferEnd <= VM_LCD_FB_SIZE)
         {
@@ -656,10 +664,10 @@ uint32_t toHostPtrRemaining(uint32_t addr, void** out)
         return 0;
     }
 
-    uint32_t remaining = hostRegionRemaining(*out, s_HeapMemPtr, VM_HEAP_SIZE);
-    if (!remaining) remaining = hostRegionRemaining(*out, s_StackMemPtr, VM_STACK_SIZE);
-    if (!remaining) remaining = hostRegionRemaining(*out, s_App_Prog_Ptr, s_App_Prog_Size);
-    if (!remaining) remaining = hostRegionRemaining(*out, s_LcdFrameBufferPtr, VM_LCD_FB_SIZE);
+    uint32_t remaining = hostRegionRemaining(*out, s_heapMemory, kVmHeapSize);
+    if (!remaining) remaining = hostRegionRemaining(*out, s_stackMemory, kVmStackSize);
+    if (!remaining) remaining = hostRegionRemaining(*out, s_appProgramData, s_appProgramSize);
+    if (!remaining) remaining = hostRegionRemaining(*out, s_framebufferPixels, VM_LCD_FB_SIZE);
     if (!remaining)
     {
         *out = NULL;
@@ -681,21 +689,21 @@ const char* toHostString(uint32_t addr)
 uint32_t toVmPtr(void* ptr)
 {
     // VM heap.
-    if ((size_t)ptr >= (size_t)s_HeapMemPtr && (size_t)ptr < (size_t)s_HeapMemPtr + VM_HEAP_SIZE)
+    if ((size_t)ptr >= (size_t)s_heapMemory && (size_t)ptr < (size_t)s_heapMemory + kVmHeapSize)
     {
-        return (uint32_t)(((size_t)ptr - (size_t)s_HeapMemPtr) + s_Heap_Begin_Address);
+        return (uint32_t)(((size_t)ptr - (size_t)s_heapMemory) + s_heapBeginAddress);
     }
 
     // VM stack.
-    if ((size_t)ptr >= (size_t)s_StackMemPtr && (size_t)ptr < (size_t)s_StackMemPtr + VM_STACK_SIZE)
+    if ((size_t)ptr >= (size_t)s_stackMemory && (size_t)ptr < (size_t)s_stackMemory + kVmStackSize)
     {
-        return (uint32_t)(((size_t)ptr - (size_t)s_StackMemPtr) + (VM_STACK_UPPER_ADDRESS - VM_STACK_SIZE));
+        return (uint32_t)(((size_t)ptr - (size_t)s_stackMemory) + (kVmStackUpperAddress - kVmStackSize));
     }
 
     // Loaded app image.
-    if ((size_t)ptr >= (size_t)s_App_Prog_Ptr && (size_t)ptr < (size_t)s_App_Prog_Ptr + s_App_Prog_Size)
+    if ((size_t)ptr >= (size_t)s_appProgramData && (size_t)ptr < (size_t)s_appProgramData + s_appProgramSize)
     {
-        return (uint32_t)(((size_t)ptr - (size_t)s_App_Prog_Ptr) + VM_APP_BEGIN_ADDRESS);
+        return (uint32_t)(((size_t)ptr - (size_t)s_appProgramData) + kVmAppBeginAddress);
     }
     // LCD framebuffer region.
     uint32_t framebufferPtr = 0;
@@ -703,6 +711,6 @@ uint32_t toVmPtr(void* ptr)
     {
         return framebufferPtr;
     }
-    printf("ERR: toVmPtr 0x%x\n", ptr);
+    printf("memory: failed to translate host pointer pointer=%p\n", ptr);
     return 0;
 }

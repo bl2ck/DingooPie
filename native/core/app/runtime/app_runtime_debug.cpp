@@ -1,6 +1,7 @@
-#include "app_runtime_debug.h"
+#include "app/runtime/app_runtime_debug.h"
+#include "debug_console.h"
 #include <time.h>
-#include "app_memory.h"
+#include "app/memory/app_memory.h"
 #include <capstone/capstone.h>
 #include <vector>
 
@@ -24,6 +25,26 @@ const char* appRuntimeMemoryAccessName(RuntimeMemoryAccess type)
     }
     // clang-format on
     return "<error type>";
+}
+
+void appRuntimeDebugReportInvalidMemory(NativeRuntime* runtime,
+    RuntimeMemoryAccess type, uint64_t address, int size, int64_t value)
+{
+    FILE* logFile = debugLogFile();
+    fprintf(logFile,
+        "app-runtime: invalid memory access type=%s address=0x%" PRIx64
+        " size=0x%x value=0x%" PRIx64 "\n",
+        appRuntimeMemoryAccessName(type), address, size, value);
+    appRuntimeDebugDumpRegistersToFile(runtime, logFile);
+
+    if (logFile != stdout)
+    {
+        printf("app-runtime: invalid memory access type=%s address=0x%" PRIx64
+            " size=0x%x value=0x%" PRIx64
+            "; details written to debug log\n",
+            appRuntimeMemoryAccessName(type), address, size, value);
+    }
+    appRuntimeDebugDumpReturnDisassembly(runtime);
 }
 
 void appRuntimeDebugDumpStack(NativeRuntime* runtime, uint32_t stackStartAddress)
@@ -126,7 +147,7 @@ void appRuntimeDebugDumpRegistersToFile(NativeRuntime* runtime, FILE* file)
     fprintf(file, "==============================================================\n");
 }
 
-static bool runtimeDebugOpenDisassembler(csh* handle)
+static bool appRuntimeDebugOpenDisassembler(csh* handle)
 {
     if (!handle || cs_open(CS_ARCH_MIPS, CS_MODE_MIPS32, handle) != CS_ERR_OK)
     {
@@ -136,7 +157,7 @@ static bool runtimeDebugOpenDisassembler(csh* handle)
     return true;
 }
 
-static void runtimeDebugDumpOneInstruction(csh handle, NativeRuntime* runtime, uint32_t address)
+static void appRuntimeDebugDumpOneInstruction(csh handle, NativeRuntime* runtime, uint32_t address)
 {
     cs_insn* insn = NULL;
     uint32_t binary = 0;
@@ -175,7 +196,7 @@ void appRuntimeDebugDumpReturnDisassembly(NativeRuntime* runtime)
     }
 
     csh handle = 0;
-    if (!runtimeDebugOpenDisassembler(&handle))
+    if (!appRuntimeDebugOpenDisassembler(&handle))
     {
         printf("==============================================================\n");
         return;
@@ -189,7 +210,7 @@ void appRuntimeDebugDumpReturnDisassembly(NativeRuntime* runtime)
     }
     while (address < end)
     {
-        runtimeDebugDumpOneInstruction(handle, runtime, (uint32_t)address);
+        appRuntimeDebugDumpOneInstruction(handle, runtime, (uint32_t)address);
         address += 4u;
     }
     cs_close(&handle);
@@ -201,7 +222,7 @@ void runtimeDebugDumpDisassemblyRange(NativeRuntime* runtime, uint32_t address, 
 {
     printf("==========================DISASM RANGE 0x%08x=================\n", address);
     csh handle = 0;
-    if (!runtimeDebugOpenDisassembler(&handle))
+    if (!appRuntimeDebugOpenDisassembler(&handle))
     {
         printf("==============================================================\n");
         return;
@@ -215,7 +236,7 @@ void runtimeDebugDumpDisassemblyRange(NativeRuntime* runtime, uint32_t address, 
     }
     while (current < end)
     {
-        runtimeDebugDumpOneInstruction(handle, runtime, (uint32_t)current);
+        appRuntimeDebugDumpOneInstruction(handle, runtime, (uint32_t)current);
         current += 4u;
     }
     cs_close(&handle);

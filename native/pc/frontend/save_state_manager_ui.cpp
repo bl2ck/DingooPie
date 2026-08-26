@@ -311,7 +311,8 @@ static void updateSaveStateManagerThumbnail(void)
     SaveStateSlotInfo info = {};
     if (slot > 0 && !g_saveStateManagerAppPath.empty())
     {
-        info = saveStateSlotInfo(g_saveStateManagerAppPath, slot);
+        info = saveStateSlotInfo(g_saveStateManagerAppPath,
+            saveStateFormatForPath(g_saveStateManagerAppPath), slot);
     }
     if (slot <= 0 || !info.exists)
     {
@@ -320,7 +321,9 @@ static void updateSaveStateManagerThumbnail(void)
         return;
     }
 
-    std::string thumbnailPath = saveStateThumbnailPathForSlot(g_saveStateManagerAppPath, slot);
+    std::string thumbnailPath = saveStateThumbnailPathForSlot(
+        g_saveStateManagerAppPath,
+        saveStateFormatForPath(g_saveStateManagerAppPath), slot);
     if (!saveStateManagerFileExists(thumbnailPath))
     {
         setSaveStateManagerThumbnailText(saveStateManagerChinese() ?
@@ -350,7 +353,8 @@ static SaveStateSlotInfo saveStateManagerSlotInfo(int slot)
     SaveStateSlotInfo info = {};
     if (slot > 0 && slot <= kSaveStateSlotCount && !g_saveStateManagerAppPath.empty())
     {
-        info = saveStateSlotInfo(g_saveStateManagerAppPath, slot);
+        info = saveStateSlotInfo(g_saveStateManagerAppPath,
+            saveStateFormatForPath(g_saveStateManagerAppPath), slot);
     }
     return info;
 }
@@ -577,7 +581,8 @@ static void deleteSelectedSaveStateSlot(void)
 
 static std::wstring saveStateManagerFolder(void)
 {
-    std::string path = saveStatePathForSlot(g_saveStateManagerAppPath, 1);
+    std::string path = saveStatePathForSlot(g_saveStateManagerAppPath,
+        saveStateFormatForPath(g_saveStateManagerAppPath), 1);
     std::wstring folder = platformUtf8ToWide(path);
     size_t slash = folder.find_last_of(L"\\/");
     if (slash != std::wstring::npos)

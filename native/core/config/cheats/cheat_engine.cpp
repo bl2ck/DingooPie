@@ -1,4 +1,4 @@
-#include "cheat_engine.h"
+#include "config/cheats/cheat_engine.h"
 
 #include <ctype.h>
 #include <errno.h>

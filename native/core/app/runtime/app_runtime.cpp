@@ -1,28 +1,29 @@
-#include "app_runtime.h"
+#include "app/runtime/app_runtime.h"
 
-#include "app/runtime/app_loader.h"
+#include "shared/services/guest_package.h"
 #include "app/runtime/app_cheat_adapter.h"
 #include "app/runtime/app_runtime_context.h"
 #include "shared/game/game_paths.h"
-#include "cheat_runtime.h"
+#include "config/cheats/cheat_runtime.h"
 #include "app/runtime/app_crash_report.h"
 #include "debug_console.h"
 #include "emulator_settings.h"
-#include "app_hle.h"
-#include "framebuffer.h"
+#include "app/hle/app_hle.h"
+#include "frontend/video/framebuffer.h"
 #include "app/memory/app_framebuffer_mapping.h"
-#include "app_text_format.h"
-#include "compat_profile.h"
-#include "pause_gate.h"
+#include "app/hle/app_text_format.h"
+#include "config/compatibility/compat_profile.h"
+#include "shared/execution/pause_gate.h"
 #include "platform_win32.h"
-#include "mips_compat.h"
-#include "app_memory.h"
-#include "ppsspp_backend.h"
-#include "app_runtime_debug.h"
+#include "app/cpu/mips_compat.h"
+#include "app/memory/app_memory.h"
+#include "app/cpu/ppsspp_backend.h"
+#include "app/runtime/app_runtime_debug.h"
 #include "runtime_resource_monitor.h"
 #include "sdl_frontend.h"
-#include "app_task_scheduler.h"
-#include "guest_filesystem.h"
+#include "app/hle/app_task_scheduler.h"
+#include "shared/services/guest_filesystem.h"
+#include "shared/execution/thread_join.h"
 #include "Common/Crypto/sha256.h"
 
 #include <algorithm>
@@ -38,9 +39,8 @@
 #include <list>
 #include <string>
 #include <string.h>
-#include <thread>
 #include <capstone/capstone.h>
-#include "mips_runtime.h"
+#include "app/cpu/mips_runtime.h"
 
 static std::string g_appLoadPath;
 static std::string g_appMainPath;
@@ -51,24 +51,59 @@ static bool g_clearRecentOnStartupFailure = false;
 static pthread_mutex_t g_runtimeThreadMutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t g_runtimeThread;
 static bool g_runtimeThreadStarted = false;
+static RuntimeThreadCompletion g_runtimeThreadCompletion =
+    RUNTIME_THREAD_COMPLETION_INITIALIZER;
 static NativeRuntime* g_mainRuntime = NULL;
 static std::atomic<bool> g_runtimeStopRequested(false);
+static std::atomic<bool> g_appMainHookFailed(false);
 static std::atomic<bool> g_lastRunExitedNormally(false);
 static std::atomic<bool> g_appRuntimeSuppressRecentGameSave(false);
 static std::string g_lastRunAppPath;
+static const uint32_t kRuntimeStopTimeoutMs = 5000;
+static const uint32_t kSaveStatePauseTimeoutMs = 2000;
 
-uint32_t s_AppDataAddr = 0;
-uint32_t s_AppDataBuffSize = 0;
-void* s_AppDataBuff = 0;
-app* s_app = NULL;
+static bool waitForSaveStatePause(void)
+{
+    const std::chrono::steady_clock::time_point deadline =
+        std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(kSaveStatePauseTimeoutMs);
+    do
+    {
+        const uint32_t requiredWaiters =
+            1u + (uint32_t)taskSchedulerRuntimeCount();
+        if (pauseGateWaitForPausedWaiters(10, requiredWaiters))
+        {
+            return true;
+        }
+    }
+    while (std::chrono::steady_clock::now() < deadline);
+
+    printf("save-state: pause timeout waiters=%u runtimes=%u\n",
+        pauseGateWaiterCount(),
+        1u + (unsigned int)taskSchedulerRuntimeCount());
+    return false;
+}
+
+static void setSaveStateRuntimeError(std::string* error, const char* message)
+{
+    if (error)
+    {
+        *error = message ? message : "";
+    }
+}
+
+uint32_t s_appDataAddress = 0;
+uint32_t s_appDataSize = 0;
+void* s_appDataBuffer = 0;
+GuestPackage* s_guestPackage = NULL;
 
 AppRuntimeProgramImage appRuntimeProgramImage(void)
 {
     AppRuntimeProgramImage image = {};
-    image.address = s_AppDataAddr;
-    image.size = s_AppDataBuffSize;
-    image.data = s_AppDataBuff;
-    image.package = s_app;
+    image.address = s_appDataAddress;
+    image.size = s_appDataSize;
+    image.data = s_appDataBuffer;
+    image.package = s_guestPackage;
     return image;
 }
 
@@ -371,16 +406,16 @@ static void destroyMainRuntime(NativeRuntime* runtime)
     nativeRuntimeDestroy(runtime);
 }
 
-static void destroyMainApp(void)
+static void destroyMainPackage(void)
 {
     pthread_mutex_lock(&g_runtimeThreadMutex);
-    app* loadedApp = s_app;
-    s_app = NULL;
-    s_AppDataAddr = 0;
-    s_AppDataBuffSize = 0;
-    s_AppDataBuff = NULL;
+    GuestPackage* loadedApp = s_guestPackage;
+    s_guestPackage = NULL;
+    s_appDataAddress = 0;
+    s_appDataSize = 0;
+    s_appDataBuffer = NULL;
     pthread_mutex_unlock(&g_runtimeThreadMutex);
-    app_delete(loadedApp);
+    guestPackageDestroy(loadedApp);
 }
 
 static std::string sha256Hex(const uint8_t* data, uint32_t size)
@@ -402,7 +437,7 @@ static std::string sha256Hex(const uint8_t* data, uint32_t size)
     return out;
 }
 
-static app* loadApp(const char* appPath)
+static GuestPackage* loadApp(const char* appPath)
 {
     std::string path = gamePathNormalize(appPath);
 
@@ -415,14 +450,14 @@ static app* loadApp(const char* appPath)
 
     if (!file)
     {
-        printf("DingooPie: failed to open app: %s\n", path.c_str());
+        printf("app-runtime: failed to open app: %s\n", path.c_str());
         return NULL;
     }
 
     if (fseek(file, 0, SEEK_END) != 0)
     {
         fclose(file);
-        printf("DingooPie: failed to size app: %s\n", path.c_str());
+        printf("app-runtime: failed to size app: %s\n", path.c_str());
         return NULL;
     }
 
@@ -430,16 +465,16 @@ static app* loadApp(const char* appPath)
     if (fileSize <= 0 || (uint64_t)fileSize > UINT32_MAX || fseek(file, 0, SEEK_SET) != 0)
     {
         fclose(file);
-        printf("DingooPie: invalid app size: %s\n", path.c_str());
+        printf("app-runtime: invalid app size: %s\n", path.c_str());
         return NULL;
     }
 
-    app* loadedApp = app_create(file, (uint32_t)fileSize);
+    GuestPackage* loadedApp = guestPackageCreate(file, (uint32_t)fileSize);
     fclose(file);
 
     if (!loadedApp)
     {
-        printf("DingooPie: failed to parse app: %s\n", path.c_str());
+        printf("app-runtime: failed to parse app: %s\n", path.c_str());
         return NULL;
     }
 
@@ -465,18 +500,18 @@ static void clearRecentAppIfStillCurrent(const char* reason)
     EmulatorSettings settings = emulatorLoadSettings();
     if (settings.lastAppPath.empty() || !appPathsMatch(settings.lastAppPath, g_appLoadPath))
     {
-        printf("DingooPie: recent app was already changed; not clearing after %s\n", reason);
+        printf("app-runtime: recent app was already changed; not clearing after %s\n", reason);
         return;
     }
 
     emulatorRemoveRecentApp(&settings, g_appLoadPath);
     if (emulatorSaveSettings(settings))
     {
-        printf("DingooPie: cleared recent app after %s: %s\n", reason, g_appLoadPath.c_str());
+        printf("app-runtime: cleared recent app after %s: %s\n", reason, g_appLoadPath.c_str());
     }
     else
     {
-        printf("DingooPie: failed to clear recent app after %s: %s\n", reason, g_appLoadPath.c_str());
+        printf("app-runtime: failed to clear recent app after %s: %s\n", reason, g_appLoadPath.c_str());
     }
 }
 
@@ -510,14 +545,14 @@ static bool addressInRange32(uint32_t address, uint32_t rangeStart, uint32_t ran
 
 static bool addressInMappedAppCode(uint32_t address)
 {
-    if (s_AppDataBuffSize == 0)
+    if (s_appDataSize == 0)
     {
         return false;
     }
 
-    uint32_t aliasStart = s_AppDataAddr & 0x1fffffffu;
-    return addressInRange32(address, s_AppDataAddr, s_AppDataBuffSize) ||
-        addressInRange32(address, aliasStart, s_AppDataBuffSize);
+    uint32_t aliasStart = s_appDataAddress & 0x1fffffffu;
+    return addressInRange32(address, s_appDataAddress, s_appDataSize) ||
+        addressInRange32(address, aliasStart, s_appDataSize);
 }
 
 struct RestoredIrJitMarkerReplacement
@@ -636,48 +671,18 @@ static void saveRecentAppPath(const std::string& appPath, const char* reason)
     EmulatorSettings settings = emulatorLoadSettings();
     if (!emulatorRememberRecentApp(&settings, appPath))
     {
-        printf("DingooPie: recent app already current after %s: %s\n", reason, appPath.c_str());
+        printf("app-runtime: recent app already current after %s: %s\n", reason, appPath.c_str());
         return;
     }
 
     if (emulatorSaveSettings(settings))
     {
-        printf("DingooPie: saved recent app after %s: %s\n", reason, appPath.c_str());
+        printf("app-runtime: saved recent app after %s: %s\n", reason, appPath.c_str());
     }
     else
     {
-        printf("DingooPie: failed to save recent app after %s: %s\n", reason, appPath.c_str());
+        printf("app-runtime: failed to save recent app after %s: %s\n", reason, appPath.c_str());
     }
-}
-
-static bool joinRuntimeThreadWithTimeout(pthread_t tid, uint32_t timeoutMs)
-{
-#ifdef _WIN32
-    // The PPSSPP JIT can occasionally stop polling after a guest-side quit path
-    // fails. Keep frontend shutdown bounded instead of blocking the UI forever.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
-    void* result = NULL;
-    for (;;)
-    {
-        int ret = _pthread_tryjoin(tid, &result);
-        if (ret == 0)
-        {
-            return true;
-        }
-        if (std::chrono::steady_clock::now() >= deadline)
-        {
-            printf("DingooPie: runtime thread join timed out after %u ms ret=%d\n",
-                timeoutMs, ret);
-            pthread_detach(tid);
-            return false;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-#else
-    (void)timeoutMs;
-    pthread_join(tid, NULL);
-    return true;
-#endif
 }
 
 static void hookDingooPieDebug(NativeRuntime* runtime, uint64_t address, uint32_t size, void* userData)
@@ -691,16 +696,7 @@ static void hookDingooPieDebug(NativeRuntime* runtime, uint64_t address, uint32_
 static bool hookMemInvalid(NativeRuntime* runtime, RuntimeMemoryAccess type, uint64_t address, int size, int64_t value, void* userData)
 {
     (void)userData;
-    FILE* debugLog = debugLogFile();
-
-    fprintf(debugLog, ">>> mem_invalid type:%s addr:0x%" PRIx64 " size:0x%x value:0x%" PRIx64 "\n",
-        appRuntimeMemoryAccessName(type), address, size, value);
-    appRuntimeDebugDumpRegistersToFile(runtime, debugLog);
-    appRuntimeDebugDumpReturnDisassembly(runtime);
-
-    printf(">>> mem_invalid type:%s addr:0x%" PRIx64 " size:0x%x value:0x%" PRIx64 "\n",
-        appRuntimeMemoryAccessName(type), address, size, value);
-    appRuntimeDebugDumpRegisters(runtime);
+    appRuntimeDebugReportInvalidMemory(runtime, type, address, size, value);
     return false;
 }
 
@@ -724,69 +720,83 @@ static void hookAppMain(NativeRuntime* runtime, uint64_t address, uint32_t size,
     uint32_t pathPtr = vm_malloc(pathBytes);
     if (!pathPtr)
     {
-        printf("DingooPie: vm_malloc failed for AppMain path, size=%u\n", pathBytes);
-        exit(1);
+        printf("app-runtime: vm_malloc failed for AppMain path, size=%u\n", pathBytes);
+        g_appMainHookFailed.store(true, std::memory_order_release);
+        nativeRuntimeRequestStop(runtime);
+        return;
     }
 
     err = nativeRuntimeWriteMemory(runtime, pathPtr, appPathW.c_str(), pathBytes);
     if (err)
     {
-        printf("DingooPie: nativeRuntimeWriteMemory(AppMain path) failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
-        exit(1);
+        printf("app-runtime: nativeRuntimeWriteMemory(AppMain path) failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        vm_free(pathPtr);
+        g_appMainHookFailed.store(true, std::memory_order_release);
+        nativeRuntimeRequestStop(runtime);
+        return;
     }
 
     err = nativeRuntimeWriteRegister(runtime, RUNTIME_REG_A0, &pathPtr);
     if (err)
     {
-        printf("DingooPie: nativeRuntimeWriteRegister(A0) failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
-        exit(1);
+        printf("app-runtime: nativeRuntimeWriteRegister(A0) failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        vm_free(pathPtr);
+        g_appMainHookFailed.store(true, std::memory_order_release);
+        nativeRuntimeRequestStop(runtime);
+        return;
     }
 
     uint32_t appMainEntry = (uint32_t)address;
     err = nativeRuntimeWriteRegister(runtime, RUNTIME_REG_T9, &appMainEntry);
     if (err)
     {
-        printf("DingooPie: nativeRuntimeWriteRegister(T9) failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
-        exit(1);
+        printf("app-runtime: nativeRuntimeWriteRegister(T9) failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        vm_free(pathPtr);
+        g_appMainHookFailed.store(true, std::memory_order_release);
+        nativeRuntimeRequestStop(runtime);
+        return;
     }
 
     RuntimeHook* hookHandle = (RuntimeHook*)userData;
     err = nativeRuntimeRemoveHook(runtime, *hookHandle);
     if (err)
     {
-        printf("DingooPie: nativeRuntimeRemoveHook(AppMain) failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
-        exit(1);
+        printf("app-runtime: nativeRuntimeRemoveHook(AppMain) failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        vm_free(pathPtr);
+        g_appMainHookFailed.store(true, std::memory_order_release);
+        nativeRuntimeRequestStop(runtime);
+        return;
     }
 
     free(userData);
 }
 
-static bool mapAppMemory(NativeRuntime* runtime, app* loadedApp)
+static bool mapAppMemory(NativeRuntime* runtime, GuestPackage* loadedApp)
 {
-    s_AppDataAddr = loadedApp->origin;
-    s_AppDataBuffSize = loadedApp->bin_size;
-    s_AppDataBuff = loadedApp->bin_data;
-    s_app = loadedApp;
+    s_appDataAddress = loadedApp->origin;
+    s_appDataSize = loadedApp->bin_size;
+    s_appDataBuffer = loadedApp->bin_data;
+    s_guestPackage = loadedApp;
 
-    RuntimeError err = nativeRuntimeMapMemory(runtime, s_AppDataAddr, s_AppDataBuffSize, RUNTIME_PROT_ALL, s_AppDataBuff);
+    RuntimeError err = nativeRuntimeMapMemory(runtime, s_appDataAddress, s_appDataSize, RUNTIME_PROT_ALL, s_appDataBuffer);
     if (err)
     {
-        printf("DingooPie: failed to map app memory: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("app-runtime: failed to map app memory: %u (%s)\n", err, nativeRuntimeErrorString(err));
         return false;
     }
 
-    uint32_t aliasAddr = s_AppDataAddr & 0x1fffffff;
-    err = nativeRuntimeMapMemory(runtime, aliasAddr, s_AppDataBuffSize, RUNTIME_PROT_ALL, s_AppDataBuff);
+    uint32_t aliasAddr = s_appDataAddress & 0x1fffffff;
+    err = nativeRuntimeMapMemory(runtime, aliasAddr, s_appDataSize, RUNTIME_PROT_ALL, s_appDataBuffer);
     if (err)
     {
-        printf("DingooPie: failed to map app alias: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("app-runtime: failed to map app alias: %u (%s)\n", err, nativeRuntimeErrorString(err));
         return false;
     }
 
     return true;
 }
 
-static void seedResourceMonitorForAppLocked(app* loadedApp, bool preserveExistingSnapshot)
+static void seedResourceMonitorForAppLocked(GuestPackage* loadedApp, bool preserveExistingSnapshot)
 {
     if (!loadedApp || g_currentAppSha256.empty())
     {
@@ -794,7 +804,6 @@ static void seedResourceMonitorForAppLocked(app* loadedApp, bool preserveExistin
         return;
     }
 
-    app_parse_package_resource_indexes(loadedApp);
     // Auto-open can arm capture before app metadata exists; preserve those early
     // load events once the app identity is known.
     bool preserve = preserveExistingSnapshot &&
@@ -805,10 +814,10 @@ static void seedResourceMonitorForAppLocked(app* loadedApp, bool preserveExistin
     {
         runtimeResourceMonitorReset(g_appLoadPath.c_str(), g_currentAppSha256.c_str());
     }
-    runtimeResourceMonitorSetAppResources(loadedApp);
+    runtimeResourceMonitorSetGuestResources(loadedApp);
 }
 
-static void seedResourceMonitorForAppIfCapturing(app* loadedApp)
+static void seedResourceMonitorForAppIfCapturing(GuestPackage* loadedApp)
 {
     if (!runtimeResourceMonitorIsCapturing())
     {
@@ -820,7 +829,7 @@ static void seedResourceMonitorForAppIfCapturing(app* loadedApp)
     pthread_mutex_unlock(&g_runtimeThreadMutex);
 }
 
-static uint32_t findAppMainEntry(app* loadedApp)
+static uint32_t findAppMainEntry(GuestPackage* loadedApp)
 {
     for (uint32_t i = 0; i < loadedApp->export_count; i++)
     {
@@ -833,7 +842,7 @@ static uint32_t findAppMainEntry(app* loadedApp)
     return 0;
 }
 
-static bool installCoreHooks(NativeRuntime* runtime, app* loadedApp, uint32_t appMainEntry, RuntimeHook** appMainHook)
+static bool installCoreHooks(NativeRuntime* runtime, GuestPackage* loadedApp, uint32_t appMainEntry, RuntimeHook** appMainHook)
 {
     RuntimeError err;
     RuntimeHook trace;
@@ -841,7 +850,7 @@ static bool installCoreHooks(NativeRuntime* runtime, app* loadedApp, uint32_t ap
     err = nativeRuntimeAddHook(runtime, &trace, RUNTIME_HOOK_MEM_INVALID, (void*)hookMemInvalid, NULL, 1, 0);
     if (err != RUNTIME_OK)
     {
-        printf("DingooPie: failed to add mem invalid hook: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("app-runtime: failed to add mem invalid hook: %u (%s)\n", err, nativeRuntimeErrorString(err));
         return false;
     }
 
@@ -850,7 +859,7 @@ static bool installCoreHooks(NativeRuntime* runtime, app* loadedApp, uint32_t ap
     err = runtimeCompatInstallHooks(runtime, loadedApp, g_options);
     if (err != RUNTIME_OK)
     {
-        printf("DingooPie: failed to add runtime compat hook: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("app-runtime: failed to add runtime compat hook: %u (%s)\n", err, nativeRuntimeErrorString(err));
         return false;
     }
 
@@ -861,14 +870,14 @@ static bool installCoreHooks(NativeRuntime* runtime, app* loadedApp, uint32_t ap
         g_appMainInitCheckAddress, g_appMainInitCheckAddress, 0);
     if (err != RUNTIME_OK)
     {
-        printf("DingooPie: failed to add AppMain init hook: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("app-runtime: failed to add AppMain init hook: %u (%s)\n", err, nativeRuntimeErrorString(err));
         return false;
     }
 
     *appMainHook = (RuntimeHook*)malloc(sizeof(RuntimeHook));
     if (!*appMainHook)
     {
-        printf("DingooPie: failed to allocate AppMain hook handle\n");
+        printf("app-runtime: failed to allocate AppMain hook handle\n");
         return false;
     }
 
@@ -876,7 +885,7 @@ static bool installCoreHooks(NativeRuntime* runtime, app* loadedApp, uint32_t ap
         appMainEntry, appMainEntry, 0);
     if (err != RUNTIME_OK)
     {
-        printf("DingooPie: failed to add AppMain hook: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("app-runtime: failed to add AppMain hook: %u (%s)\n", err, nativeRuntimeErrorString(err));
         free(*appMainHook);
         *appMainHook = NULL;
         return false;
@@ -887,7 +896,7 @@ static bool installCoreHooks(NativeRuntime* runtime, app* loadedApp, uint32_t ap
 
 static void logEmulationFailure(NativeRuntime* runtime, RuntimeError err, const CrashLogContext& context)
 {
-    printf("DingooPie: native runtime failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
+    printf("app-runtime: native runtime failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
     std::string crashLogFileName;
     if (crashLogWriteGuestFailure(runtime, err, context, &crashLogFileName))
     {
@@ -1026,12 +1035,13 @@ static void runMemorySearcherAutotest(uint32_t probeAddress)
 static NativeRuntime* initDingooPie(void)
 {
     taskSchedulerResetShutdown();
+    g_appMainHookFailed.store(false, std::memory_order_release);
 
     NativeRuntime* runtime;
     RuntimeError err = nativeRuntimeCreate(&runtime);
     if (err)
     {
-        printf("DingooPie: nativeRuntimeCreate failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("app-runtime: nativeRuntimeCreate failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
         return NULL;
     }
     pthread_mutex_lock(&g_runtimeThreadMutex);
@@ -1042,7 +1052,7 @@ static NativeRuntime* initDingooPie(void)
         nativeRuntimeRequestStop(runtime);
     }
 
-    app* loadedApp = loadApp(g_appLoadPath.c_str());
+    GuestPackage* loadedApp = loadApp(g_appLoadPath.c_str());
     if (!loadedApp)
     {
         destroyMainRuntime(runtime);
@@ -1053,34 +1063,39 @@ static NativeRuntime* initDingooPie(void)
     g_currentAppSha256 = appSha256;
     pthread_mutex_unlock(&g_runtimeThreadMutex);
     bridge_set_game_identity(appSha256.c_str());
-    fsys_set_app_identity(appSha256.c_str());
+    fsys_set_game_identity(appSha256.c_str());
     std::string saveDirectory = platformGetAppSaveDirectory(
         g_appLoadPath, appSha256);
     fsys_set_save_directory(saveDirectory.c_str());
-    printf("DingooPie: save directory: %s\n", saveDirectory.c_str());
+    printf("app-runtime: save directory: %s\n", saveDirectory.c_str());
     cheatRuntimeLoadForGame(
         appSha256.c_str(),
         g_appLoadPath.c_str(),
         g_enabledCheatFeatureKeys);
-    printf("DingooPie: app sha256: %s\n", appSha256.c_str());
-    printf("DingooPie: compat profile: %s\n", compatProfileName(appSha256.c_str()));
+    printf("app-runtime: app sha256: %s\n", appSha256.c_str());
+    printf("app-runtime: compat profile: %s\n", compatProfileName(appSha256.c_str()));
     ppssppShimSetFastMemoryOverride(-1);
 
     ExecutionBackend effectiveBackend = g_options.backend;
     if (compatForcedBackend(appSha256.c_str(), &effectiveBackend))
     {
-        printf("DingooPie: compat backend override: requested=%s effective=%s\n",
+        printf("app-runtime: compat backend override: requested=%s effective=%s\n",
             executionBackendName(g_options.backend), executionBackendName(effectiveBackend));
+    }
+    if (effectiveBackend == EXECUTION_BACKEND_PPSSPP_IRJIT && !ppssppIrJitBackendAvailable())
+    {
+        printf("app-runtime: PPSSPP IR JIT unavailable, falling back to compatibility mode\n");
+        effectiveBackend = EXECUTION_BACKEND_COMPATIBILITY;
     }
 
     err = nativeRuntimeSetBackend(runtime, effectiveBackend);
     if (err)
     {
-        printf("DingooPie: nativeRuntimeSetBackend failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("app-runtime: nativeRuntimeSetBackend failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
         destroyMainRuntime(runtime);
         return NULL;
     }
-    printf("DingooPie: execution backend effective: %s\n", executionBackendName(effectiveBackend));
+    printf("app-runtime: execution backend effective: %s\n", executionBackendName(effectiveBackend));
 
     if (!mapAppMemory(runtime, loadedApp))
     {
@@ -1090,34 +1105,34 @@ static NativeRuntime* initDingooPie(void)
     seedResourceMonitorForAppIfCapturing(loadedApp);
     appCheatBind(runtime);
 
-    printf("DingooPie: init bridge begin\n");
+    printf("app-runtime: init bridge begin\n");
     err = bridge_init(runtime, loadedApp);
     if (err)
     {
-        printf("DingooPie: bridge_init failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("app-runtime: bridge_init failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
         destroyMainRuntime(runtime);
         return NULL;
     }
-    printf("DingooPie: init bridge done\n");
+    printf("app-runtime: init bridge done\n");
 
-    printf("DingooPie: init vm memory begin\n");
+    printf("app-runtime: init vm memory begin\n");
     if (appMemoryInitialize(runtime, loadedApp))
     {
-        printf("DingooPie: appMemoryInitialize failed\n");
+        printf("app-runtime: appMemoryInitialize failed\n");
         destroyMainRuntime(runtime);
         return NULL;
     }
-    printf("DingooPie: init vm memory done\n");
+    printf("app-runtime: init vm memory done\n");
     runMemorySearcherAutotest(loadedApp->bin_entry);
 
-    printf("DingooPie: init framebuffer begin\n");
+    printf("app-runtime: init framebuffer begin\n");
     if (appFramebufferInitialize(runtime))
     {
-        printf("DingooPie: InitFb failed\n");
+        printf("app-runtime: framebuffer initialization failed\n");
         destroyMainRuntime(runtime);
         return NULL;
     }
-    printf("DingooPie: init framebuffer done\n");
+    printf("app-runtime: init framebuffer done\n");
 
     uint32_t value = 0;
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_ZERO, &value);
@@ -1125,28 +1140,28 @@ static NativeRuntime* initDingooPie(void)
     uint32_t appMainEntry = findAppMainEntry(loadedApp);
     if (!appMainEntry)
     {
-        printf("DingooPie: AppMain export not found\n");
+        printf("app-runtime: AppMain export not found\n");
         destroyMainRuntime(runtime);
         return NULL;
     }
-    printf("DingooPie: AppMain entry=0x%08x boot entry=0x%08x origin=0x%08x size=0x%08x\n",
+    printf("app-runtime: AppMain entry=0x%08x boot entry=0x%08x origin=0x%08x size=0x%08x\n",
         appMainEntry, loadedApp->bin_entry, loadedApp->origin, loadedApp->bin_size);
 
     RuntimeHook* appMainHook = NULL;
-    printf("DingooPie: install core hooks begin\n");
+    printf("app-runtime: install core hooks begin\n");
     if (!installCoreHooks(runtime, loadedApp, appMainEntry, &appMainHook))
     {
         destroyMainRuntime(runtime);
         return NULL;
     }
-    printf("DingooPie: install core hooks done\n");
+    printf("app-runtime: install core hooks done\n");
     installDebuggerAutotestHooks(loadedApp->bin_entry, 0x00000000u, 0xffffffffu);
     appCheatApplyStartup(runtime);
 
     err = nativeRuntimeWriteRegister(runtime, RUNTIME_REG_RA, &appMainEntry);
     if (err)
     {
-        printf("DingooPie: nativeRuntimeWriteRegister(RA) failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("app-runtime: nativeRuntimeWriteRegister(RA) failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
         destroyMainRuntime(runtime);
         return NULL;
     }
@@ -1155,7 +1170,7 @@ static NativeRuntime* initDingooPie(void)
     err = nativeRuntimeWriteRegister(runtime, RUNTIME_REG_A1, &mallocLcdBuffer);
     if (err)
     {
-        printf("DingooPie: nativeRuntimeWriteRegister(A1) failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("app-runtime: nativeRuntimeWriteRegister(A1) failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
         destroyMainRuntime(runtime);
         return NULL;
     }
@@ -1163,7 +1178,7 @@ static NativeRuntime* initDingooPie(void)
     err = nativeRuntimeWriteRegister(runtime, RUNTIME_REG_T9, &loadedApp->bin_entry);
     if (err)
     {
-        printf("DingooPie: nativeRuntimeWriteRegister(T9 entry) failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
+        printf("app-runtime: nativeRuntimeWriteRegister(T9 entry) failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
         destroyMainRuntime(runtime);
         return NULL;
     }
@@ -1183,16 +1198,23 @@ static NativeRuntime* initDingooPie(void)
     if (getenv("DINGOO_PIE_FORCE_GUEST_CRASH"))
     {
         nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &loadedApp->bin_entry);
-        printf("DingooPie: forcing guest crash for diagnostics\n");
+        printf("app-runtime: forcing guest crash for diagnostics\n");
         g_lastRunExitedNormally.store(false, std::memory_order_release);
         logEmulationFailure(runtime, RUNTIME_ERROR_EXCEPTION, crashContext);
         frontendRequestQuit();
         return runtime;
     }
 
-    printf("DingooPie: native runtime start pc=0x%08x until=0xffffffff\n", loadedApp->bin_entry);
+    printf("app-runtime: native runtime start pc=0x%08x until=0xffffffff\n", loadedApp->bin_entry);
     err = nativeRuntimeStart(runtime, loadedApp->bin_entry, 0xFFFFFFFF, 0, 0);
-    printf("DingooPie: native runtime returned err=%u (%s)\n", err, nativeRuntimeErrorString(err));
+    printf("app-runtime: native runtime returned err=%u (%s)\n", err, nativeRuntimeErrorString(err));
+    if (g_appMainHookFailed.load(std::memory_order_acquire))
+    {
+        printf("app-runtime: AppMain hook initialization failed; exiting emulator\n");
+        g_lastRunExitedNormally.store(false, std::memory_order_release);
+        frontendRequestQuit();
+        return runtime;
+    }
     if (err)
     {
         CompatGuestExitDecision exitDecision = (err == RUNTIME_ERROR_EXCEPTION)
@@ -1200,7 +1222,7 @@ static NativeRuntime* initDingooPie(void)
             : noGuestExitDecision();
         if (exitDecision.shouldExit)
         {
-            printf("DingooPie: treating %s as normal guest exit\n",
+            printf("app-runtime: treating %s as normal guest exit\n",
                 exitDecision.label ? exitDecision.label : "compat exception");
             g_lastRunAppPath = g_appLoadPath;
             g_lastRunExitedNormally.store(true, std::memory_order_release);
@@ -1221,6 +1243,13 @@ static NativeRuntime* initDingooPie(void)
 static void* dingoopieRun(void* data)
 {
     (void)data;
+    struct RuntimeThreadCompletionGuard
+    {
+        ~RuntimeThreadCompletionGuard()
+        {
+            runtimeThreadCompletionSignal(&g_runtimeThreadCompletion);
+        }
+    } completionGuard;
     NativeRuntime* runtime = initDingooPie();
     taskSchedulerRequestShutdown("main runtime exit");
     taskSchedulerWaitForTasks();
@@ -1229,13 +1258,13 @@ static void* dingoopieRun(void* data)
     {
         clearRecentAppIfStillCurrent("startup failure");
     }
-    printf("DingooPie: runtime thread exited runtime=%p\n", (void*)runtime);
+    printf("app-runtime: runtime thread exited runtime=%p\n", (void*)runtime);
     if (runtime)
     {
         destroyMainRuntime(runtime);
-        printf("DingooPie: native runtime destroyed runtime=%p\n", (void*)runtime);
+        printf("app-runtime: native runtime destroyed runtime=%p\n", (void*)runtime);
     }
-    destroyMainApp();
+    destroyMainPackage();
     return 0;
 }
 
@@ -1260,14 +1289,14 @@ bool appRuntimeStart(
     g_appLoadPath = gamePathNormalize(appPath);
     if (g_appLoadPath.empty())
     {
-        printf("DingooPie: no app path provided\n");
+        printf("app-runtime: invalid APP path: %s\n", "(empty)");
         return false;
     }
     g_appMainPath = appGuestMainPathFromGamePath(g_appLoadPath);
 
-    printf("DingooPie: start app: %s\n", g_appLoadPath.c_str());
-    printf("DingooPie: AppMain path: %s\n", g_appMainPath.c_str());
-    printf("DingooPie: execution backend: %s\n", executionBackendName(options.backend));
+    printf("app-runtime: start APP: %s\n", g_appLoadPath.c_str());
+    printf("app-runtime: AppMain path: %s\n", g_appMainPath.c_str());
+    printf("app-runtime: execution backend: %s\n", executionBackendName(options.backend));
 
     if (enableResourceMonitor)
     {
@@ -1275,11 +1304,12 @@ bool appRuntimeStart(
         appRuntimeEnableResourceMonitor();
     }
 
+    runtimeThreadCompletionReset(&g_runtimeThreadCompletion);
     pthread_t tid;
     int ret = pthread_create(&tid, NULL, dingoopieRun, NULL);
     if (ret)
     {
-        printf("DingooPie: pthread_create failed\n");
+        printf("app-runtime: pthread_create failed\n");
         if (enableResourceMonitor)
         {
             runtimeResourceMonitorSetActive(false);
@@ -1338,7 +1368,7 @@ bool appRuntimeWriteMemory(uint32_t address, const void* in, size_t size)
     return ok;
 }
 
-static void readRuntimeRegisterSnapshotLocked(NativeRuntime* runtime, AppRuntimeRegisterSnapshot* out)
+static void captureRuntimeRegisters(NativeRuntime* runtime, AppRuntimeRegisterSnapshot* out)
 {
     memset(out, 0, sizeof(*out));
     if (!runtime)
@@ -1386,7 +1416,7 @@ static void readRuntimeRegisterSnapshotLocked(NativeRuntime* runtime, AppRuntime
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_LO, &out->lo);
 }
 
-static bool writeRuntimeRegisterSnapshotLocked(NativeRuntime* runtime, const AppRuntimeRegisterSnapshot& in)
+static bool restoreRuntimeRegisters(NativeRuntime* runtime, const AppRuntimeRegisterSnapshot& in)
 {
     if (!runtime)
     {
@@ -1440,10 +1470,11 @@ static bool writeRuntimeRegisterSnapshotLocked(NativeRuntime* runtime, const App
     return true;
 }
 
-bool appRuntimeCaptureState(AppRuntimeState* out)
+bool appRuntimeCaptureState(AppRuntimeState* out, std::string* error)
 {
     if (!out)
     {
+        setSaveStateRuntimeError(error, "runtime state output is invalid");
         return false;
     }
     out->regions.clear();
@@ -1453,15 +1484,22 @@ bool appRuntimeCaptureState(AppRuntimeState* out)
     memset(&out->heap, 0, sizeof(out->heap));
     out->osTicks = 0;
 
+    if (!waitForSaveStatePause())
+    {
+        setSaveStateRuntimeError(error, "runtime did not pause in time");
+        return false;
+    }
+
     pthread_mutex_lock(&g_runtimeThreadMutex);
     NativeRuntime* runtime = g_mainRuntime;
     if (!runtime)
     {
         pthread_mutex_unlock(&g_runtimeThreadMutex);
+        setSaveStateRuntimeError(error, "runtime state is not available");
         return false;
     }
 
-    readRuntimeRegisterSnapshotLocked(runtime, &out->registers);
+    captureRuntimeRegisters(runtime, &out->registers);
     out->osTicks = bridge_capture_os_ticks();
     uint32_t semaphoreCount = bridge_semaphore_state_count();
     out->hleSemaphoreCounts.resize(semaphoreCount);
@@ -1469,6 +1507,7 @@ bool appRuntimeCaptureState(AppRuntimeState* out)
     if (!vmHeapCaptureSnapshot(&out->heap))
     {
         pthread_mutex_unlock(&g_runtimeThreadMutex);
+        setSaveStateRuntimeError(error, "failed to capture runtime heap");
         return false;
     }
 
@@ -1478,7 +1517,7 @@ bool appRuntimeCaptureState(AppRuntimeState* out)
     for (size_t i = 0; i < taskRuntimes.size(); ++i)
     {
         AppRuntimeRegisterSnapshot taskSnapshot;
-        readRuntimeRegisterSnapshotLocked(taskRuntimes[i], &taskSnapshot);
+        captureRuntimeRegisters(taskRuntimes[i], &taskSnapshot);
         if (taskSnapshot.running)
         {
             out->taskRegisters.push_back(taskSnapshot);
@@ -1517,13 +1556,25 @@ bool appRuntimeCaptureState(AppRuntimeState* out)
     }
 
     pthread_mutex_unlock(&g_runtimeThreadMutex);
-    return out->registers.running && !out->regions.empty();
+    const bool captured = out->registers.running && !out->regions.empty();
+    if (!captured)
+    {
+        setSaveStateRuntimeError(error, "runtime state is not available");
+    }
+    return captured;
 }
 
-bool appRuntimeRestoreState(const AppRuntimeState& state)
+bool appRuntimeRestoreState(const AppRuntimeState& state, std::string* error)
 {
     if (!state.registers.running)
     {
+        setSaveStateRuntimeError(error, "saved runtime state is invalid");
+        return false;
+    }
+
+    if (!waitForSaveStatePause())
+    {
+        setSaveStateRuntimeError(error, "runtime did not pause in time");
         return false;
     }
 
@@ -1532,6 +1583,7 @@ bool appRuntimeRestoreState(const AppRuntimeState& state)
     if (!runtime)
     {
         pthread_mutex_unlock(&g_runtimeThreadMutex);
+        setSaveStateRuntimeError(error, "runtime state is not available");
         return false;
     }
     std::vector<NativeRuntime*> taskRuntimes;
@@ -1541,6 +1593,7 @@ bool appRuntimeRestoreState(const AppRuntimeState& state)
         printf("save-state: insufficient task runtimes current=%u saved=%u\n",
             (unsigned)taskRuntimes.size(), (unsigned)state.taskRegisters.size());
         pthread_mutex_unlock(&g_runtimeThreadMutex);
+        setSaveStateRuntimeError(error, "runtime thread count does not match save state");
         return false;
     }
     if (taskRuntimes.size() > state.taskRegisters.size())
@@ -1575,6 +1628,7 @@ bool appRuntimeRestoreState(const AppRuntimeState& state)
         if (region.size == 0 || region.data.size() != region.size)
         {
             pthread_mutex_unlock(&g_runtimeThreadMutex);
+            setSaveStateRuntimeError(error, "runtime memory layout does not match save state");
             return false;
         }
 
@@ -1592,6 +1646,7 @@ bool appRuntimeRestoreState(const AppRuntimeState& state)
         if (restoreTargets[i] == (size_t)-1)
         {
             pthread_mutex_unlock(&g_runtimeThreadMutex);
+            setSaveStateRuntimeError(error, "runtime memory layout does not match save state");
             return false;
         }
         uint32_t unresolvedMarkers = 0;
@@ -1626,7 +1681,7 @@ bool appRuntimeRestoreState(const AppRuntimeState& state)
     }
 
     bool ok = vmHeapRestoreSnapshot(state.heap) &&
-        writeRuntimeRegisterSnapshotLocked(runtime, state.registers);
+        restoreRuntimeRegisters(runtime, state.registers);
     if (ok)
     {
         bridge_restore_os_ticks(state.osTicks);
@@ -1638,7 +1693,7 @@ bool appRuntimeRestoreState(const AppRuntimeState& state)
     {
         for (size_t i = 0; ok && i < state.taskRegisters.size(); ++i)
         {
-            ok = writeRuntimeRegisterSnapshotLocked(taskRuntimes[i], state.taskRegisters[i]);
+            ok = restoreRuntimeRegisters(taskRuntimes[i], state.taskRegisters[i]);
             if (ok)
             {
                 nativeRuntimeFlushCodeCache(taskRuntimes[i]);
@@ -1653,6 +1708,10 @@ bool appRuntimeRestoreState(const AppRuntimeState& state)
         pauseGateMarkRuntimeRestored();
     }
     pthread_mutex_unlock(&g_runtimeThreadMutex);
+    if (!ok)
+    {
+        setSaveStateRuntimeError(error, "failed to restore runtime state");
+    }
     return ok;
 }
 
@@ -1752,7 +1811,7 @@ bool appRuntimeGetRegisterSnapshot(AppRuntimeRegisterSnapshot* out)
         return false;
     }
 
-    readRuntimeRegisterSnapshotLocked(runtime, out);
+    captureRuntimeRegisters(runtime, out);
     pthread_mutex_unlock(&g_runtimeThreadMutex);
     return true;
 }
@@ -1801,7 +1860,7 @@ bool appRuntimeGetInfo(AppRuntimeInfo* out)
 
     pthread_mutex_lock(&g_runtimeThreadMutex);
     NativeRuntime* runtime = g_mainRuntime;
-    app* loadedApp = s_app;
+    GuestPackage* loadedApp = s_guestPackage;
     if (!runtime || !loadedApp || g_currentAppSha256.empty())
     {
         pthread_mutex_unlock(&g_runtimeThreadMutex);
@@ -1824,7 +1883,6 @@ bool appRuntimeGetInfo(AppRuntimeInfo* out)
     out->appMainEntry = g_appMainEntry;
     out->importCount = loadedApp->import_count;
     out->exportCount = loadedApp->export_count;
-    out->packageResourceCount = loadedApp->package_resource_count;
     out->resourceCount = loadedApp->resource_count;
     pthread_mutex_unlock(&g_runtimeThreadMutex);
     return true;
@@ -1833,7 +1891,7 @@ bool appRuntimeGetInfo(AppRuntimeInfo* out)
 bool appRuntimeEnableResourceMonitor(void)
 {
     pthread_mutex_lock(&g_runtimeThreadMutex);
-    app* loadedApp = s_app;
+    GuestPackage* loadedApp = s_guestPackage;
     bool running = g_mainRuntime && loadedApp && !g_currentAppSha256.empty();
     if (running)
     {
@@ -2372,7 +2430,7 @@ std::vector<AppRuntimeDebugEntry> appRuntimeWriteHits(void)
     return out;
 }
 
-void appRuntimeStop(void)
+bool appRuntimeStop(void)
 {
     pthread_t tid = {};
     NativeRuntime* runtime = NULL;
@@ -2385,12 +2443,11 @@ void appRuntimeStop(void)
     {
         tid = g_runtimeThread;
         shouldJoin = true;
-        g_runtimeThreadStarted = false;
     }
     runtime = g_mainRuntime;
     if (runtime && requestStop)
     {
-        printf("DingooPie: stop requested runtime=%p\n", (void*)runtime);
+        printf("app-runtime: stop requested runtime=%p\n", (void*)runtime);
         taskSchedulerRequestShutdown("frontend exit");
         nativeRuntimeRequestStop(runtime);
     }
@@ -2398,14 +2455,25 @@ void appRuntimeStop(void)
 
     if (shouldJoin)
     {
-        joinedRuntime = joinRuntimeThreadWithTimeout(tid, 5000);
+        int joinError = 0;
+        const RuntimeThreadJoinResult joinResult = runtimeThreadJoinWithTimeout(
+            tid, &g_runtimeThreadCompletion, kRuntimeStopTimeoutMs, &joinError);
+        joinedRuntime = joinResult == RUNTIME_THREAD_JOINED;
         if (joinedRuntime)
         {
-            printf("DingooPie: runtime thread joined\n");
+            pthread_mutex_lock(&g_runtimeThreadMutex);
+            g_runtimeThreadStarted = false;
+            pthread_mutex_unlock(&g_runtimeThreadMutex);
+            printf("app-runtime: runtime thread joined\n");
+        }
+        else if (joinResult == RUNTIME_THREAD_JOIN_TIMEOUT)
+        {
+            printf("app-runtime: runtime thread did not stop within %u ms\n",
+                kRuntimeStopTimeoutMs);
         }
         else
         {
-            printf("DingooPie: runtime thread left running during process shutdown\n");
+            printf("app-runtime: runtime thread join failed: %d\n", joinError);
         }
     }
 
@@ -2414,18 +2482,19 @@ void appRuntimeStop(void)
 
     if (shouldJoin && !joinedRuntime)
     {
-        printf("DingooPie: recent app not saved because runtime thread did not join\n");
+        printf("app-runtime: recent app not saved because runtime thread did not join\n");
     }
     else if (shouldJoin && !exitedNormally)
     {
-        printf("DingooPie: recent app not saved because runtime did not exit normally\n");
+        printf("app-runtime: recent app not saved because runtime did not exit normally\n");
     }
     if (exitedNormally && suppressRecentSave)
     {
-        printf("DingooPie: recent app not saved because recent list was cleared\n");
+        printf("app-runtime: recent app not saved because recent list was cleared\n");
     }
     else if (exitedNormally)
     {
         saveRecentAppPath(g_lastRunAppPath, "normal runtime exit");
     }
+    return !shouldJoin || joinedRuntime;
 }

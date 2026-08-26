@@ -2,12 +2,11 @@
 #define DINGOO_PIE_APP_MEMORY_APP_MEMORY_H
 
 #include <stdint.h>
-#include "app/runtime/app_loader.h"
-#include "mips_runtime.h"
-#include "app_heap_snapshot.h"
+#include "shared/services/guest_package.h"
+#include "app/cpu/mips_runtime.h"
+#include "app/memory/app_heap_snapshot.h"
 
-int appMemoryInitialize(NativeRuntime* runtime, app* _app);
-
+int appMemoryInitialize(NativeRuntime* runtime, GuestPackage* app);
 int appMemoryMapTaskRuntime(NativeRuntime* runtime);
 
 uint32_t vm_malloc(uint32_t len);

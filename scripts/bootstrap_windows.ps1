@@ -292,6 +292,47 @@ function Apply-PatchIfNeeded($RepoRoot, $PatchFile) {
     }
 }
 
+function Apply-PatchWithSentinelIfNeeded(
+    $RepoRoot,
+    $PatchFile,
+    $SentinelFile,
+    $SentinelPattern
+) {
+    $sentinelPath = Join-Path $RepoRoot $SentinelFile
+    if ((Test-Path -LiteralPath $sentinelPath -PathType Leaf) -and
+        (Select-String -LiteralPath $sentinelPath -Pattern $SentinelPattern `
+            -SimpleMatch -Quiet)) {
+        return
+    }
+
+    $trimChars = [char[]]@('\', '/')
+    $projectFull = (Resolve-Path -LiteralPath $ProjectRoot).Path.TrimEnd($trimChars)
+    $repoFull = (Resolve-Path -LiteralPath $RepoRoot).Path.TrimEnd($trimChars)
+    if (!$repoFull.StartsWith($projectFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Patch target is outside the project root: $RepoRoot"
+    }
+    $relativeRepo = $repoFull.Substring($projectFull.Length).TrimStart($trimChars).Replace('\', '/')
+    Push-Location $ProjectRoot
+    try {
+        git apply --check --unidiff-zero --ignore-space-change --whitespace=nowarn `
+            "--directory=$relativeRepo" $PatchFile
+        if ($LASTEXITCODE -ne 0) {
+            throw "Patch check failed: $PatchFile"
+        }
+        git apply --unidiff-zero --ignore-space-change --whitespace=nowarn `
+            "--directory=$relativeRepo" $PatchFile
+        if ($LASTEXITCODE -ne 0) {
+            throw "Patch apply failed: $PatchFile"
+        }
+        if (!(Select-String -LiteralPath $sentinelPath -Pattern $SentinelPattern `
+            -SimpleMatch -Quiet)) {
+            throw "Patch sentinel check failed after applying: $PatchFile"
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
 New-Directory $DownloadsDir
 New-Directory $ThirdPartyDir
 New-Directory $DepsDir
@@ -320,6 +361,11 @@ $dynarmicExtract = Join-Path $ThirdPartyDir 'dynarmic-extract'
 Install-ZipSourceTree $dynarmicArchive $dynarmicRoot $dynarmicExtract 'dynarmic-*'
 
 Apply-PatchIfNeeded $ppssppRoot (Join-Path $PatchDir 'ppsspp-irjit-dingoo.patch')
+Apply-PatchWithSentinelIfNeeded `
+    $ppssppRoot `
+    (Join-Path $PatchDir 'ppsspp-irjit-vfpu-bounds.patch') `
+    'Core\MIPS\IR\IRCompVFPU.cpp' `
+    'ApplyVoffset(regs, GetNumVectorElements(N));'
 
 Write-Host 'Bootstrap complete.'
 Write-Host "Compiler: $(Join-Path $ProjectRoot 'w64devkit\bin\gcc.exe')"

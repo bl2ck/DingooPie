@@ -1,6 +1,6 @@
 #include "platform_win32.h"
 
-#include "app/runtime/app_loader.h"
+#include "shared/services/guest_package.h"
 #include "app_runtime_debug.h"
 
 #ifdef _WIN32
@@ -293,7 +293,7 @@ bool platformProbeAppHeader(const std::string& path)
     {
         long size = ftell(file);
         ok = size > 0 && (uint64_t)size <= UINT32_MAX &&
-            app_probe_file_header(file, (uint32_t)size);
+            guestPackageProbeFileHeader(file, (uint32_t)size);
     }
     fclose(file);
     return ok;

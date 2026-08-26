@@ -1,4 +1,4 @@
-#include "ppsspp_backend.h"
+#include "app/cpu/ppsspp_backend.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -13,13 +13,13 @@
 #include <unordered_map>
 #include <vector>
 
-#include "app_memory.h"
-#include "framebuffer.h"
-#include "pause_gate.h"
-#include "app_hle.h"
-#include "input_state.h"
-#include "guest_filesystem.h"
-#include "runtime_log.h"
+#include "app/memory/app_memory.h"
+#include "frontend/video/framebuffer.h"
+#include "shared/execution/pause_gate.h"
+#include "app/hle/app_hle.h"
+#include "frontend/input/input_state.h"
+#include "shared/services/guest_filesystem.h"
+#include "shared/diagnostics/runtime_log.h"
 #include "runtime_resource_monitor.h"
 #include "Common/CPUDetect.h"
 #include "Common/File/FileUtil.h"
@@ -902,7 +902,7 @@ static void rebuildFastMemoryRegions(NativeRuntime* runtime)
 
     if (ppssppShimLogEnabled())
     {
-        printf("ppsspp-shim: fast pages regions=%u mapped=%u mapped_fb=%u skipped_fb=%u partial=%u\n",
+        printf("ppsspp-bridge: fast pages regions=%u mapped=%u mapped_fb=%u skipped_fb=%u partial=%u\n",
             (unsigned)g_fastRegions.size(), mappedPages, mappedFramebufferPages,
             skippedFramebufferPages, partialPages);
     }
@@ -1513,7 +1513,7 @@ static bool traceKbdCallersEnabled()
 
 static bool writeFastKeyStatus(uint32_t address)
 {
-    KEY_STATUS status = {};
+    GuestKeyStatus status = {};
     _kbd_get_status(&status);
 
     uint8_t* out = hostPointerCanonical(address, sizeof(uint32_t) * 3);
@@ -1633,15 +1633,15 @@ static bool tryRunFastHle(uint32_t address)
     else if (address == g_fastHleAddresses.fseekFn)
     {
         uint32_t streamPtr = currentMIPS->r[MIPS_REG_A0];
-        uint8_t* fileBytes = hostPointerCanonical(streamPtr, sizeof(_file_t));
-        _file_t file = {};
+        uint8_t* fileBytes = hostPointerCanonical(streamPtr, sizeof(GuestFile));
+        GuestFile file = {};
         if (!fileBytes)
         {
             return false;
         }
         memcpy(&file, fileBytes, sizeof(file));
 
-        if (file.type == _file_type_file)
+        if (file.type == GUEST_FILE_TYPE_FILE)
         {
             g_ppssppFastFseekCalls++;
             fsys_begin_fast_hle_call();
@@ -1658,15 +1658,15 @@ static bool tryRunFastHle(uint32_t address)
             }
             fsys_end_fast_hle_call();
         }
-        else if (file.type == _file_type_mem)
+        else if (file.type == GUEST_FILE_TYPE_MEMORY)
         {
-            uint8_t* memBytes = hostPointerCanonical(file.data, sizeof(_file_mem_t));
+            uint8_t* memBytes = hostPointerCanonical(file.data, sizeof(GuestMemoryFile));
             if (!memBytes)
             {
                 return false;
             }
 
-            _file_mem_t memFile = {};
+            GuestMemoryFile memFile = {};
             memcpy(&memFile, memBytes, sizeof(memFile));
             int64_t base = 0;
             uint32_t origin = currentMIPS->r[MIPS_REG_A2];
@@ -1741,8 +1741,8 @@ static bool tryRunFastHle(uint32_t address)
         uint32_t size = currentMIPS->r[MIPS_REG_A1];
         uint32_t count = currentMIPS->r[MIPS_REG_A2];
         uint32_t stream = currentMIPS->r[MIPS_REG_A3];
-        uint8_t* fileBytes = hostPointerCanonical(stream, sizeof(_file_t));
-        _file_t file = {};
+        uint8_t* fileBytes = hostPointerCanonical(stream, sizeof(GuestFile));
+        GuestFile file = {};
         if (!fileBytes)
         {
             return false;
@@ -1765,7 +1765,7 @@ static bool tryRunFastHle(uint32_t address)
             {
                 ret = (uint32_t)-1;
             }
-            else if (file.type == _file_type_file)
+            else if (file.type == GUEST_FILE_TYPE_FILE)
             {
                 fsys_begin_fast_hle_call();
                 bool shouldRecordResourceLoad = runtimeResourceMonitorIsCapturing();
@@ -1797,15 +1797,15 @@ static bool tryRunFastHle(uint32_t address)
                     g_ppssppFastFreadBytes += (uint64_t)ret * (uint64_t)size;
                 }
             }
-            else if (file.type == _file_type_mem)
+            else if (file.type == GUEST_FILE_TYPE_MEMORY)
             {
-                uint8_t* memBytes = hostPointerCanonical(file.data, sizeof(_file_mem_t));
+                uint8_t* memBytes = hostPointerCanonical(file.data, sizeof(GuestMemoryFile));
                 if (!memBytes)
                 {
                     return false;
                 }
 
-                _file_mem_t memFile = {};
+                GuestMemoryFile memFile = {};
                 memcpy(&memFile, memBytes, sizeof(memFile));
                 if (!memFile.read)
                 {
@@ -2542,7 +2542,7 @@ uint32_t ppssppShimValidateAddress(uint32_t address, uint32_t alignment, uint32_
 {
     if (address < 0x10000 && currentMIPS && irjitTraceEnabled())
     {
-        printf("ppsspp-shim: bad-looking validate address=0x%08x align=%u write=%u pc=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x a3=0x%08x v0=0x%08x v1=0x%08x\n",
+        printf("ppsspp-bridge: bad-looking validate address=0x%08x align=%u write=%u pc=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x a3=0x%08x v0=0x%08x v1=0x%08x\n",
             address, alignment, isWrite, currentMIPS->pc,
             currentMIPS->r[MIPS_REG_A0], currentMIPS->r[MIPS_REG_A1],
             currentMIPS->r[MIPS_REG_A2], currentMIPS->r[MIPS_REG_A3],
@@ -3178,7 +3178,7 @@ void Core_MemoryException(u32 address, u32 accessSize, u32 pc, MemoryExceptionTy
 {
     if (ppssppShimLogEnabled())
     {
-        printf("ppsspp-shim: memory exception type=%d address=0x%08x size=%u pc=0x%08x\n",
+        printf("ppsspp-bridge: memory exception type=%d address=0x%08x size=%u pc=0x%08x\n",
             (int)type, address, accessSize, pc);
     }
     coreState = CORE_RUNTIME_ERROR;
@@ -3193,7 +3193,7 @@ void Core_ExecException(u32 address, u32 pc, ExecExceptionType type)
 {
     if (ppssppShimLogEnabled())
     {
-        printf("ppsspp-shim: exec exception type=%d address=0x%08x pc=0x%08x\n", (int)type, address, pc);
+        printf("ppsspp-bridge: exec exception type=%d address=0x%08x pc=0x%08x\n", (int)type, address, pc);
     }
     coreState = CORE_RUNTIME_ERROR;
 }
@@ -3202,7 +3202,7 @@ void Core_BreakException(u32 pc)
 {
     if (ppssppShimLogEnabled())
     {
-        printf("ppsspp-shim: break exception pc=0x%08x\n", pc);
+        printf("ppsspp-bridge: break exception pc=0x%08x\n", pc);
     }
     coreState = CORE_RUNTIME_ERROR;
 }
@@ -3267,7 +3267,7 @@ bool HandleAssert(bool, const char*, const char*, int, const char* expression, c
     {
         return true;
     }
-    printf("ppsspp-shim: assert %s ", expression ? expression : "");
+    printf("ppsspp-bridge: assert %s ", expression ? expression : "");
     va_list args;
     va_start(args, format);
     vprintf(format, args);
@@ -3440,6 +3440,105 @@ bool BreakpointManager::EvaluateLogFormat(MIPSDebugInterface*, const std::string
 
 namespace MIPSAnalyst
 {
+enum RegisterUsage
+{
+    REGISTER_USAGE_CLOBBERED,
+    REGISTER_USAGE_INPUT,
+    REGISTER_USAGE_UNKNOWN,
+};
+
+static RegisterUsage determineInOutUsage(u64 inFlag, u64 outFlag, u32 address, int instructions)
+{
+    const u32 start = address;
+    u32 end = address + instructions * sizeof(u32);
+    bool canClobber = true;
+    while (address < end)
+    {
+        MIPSOpcode op = Memory::Read_Instruction(address, true);
+        MIPSInfo info = MIPSGetInfo(op);
+        if (info & inFlag)
+        {
+            return REGISTER_USAGE_INPUT;
+        }
+        if (info & outFlag)
+        {
+            return canClobber ? REGISTER_USAGE_CLOBBERED : REGISTER_USAGE_UNKNOWN;
+        }
+        if ((info & IS_CONDBRANCH) || (info & IS_JUMP))
+        {
+            end = address + 8;
+            canClobber = (info & LIKELY) == 0 && start != address;
+        }
+        address += 4;
+    }
+    return REGISTER_USAGE_UNKNOWN;
+}
+
+static RegisterUsage determineRegisterUsage(MIPSGPReg reg, u32 address, int instructions)
+{
+    switch (reg)
+    {
+    case MIPS_REG_HI:
+        return determineInOutUsage(IN_HI, OUT_HI, address, instructions);
+    case MIPS_REG_LO:
+        return determineInOutUsage(IN_LO, OUT_LO, address, instructions);
+    case MIPS_REG_FPCOND:
+        return determineInOutUsage(IN_FPUFLAG, OUT_FPUFLAG, address, instructions);
+    case MIPS_REG_VFPUCC:
+        return determineInOutUsage(IN_VFPU_CC, OUT_VFPU_CC, address, instructions);
+    default:
+        break;
+    }
+    if (reg >= 32)
+    {
+        return REGISTER_USAGE_UNKNOWN;
+    }
+
+    const u32 start = address;
+    u32 end = address + instructions * sizeof(u32);
+    bool canClobber = true;
+    while (address < end)
+    {
+        MIPSOpcode op = Memory::Read_Instruction(address, true);
+        MIPSInfo info = MIPSGetInfo(op);
+        if (((info & IN_RS) && MIPS_GET_RS(op) == reg) ||
+            ((info & IN_RT) && MIPS_GET_RT(op) == reg))
+        {
+            return REGISTER_USAGE_INPUT;
+        }
+
+        bool clobbered =
+            ((info & OUT_RT) && MIPS_GET_RT(op) == reg) ||
+            ((info & OUT_RD) && MIPS_GET_RD(op) == reg) ||
+            ((info & OUT_RA) && reg == MIPS_REG_RA);
+        if (clobbered)
+        {
+            if (!canClobber || (info & IS_CONDMOVE))
+            {
+                return REGISTER_USAGE_UNKNOWN;
+            }
+            return REGISTER_USAGE_CLOBBERED;
+        }
+        if ((info & IS_CONDBRANCH) || (info & IS_JUMP))
+        {
+            end = address + 8;
+            canClobber = (info & LIKELY) == 0 && start != address;
+        }
+        address += 4;
+    }
+    return REGISTER_USAGE_UNKNOWN;
+}
+
+bool IsRegisterUsed(MIPSGPReg reg, u32 address, int instructions)
+{
+    return determineRegisterUsage(reg, address, instructions) == REGISTER_USAGE_INPUT;
+}
+
+bool IsRegisterClobbered(MIPSGPReg reg, u32 address, int instructions)
+{
+    return determineRegisterUsage(reg, address, instructions) == REGISTER_USAGE_CLOBBERED;
+}
+
 MIPSGPReg GetOutGPReg(MIPSOpcode op)
 {
     MIPSInfo info = MIPSGetInfo(op);

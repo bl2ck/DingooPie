@@ -1,4 +1,4 @@
-#include "app_task_lifecycle.h"
+#include "app/hle/app_task_lifecycle.h"
 
 #include <pthread.h>
 #include <stdio.h>

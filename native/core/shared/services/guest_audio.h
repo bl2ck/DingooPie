@@ -1,5 +1,5 @@
-#ifndef DINGOO_PIE_GUEST_AUDIO_H
-#define DINGOO_PIE_GUEST_AUDIO_H
+#ifndef DINGOO_PIE_SHARED_SERVICES_GUEST_AUDIO_H
+#define DINGOO_PIE_SHARED_SERVICES_GUEST_AUDIO_H
 
 #include <stdint.h>
 #include <stdbool.h>

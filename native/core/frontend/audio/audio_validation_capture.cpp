@@ -124,7 +124,8 @@ void audioValidationBegin(const SDL_AudioSpec& audioSpec)
     }
 
     const uint16_t bitsPerSample = (uint16_t)SDL_AUDIO_BITSIZE(audioSpec.format);
-    if ((audioSpec.format != AUDIO_U8 && audioSpec.format != AUDIO_S16LSB) ||
+    if ((audioSpec.format != AUDIO_U8 && audioSpec.format != AUDIO_S16LSB &&
+        audioSpec.format != AUDIO_F32LSB) ||
         audioSpec.freq <= 0 || !audioSpec.channels)
     {
         SDL_Log("Audio validation unsupported output format=%x rate=%d channels=%u",
@@ -148,9 +149,10 @@ void audioValidationBegin(const SDL_AudioSpec& audioSpec)
         audioSpec.channels * (bitsPerSample / 8u));
     fwrite("RIFF", 1, 4, g_capture.waveFile);
     writeUint32(g_capture.waveFile, 36);
+    const uint16_t waveFormat = audioSpec.format == AUDIO_F32LSB ? 3u : 1u;
     fwrite("WAVEfmt ", 1, 8, g_capture.waveFile);
     writeUint32(g_capture.waveFile, 16);
-    writeUint16(g_capture.waveFile, 1);
+    writeUint16(g_capture.waveFile, waveFormat);
     writeUint16(g_capture.waveFile, audioSpec.channels);
     writeUint32(g_capture.waveFile, (uint32_t)audioSpec.freq);
     writeUint32(g_capture.waveFile, (uint32_t)audioSpec.freq * blockAlign);

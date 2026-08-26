@@ -1,28 +1,28 @@
-#include "app_hle.h"
+#include "app/hle/app_hle.h"
 #include <ctype.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include "mips_runtime.h"
-#include "app_runtime_debug.h"
-#include "app/runtime/app_loader.h"
-#include "app_memory.h"
-#include "input_controls.h"
+#include "app/cpu/mips_runtime.h"
+#include "app/runtime/app_runtime_debug.h"
+#include "shared/services/guest_package.h"
+#include "app/memory/app_memory.h"
+#include "frontend/input/input_controls.h"
 #include "semaphore.h"
 #include <assert.h>
-#include "framebuffer.h"
-#include "pause_gate.h"
+#include "frontend/video/framebuffer.h"
+#include "shared/execution/pause_gate.h"
 #include "sdl_frontend.h"
-#include "guest_filesystem.h"
-#include "app_task_scheduler.h"
-#include "guest_audio.h"
-#include "app_text_format.h"
-#include "compat_profile.h"
-#include "runtime_log.h"
-#include "profile_counter.h"
-#include "runtime_shared_text.h"
+#include "shared/services/guest_filesystem.h"
+#include "app/hle/app_task_scheduler.h"
+#include "shared/services/guest_audio.h"
+#include "app/hle/app_text_format.h"
+#include "config/compatibility/compat_profile.h"
+#include "shared/diagnostics/runtime_log.h"
+#include "shared/diagnostics/profile_counter.h"
+#include "shared/diagnostics/runtime_shared_text.h"
 #include "runtime_resource_monitor.h"
-#include "runtime_tick_clock.h"
+#include "shared/execution/runtime_tick_clock.h"
 #include <chrono>
 #include <atomic>
 #include <pthread.h>
@@ -41,10 +41,10 @@
 #endif
 
 static void returnToRa(NativeRuntime* runtime);
-static app* s_bridgeApp = NULL;
+static GuestPackage* s_bridgeApp = NULL;
 static std::string s_bridgeAppSha256;
 static RuntimeSharedText<192> s_lastTaskStopSummary;
-static RuntimeSharedText<192> s_lastObservedHleSummary;
+static RuntimeSharedText<192> s_lastStoppedHleSummary;
 static thread_local char s_threadLastHleSummary[192] = "";
 static RuntimeTickClock s_osTickClock;
 static std::atomic<bool> s_bridgeProfileEnabled(false);
@@ -152,7 +152,7 @@ void bridge_copy_last_hle_summary(char* output, size_t outputSize)
         snprintf(output, outputSize, "%s", s_threadLastHleSummary);
         return;
     }
-    s_lastObservedHleSummary.copy(output, outputSize);
+    s_lastStoppedHleSummary.copy(output, outputSize);
 }
 
 bool bridge_try_fast_return_hook(uint32_t address, uint32_t* returnValue);
@@ -584,7 +584,7 @@ static void stopCurrentGuestRuntime(NativeRuntime* runtime, const char* reason)
     s_lastTaskStopSummary.set(summary);
     if (s_threadLastHleSummary[0])
     {
-        s_lastObservedHleSummary.set(s_threadLastHleSummary);
+        s_lastStoppedHleSummary.set(s_threadLastHleSummary);
     }
     CompatGuestExitDecision exitDecision = taskStopGuestExitDecision(ra);
     printf("hle: task stop reason=%s app_sha256=%s pc=0x%08x ra=0x%08x a0=0x%08x main=%u promoted=%u",
@@ -840,7 +840,8 @@ static void br__kbd_get_status(NativeRuntime* runtime)
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_RA, &ra);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_SP, &sp);
 
-    KEY_STATUS* ks = (KEY_STATUS*)toHostPtrRange(ksPtr, sizeof(KEY_STATUS));
+    GuestKeyStatus* ks = (GuestKeyStatus*)toHostPtrRange(
+        ksPtr, sizeof(GuestKeyStatus));
     if (ks)
     {
         _kbd_get_status(ks);
@@ -1594,27 +1595,27 @@ static void br_fread(NativeRuntime* runtime)
         read_size = size * count;
     }
 
-    _file_t *_file = (_file_t*)toHostPtrRange(stream, sizeof(_file_t));
-    if (!_file)
+    GuestFile *guestFile = (GuestFile*)toHostPtrRange(stream, sizeof(GuestFile));
+    if (!guestFile)
     {
         read_ret =  -1;
     }
     else
     {
-        if (_file->type == _file_type_mem)
+        if (guestFile->type == GUEST_FILE_TYPE_MEMORY)
         {
-            _file_mem_t* _file_mem = (_file_mem_t*)toHostPtrRange(
-                _file->data, sizeof(_file_mem_t));
-            if (!_file_mem)
+            GuestMemoryFile* memoryFile = (GuestMemoryFile*)toHostPtrRange(
+                guestFile->data, sizeof(GuestMemoryFile));
+            if (!memoryFile)
             {
                 read_ret = -1;
             }
-            else if (_file_mem->read)
+            else if (memoryFile->read)
             {
-                uint32_t available = (_file_mem->offset < _file_mem->size) ?
-                    (_file_mem->size - _file_mem->offset) : 0;
+                uint32_t available = (memoryFile->offset < memoryFile->size) ?
+                    (memoryFile->size - memoryFile->offset) : 0;
                 uint32_t bytesToRead = read_size < available ? read_size : available;
-                uint64_t sourceAddress = (uint64_t)_file_mem->base + _file_mem->offset;
+                uint64_t sourceAddress = (uint64_t)memoryFile->base + memoryFile->offset;
                 void* buff = sourceAddress <= UINT32_MAX ?
                     toHostPtrRange((uint32_t)sourceAddress, bytesToRead) : NULL;
                 void* distPtr = toHostPtrRange(ptr, bytesToRead);
@@ -1627,26 +1628,26 @@ static void br_fread(NativeRuntime* runtime)
                     if (bytesToRead > 0)
                     {
                         memcpy(distPtr, buff, bytesToRead);
-                        _file_mem->offset += bytesToRead;
+                        memoryFile->offset += bytesToRead;
                     }
                     read_ret = size ? (bytesToRead / size) : 0;
 
-                    _file->eof = _file_mem->offset >= _file_mem->size ? 1u : 0u;
+                    guestFile->eof = memoryFile->offset >= memoryFile->size ? 1u : 0u;
                 }
             }
         }
-        else if (_file->type == _file_type_file)
+        else if (guestFile->type == GUEST_FILE_TYPE_FILE)
         {
             void* buff = toHostPtrRange(ptr, read_size);
             if (buff)
             {
                 bool shouldRecordResourceLoad = runtimeResourceMonitorIsCapturing();
                 uint32_t positionBefore = shouldRecordResourceLoad ?
-                    fsys_stream_position(_file->data) : 0;
-                read_ret = vm_fread(buff, size, count, _file->data);
+                    fsys_stream_position(guestFile->data) : 0;
+                read_ret = vm_fread(buff, size, count, guestFile->data);
                 if (shouldRecordResourceLoad && read_ret != (uint32_t)-1)
                 {
-                    fsys_record_load_to_guest(_file->data, ptr, buff, positionBefore);
+                    fsys_record_load_to_guest(guestFile->data, ptr, buff, positionBefore);
                 }
             }
             else
@@ -1656,7 +1657,7 @@ static void br_fread(NativeRuntime* runtime)
         }
         else
         {
-            printf("hle: br_fread failed type=%d\n", _file->type);
+            printf("hle: br_fread failed type=%d\n", guestFile->type);
             assert(0);
         }
     }
@@ -2000,14 +2001,14 @@ static void br_fseek(NativeRuntime* runtime)
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A1, &offset);
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_A0, &stream);
 
-    _file_t* _file = (_file_t*)toHostPtrRange(stream, sizeof(_file_t));
-    if (_file)
+    GuestFile* guestFile = (GuestFile*)toHostPtrRange(stream, sizeof(GuestFile));
+    if (guestFile)
     {
-        if (_file->type == _file_type_mem)
+        if (guestFile->type == GUEST_FILE_TYPE_MEMORY)
         {
-            _file_mem_t* _file_mem = (_file_mem_t*)toHostPtrRange(
-                _file->data, sizeof(_file_mem_t));
-            if (!_file_mem)
+            GuestMemoryFile* memoryFile = (GuestMemoryFile*)toHostPtrRange(
+                guestFile->data, sizeof(GuestMemoryFile));
+            if (!memoryFile)
             {
                 read_ret = -1;
             }
@@ -2020,11 +2021,11 @@ static void br_fseek(NativeRuntime* runtime)
                 }
                 else if (origin == SEEK_CUR)
                 {
-                    base = _file_mem->offset;
+                    base = memoryFile->offset;
                 }
                 else if (origin == SEEK_END)
                 {
-                    base = _file_mem->size;
+                    base = memoryFile->size;
                 }
                 else
                 {
@@ -2034,26 +2035,26 @@ static void br_fseek(NativeRuntime* runtime)
                 if (read_ret != (uint32_t)-1)
                 {
                     int64_t next = base + (int32_t)offset;
-                    if (next < 0 || next > _file_mem->size)
+                    if (next < 0 || next > memoryFile->size)
                     {
                         read_ret = -1;
                     }
                     else
                     {
-                        _file_mem->offset = (uint32_t)next;
-                        _file->eof = _file_mem->offset >= _file_mem->size ? 1u : 0u;
+                        memoryFile->offset = (uint32_t)next;
+                        guestFile->eof = memoryFile->offset >= memoryFile->size ? 1u : 0u;
                         read_ret = 0;
                     }
                 }
             }
         }
-        else if (_file->type == _file_type_file)
+        else if (guestFile->type == GUEST_FILE_TYPE_FILE)
         {
-            read_ret = fsys_fseek(_file->data, offset, origin);
+            read_ret = fsys_fseek(guestFile->data, offset, origin);
         }
         else
         {
-            printf("hle: br_fseek failed type=%d\n", _file->type);
+            printf("hle: br_fseek failed type=%d\n", guestFile->type);
             assert(0);
         }
     }
@@ -2231,7 +2232,7 @@ static void br_fsys_fopenW(NativeRuntime* runtime)
 
 struct DlResHandle
 {
-    app_resource_entry* entry;
+    GuestResourceEntry* entry;
     uint32_t dataPtr;
     uint32_t offset;
 };
@@ -2291,7 +2292,7 @@ static void br_dl_res_open(NativeRuntime* runtime)
         name = hostStringIfVmPtr(a0);
     }
 
-    app_resource_entry* entry = app_find_resource(s_bridgeApp, name);
+    GuestResourceEntry* entry = guestPackageFindResource(s_bridgeApp, name);
     uint32_t ret = 0;
     if (entry)
     {
@@ -2309,7 +2310,7 @@ static void br_dl_res_open(NativeRuntime* runtime)
                         RUNTIME_RESOURCE_MONITOR_SOURCE_DL_RES,
                         name,
                         entry,
-                        entry->decoded_data || !entry->xor_key);
+                        entry->decoded_data || !entry->xorKey);
                 }
                 break;
             }
@@ -2322,7 +2323,7 @@ static void br_dl_res_open(NativeRuntime* runtime)
             a0, a1, a2, name ? name : "<null>", ret);
         if (entry)
         {
-            printf(" offset=0x%08x size=0x%08x xor=0x%02x", entry->offset, entry->size, entry->xor_key);
+            printf(" offset=0x%08x size=0x%08x xor=0x%02x", entry->offset, entry->size, entry->xorKey);
         }
         printf("\n");
     }
@@ -2364,7 +2365,7 @@ static void br_dl_res_get_data(NativeRuntime* runtime)
     if (handle < sizeof(s_dl_res_handles) / sizeof(s_dl_res_handles[0]) && s_dl_res_handles[handle].entry)
     {
         DlResHandle* h = &s_dl_res_handles[handle];
-        const uint8_t* resourceData = app_resource_data(s_bridgeApp, h->entry);
+        const uint8_t* resourceData = guestPackageResourceData(s_bridgeApp, h->entry);
         if (!resourceData)
         {
             nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ret);
@@ -2492,7 +2493,7 @@ static void returnToRa(NativeRuntime* runtime)
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &pc);
 }
 
-struct _hook_code_func_
+struct HookCodeFunction
 {
     uint32_t offset;
     const char* name;
@@ -2502,7 +2503,7 @@ struct _hook_code_func_
     uint32_t reserved_profile_count;
     uint32_t fast_return_enabled;
     uint32_t fast_return_value;
-}_hook_code_func_map[] =
+}s_hookCodeFunctions[] =
 {
     {0,"OSTimeGet",br_OSTimeGet , 1},
     {0,"fread",br_fread, 1},
@@ -2680,14 +2681,14 @@ struct _hook_code_func_
 };
 
 static const int kHookCodeFunctionCount =
-    sizeof(_hook_code_func_map) / sizeof(_hook_code_func_map[0]);
+    sizeof(s_hookCodeFunctions) / sizeof(s_hookCodeFunctions[0]);
 static RuntimeProfileCounter s_hookProfileCounters[kHookCodeFunctionCount];
 
 bool bridge_try_fast_return_hook(uint32_t address, uint32_t* returnValue)
 {
-    for (int i = 0; i < sizeof(_hook_code_func_map) / sizeof(_hook_code_func_map[0]); ++i)
+    for (int i = 0; i < sizeof(s_hookCodeFunctions) / sizeof(s_hookCodeFunctions[0]); ++i)
     {
-        if (_hook_code_func_map[i].fast_return_enabled && _hook_code_func_map[i].offset == address)
+        if (s_hookCodeFunctions[i].fast_return_enabled && s_hookCodeFunctions[i].offset == address)
         {
             uint32_t restoreGeneration = pauseGateRestoreGeneration();
             if (pauseGateWaitForResume() &&
@@ -2701,7 +2702,7 @@ bool bridge_try_fast_return_hook(uint32_t address, uint32_t* returnValue)
             }
             if (returnValue)
             {
-                *returnValue = _hook_code_func_map[i].fast_return_value;
+                *returnValue = s_hookCodeFunctions[i].fast_return_value;
             }
             return true;
         }
@@ -2716,11 +2717,11 @@ bool bridge_lookup_hook_address(const char* name, uint32_t* address)
         return false;
     }
 
-    for (int i = 0; i < sizeof(_hook_code_func_map) / sizeof(_hook_code_func_map[0]); ++i)
+    for (int i = 0; i < sizeof(s_hookCodeFunctions) / sizeof(s_hookCodeFunctions[0]); ++i)
     {
-        if (_hook_code_func_map[i].offset && strcmp(_hook_code_func_map[i].name, name) == 0)
+        if (s_hookCodeFunctions[i].offset && strcmp(s_hookCodeFunctions[i].name, name) == 0)
         {
-            *address = _hook_code_func_map[i].offset;
+            *address = s_hookCodeFunctions[i].offset;
             return true;
         }
     }
@@ -2798,7 +2799,7 @@ static void profilePrintHookTopAndReset(void)
                 {
                     top[move] = top[move - 1];
                 }
-                top[slot].name = _hook_code_func_map[i].name;
+                top[slot].name = s_hookCodeFunctions[i].name;
                 top[slot].count = count;
                 break;
             }
@@ -2873,7 +2874,7 @@ static void hook_code(NativeRuntime* runtime, uint64_t address, uint32_t size, v
         }
     }
 
-    struct _hook_code_func_* hookFunc = (struct _hook_code_func_*)user_data;
+    struct HookCodeFunction* hookFunc = (struct HookCodeFunction*)user_data;
     if (!hookFunc || hookFunc->offset != address)
     {
         return;
@@ -2955,7 +2956,7 @@ static void hook_code(NativeRuntime* runtime, uint64_t address, uint32_t size, v
 
     if (hookFunc->func)
     {
-        ptrdiff_t hookIndex = hookFunc - _hook_code_func_map;
+        ptrdiff_t hookIndex = hookFunc - s_hookCodeFunctions;
         if (hookIndex >= 0 && hookIndex < kHookCodeFunctionCount &&
             s_bridgeProfileEnabled.load(std::memory_order_relaxed))
         {
@@ -2978,7 +2979,7 @@ static void hook_code(NativeRuntime* runtime, uint64_t address, uint32_t size, v
             "%s pc=0x%08x hook=0x%08x ra=0x%08x a0=0x%08x",
             hookFunc->name ? hookFunc->name : "<unnamed>",
             pc, (uint32_t)address, ra, a0);
-        s_lastObservedHleSummary.set(s_threadLastHleSummary);
+        s_lastStoppedHleSummary.set(s_threadLastHleSummary);
 
         if (hookFunc->lock)
         {
@@ -3009,7 +3010,7 @@ void nativeRuntimeInterruptHook(NativeRuntime* runtime, uint32_t intno, void* us
     (void)user_data;
 }
 
-static void hooks_init(NativeRuntime* runtime, app* _app)
+static void hooks_init(NativeRuntime* runtime, GuestPackage* app)
 {
     bridge_apply_runtime_settings();
     RuntimeError err;
@@ -3017,28 +3018,29 @@ static void hooks_init(NativeRuntime* runtime, app* _app)
     uint32_t hookCount = 0;
     uint32_t unknownCount = 0;
 
-    for (int i = 0; i < _app->import_count; ++i)
+    for (int i = 0; i < app->import_count; ++i)
     {
-        app_import_entry* entry = _app->import_data[i];
+        GuestImportEntry* entry = app->import_data[i];
         const char* name = entry->name;
         bool matched = false;
-        for (int j = 0; j < sizeof(_hook_code_func_map) / sizeof(_hook_code_func_map[0]); ++j)
+        for (int j = 0; j < sizeof(s_hookCodeFunctions) / sizeof(s_hookCodeFunctions[0]); ++j)
         {
-            if (strcmp(name, _hook_code_func_map[j].name) == 0)
+            if (strcmp(name, s_hookCodeFunctions[j].name) == 0)
             {
-                _hook_code_func_map[j].offset = entry->offset;
-                if (_hook_code_func_map[j].fast_return_enabled &&
-                    installFastReturnStub(runtime, entry->offset, _hook_code_func_map[j].fast_return_value))
+                s_hookCodeFunctions[j].offset = entry->offset;
+                if (s_hookCodeFunctions[j].fast_return_enabled &&
+                    installFastReturnStub(runtime, entry->offset, s_hookCodeFunctions[j].fast_return_value))
                 {
                     hookCount++;
                     matched = true;
                     break;
                 }
                 err = nativeRuntimeAddHook(runtime, &trace, RUNTIME_HOOK_CODE, (void*)hook_code,
-                    (void*)&_hook_code_func_map[j], entry->offset, entry->offset, 0);
+                    (void*)&s_hookCodeFunctions[j], entry->offset, entry->offset, 0);
                 if (err != RUNTIME_OK)
                 {
-                    printf("add hook err %u (%s)\n", err, nativeRuntimeErrorString(err));
+                    printf("hle: failed to install import hook name=%s address=0x%08x error=%u (%s)\n",
+                        name, entry->offset, err, nativeRuntimeErrorString(err));
                     return;
                 }
                 hookCount++;
@@ -3058,17 +3060,17 @@ static void hooks_init(NativeRuntime* runtime, app* _app)
     }
 }
 
-RuntimeError bridge_init(NativeRuntime* runtime, app* _app)
+RuntimeError bridge_init(NativeRuntime* runtime, GuestPackage* app)
 {
-    return bridge_init_task(runtime, _app, true);
+    return bridge_init_task(runtime, app, true);
 }
 
 void bridge_release_game_resources(void)
 {
     releaseDlResHandles();
     releaseDingooSemaphores();
-    fsys_set_app(NULL);
-    fsys_set_app_identity(NULL);
+    fsys_reset_guest_package(NULL);
+    fsys_set_game_identity(NULL);
     fsys_set_save_directory(NULL);
     pthread_mutex_lock(&s_runtimeContextsMutex);
     s_runtimeContexts.clear();
@@ -3078,23 +3080,105 @@ void bridge_release_game_resources(void)
     s_bridgeAppSha256.clear();
 }
 
-RuntimeError bridge_init_task(NativeRuntime* runtime, app* _app, bool isMainRuntime)
+bool bridge_run_semaphore_regression(void)
+{
+    releaseDingooSemaphores();
+    uint32_t handles[127] = {};
+    bool capacity = true;
+    for (size_t index = 0; index < sizeof(handles) / sizeof(handles[0]); ++index)
+    {
+        handles[index] = createDingooSemaphore((uint32_t)index);
+        if (!handles[index] || !findDingooSemaphore(handles[index]))
+        {
+            capacity = false;
+            break;
+        }
+    }
+    bool exhaustedSafely = createDingooSemaphore(0) == 0 &&
+        findDingooSemaphore(128) == NULL && findDingooSemaphore(UINT32_MAX) == NULL;
+    releaseDingooSemaphores();
+    uint32_t reused = createDingooSemaphore(1);
+    bool reusable = reused == 1 && findDingooSemaphore(reused) != NULL;
+
+    NativeRuntime* runtime = NULL;
+    bool runtimeCreated = nativeRuntimeCreate(&runtime) == RUNTIME_OK;
+    DingooSemaphorePendResult acquiredResult = runtimeCreated && reusable ?
+        dingooSemaphorePend(findDingooSemaphore(reused), runtime, 0) :
+        DINGOO_SEMAPHORE_INVALID;
+    releaseDingooSemaphores();
+
+    uint32_t timeoutHandle = createDingooSemaphore(0);
+    std::chrono::steady_clock::time_point timeoutBegin =
+        std::chrono::steady_clock::now();
+    DingooSemaphorePendResult timeoutResult = runtimeCreated && timeoutHandle ?
+        dingooSemaphorePend(findDingooSemaphore(timeoutHandle), runtime, 2) :
+        DINGOO_SEMAPHORE_INVALID;
+    uint64_t timeoutElapsedMs = (uint64_t)std::chrono::duration_cast<
+        std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - timeoutBegin).count();
+    bool timeoutWorks = timeoutResult == DINGOO_SEMAPHORE_TIMEOUT &&
+        timeoutElapsedMs >= 10 && timeoutElapsedMs < 500;
+    releaseDingooSemaphores();
+
+    uint32_t stopHandle = createDingooSemaphore(0);
+    std::atomic<DingooSemaphorePendResult> stopResult(DINGOO_SEMAPHORE_INVALID);
+    std::chrono::steady_clock::time_point stopBegin =
+        std::chrono::steady_clock::now();
+    std::thread stopWaiter;
+    if (runtimeCreated && stopHandle)
+    {
+        stopWaiter = std::thread([&]() {
+            stopResult.store(dingooSemaphorePend(
+                findDingooSemaphore(stopHandle), runtime, 0),
+                std::memory_order_release);
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        nativeRuntimeRequestStop(runtime);
+        stopWaiter.join();
+    }
+    uint64_t stopElapsedMs = (uint64_t)std::chrono::duration_cast<
+        std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - stopBegin).count();
+    bool stopWorks = stopResult.load(std::memory_order_acquire) ==
+        DINGOO_SEMAPHORE_INTERRUPTED && stopElapsedMs < 500;
+    releaseDingooSemaphores();
+    if (runtime)
+    {
+        nativeRuntimeDestroy(runtime);
+    }
+
+    bool acquired = acquiredResult == DINGOO_SEMAPHORE_ACQUIRED;
+    printf("hle: semaphore regression capacity=%u exhausted_safely=%u reusable=%u "
+        "acquired=%u timeout=%u timeout_ms=%llu stop=%u stop_ms=%llu\n",
+        capacity ? 1u : 0u,
+        exhaustedSafely ? 1u : 0u,
+        reusable ? 1u : 0u,
+        acquired ? 1u : 0u,
+        timeoutWorks ? 1u : 0u,
+        (unsigned long long)timeoutElapsedMs,
+        stopWorks ? 1u : 0u,
+        (unsigned long long)stopElapsedMs);
+    return capacity && exhaustedSafely && reusable && acquired &&
+        timeoutWorks && stopWorks;
+}
+
+RuntimeError bridge_init_task(NativeRuntime* runtime, GuestPackage* app, bool isMainRuntime)
 {
     {
         std::lock_guard<std::mutex> lock(s_dlResMutex);
-        s_bridgeApp = _app;
+        s_bridgeApp = app;
     }
     if (isMainRuntime)
     {
         s_osTickClock.reset();
-        fsys_set_app(_app);
+        fsys_reset_guest_package(app);
     }
     else
     {
-        fsys_set_app_package(_app);
+        fsys_set_guest_package(app);
     }
     registerRuntimeContext(runtime, isMainRuntime);
-    hooks_init(runtime, _app);
+    hooks_init(runtime, app);
 
     return RUNTIME_OK;
 }

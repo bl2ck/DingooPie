@@ -232,7 +232,7 @@ static void configureResampleLowPassLocked(void)
     resetResampleLowPassLocked();
     if (g_digitalNoiseReduction != DIGITAL_NOISE_REDUCTION_HIGH ||
         g_guestAudioSpec.freq <= 0 || g_audioSpec.freq <= g_guestAudioSpec.freq ||
-        g_audioSpec.format != AUDIO_S16LSB)
+        (g_audioSpec.format != AUDIO_S16LSB && g_audioSpec.format != AUDIO_F32LSB))
     {
         return;
     }
@@ -909,6 +909,54 @@ static void applyVolumeInPlaceLocked(char* buffer, int count)
     }
 }
 
+static int16_t floatSampleToS16(float sample)
+{
+    if (sample <= -1.0f)
+    {
+        return -32768;
+    }
+    if (sample >= 1.0f)
+    {
+        return 32767;
+    }
+    return (int16_t)clampS16((int)(sample * 32768.0f));
+}
+
+static void applyAudioProcessingInPlaceLocked(char* buffer, int count)
+{
+    if (!buffer || count <= 0 || g_audioSpec.format != AUDIO_F32LSB)
+    {
+        applyResampleLowPassInPlaceLocked(buffer, count);
+        applyAudioEffectInPlaceLocked(buffer, count);
+        applyVolumeInPlaceLocked(buffer, count);
+        applyOutputConditionerS16Locked(buffer, count);
+        return;
+    }
+
+    const int sampleCount = count / (int)sizeof(float);
+    float* floatSamples = (float*)buffer;
+    std::vector<int16_t> s16Samples((size_t)sampleCount);
+    for (int index = 0; index < sampleCount; ++index)
+    {
+        s16Samples[(size_t)index] = floatSampleToS16(floatSamples[index]);
+    }
+
+    const SDL_AudioFormat outputFormat = g_audioSpec.format;
+    g_audioSpec.format = AUDIO_S16LSB;
+    char* s16Buffer = (char*)s16Samples.data();
+    const int s16Bytes = sampleCount * (int)sizeof(int16_t);
+    applyResampleLowPassInPlaceLocked(s16Buffer, s16Bytes);
+    applyAudioEffectInPlaceLocked(s16Buffer, s16Bytes);
+    applyVolumeInPlaceLocked(s16Buffer, s16Bytes);
+    applyOutputConditionerS16Locked(s16Buffer, s16Bytes);
+    g_audioSpec.format = outputFormat;
+
+    for (int index = 0; index < sampleCount; ++index)
+    {
+        floatSamples[index] = (float)s16Samples[(size_t)index] / 32768.0f;
+    }
+}
+
 static void applyQueueRecoveryFadeInLocked(char* buffer, int count,
     uint32_t queuedBytes)
 {
@@ -969,6 +1017,20 @@ static void applyQueueRecoveryFadeInLocked(char* buffer, int count,
                 int centered = (int)samples[index] - 128;
                 samples[index] = (uint8_t)(128 + centered * frame /
                     (fadeFrames - 1));
+            }
+        }
+    }
+    else if (g_audioSpec.format == AUDIO_F32LSB)
+    {
+        float* samples = (float*)buffer;
+        const int frameCount = count / (int)(sizeof(float) * channels);
+        const int frames = frameCount < fadeFrames ? frameCount : fadeFrames;
+        for (int frame = 0; frame < frames; ++frame)
+        {
+            const float gain = (float)frame / (float)(fadeFrames - 1);
+            for (int channel = 0; channel < channels; ++channel)
+            {
+                samples[frame * channels + channel] *= gain;
             }
         }
     }
@@ -1208,10 +1270,7 @@ uint32_t audioOutputWriteBuffer(char* buffer, int count)
         return 1;
     }
 
-    applyResampleLowPassInPlaceLocked(converted.data(), (int)converted.size());
-    applyAudioEffectInPlaceLocked(converted.data(), (int)converted.size());
-    applyVolumeInPlaceLocked(converted.data(), (int)converted.size());
-    applyOutputConditionerS16Locked(converted.data(), (int)converted.size());
+    applyAudioProcessingInPlaceLocked(converted.data(), (int)converted.size());
     uint32_t queuedBytes = SDL_GetQueuedAudioSize(g_audioDevice);
     applyQueueRecoveryFadeInLocked(converted.data(), (int)converted.size(),
         queuedBytes);
@@ -1265,10 +1324,7 @@ uint32_t audioOutputTryWriteBuffer(char* buffer, int count)
     }
     if (SDL_GetQueuedAudioSize(g_audioDevice) >= maxQueuedAudioBytesLocked())
     {
-        applyResampleLowPassInPlaceLocked(converted.data(), (int)converted.size());
-        applyAudioEffectInPlaceLocked(converted.data(), (int)converted.size());
-        applyVolumeInPlaceLocked(converted.data(), (int)converted.size());
-        applyOutputConditionerS16Locked(converted.data(), (int)converted.size());
+        applyAudioProcessingInPlaceLocked(converted.data(), (int)converted.size());
         audioValidationRecordAudio(converted.data(), (uint32_t)converted.size(),
             "pending", SDL_GetQueuedAudioSize(g_audioDevice),
             g_pendingAudioBytes);
@@ -1285,10 +1341,7 @@ uint32_t audioOutputTryWriteBuffer(char* buffer, int count)
         return 0;
     }
 
-    applyResampleLowPassInPlaceLocked(converted.data(), (int)converted.size());
-    applyAudioEffectInPlaceLocked(converted.data(), (int)converted.size());
-    applyVolumeInPlaceLocked(converted.data(), (int)converted.size());
-    applyOutputConditionerS16Locked(converted.data(), (int)converted.size());
+    applyAudioProcessingInPlaceLocked(converted.data(), (int)converted.size());
     uint32_t queuedBytes = SDL_GetQueuedAudioSize(g_audioDevice);
     applyQueueRecoveryFadeInLocked(converted.data(), (int)converted.size(),
         queuedBytes);

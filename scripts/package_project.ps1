@@ -162,11 +162,12 @@ Copy-SourceTree 'docs'
 Copy-SourceTree 'patches'
 Copy-SourceTree 'resources'
 Copy-SourceTree 'scripts'
-Copy-SourceTree 'tools'
 
 Copy-WorkspaceSourceFile 'native\pc\resources\app_metadata.h'
 Copy-WorkspaceSourceFile 'native\core\app\memory\app_framebuffer_mapping.cpp'
 Copy-WorkspaceSourceFile 'native\core\app\memory\app_framebuffer_mapping.h'
+Copy-WorkspaceSourceFile 'native\core\shared\game\game_runtime_types.h'
+Copy-WorkspaceSourceFile 'patches\ppsspp-irjit-vfpu-bounds.patch'
 Copy-WorkspaceSourceFile 'scripts\debug_output_regression.ps1'
 Copy-WorkspaceSourceFile 'scripts\check_core_dependencies.ps1'
 
@@ -190,6 +191,7 @@ $required = @(
     'native\core\app\hle\app_hle.cpp',
     'native\core\app\memory\app_framebuffer_mapping.cpp',
     'native\core\app\memory\app_framebuffer_mapping.h',
+    'native\core\shared\game\game_runtime_types.h',
     'native\core\shared\save\guest_save_transaction.cpp',
     'native\core\shared\save\guest_save_transaction.h',
     'native\core\shared\services\guest_filesystem.cpp',
@@ -218,9 +220,8 @@ $required = @(
     'scripts\profile_sample.ps1',
     'scripts\profile_samples.ps1',
     'scripts\smoke_test.ps1',
-    'tools\dingoo_app_tool\README.md',
-    'tools\dingoo_app_tool\src\main.cpp',
     'patches\ppsspp-irjit-dingoo.patch',
+    'patches\ppsspp-irjit-vfpu-bounds.patch',
     'resources\app_icon.ico',
     'resources\app_icon.png'
 )

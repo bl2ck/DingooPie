@@ -1,7 +1,7 @@
 #ifndef DINGOO_PIE_FRONTEND_INPUT_KEYBOARD_MAPPING_H
 #define DINGOO_PIE_FRONTEND_INPUT_KEYBOARD_MAPPING_H
 
-#include "input_controls.h"
+#include "frontend/input/input_controls.h"
 
 #include <stddef.h>
 #include <string>

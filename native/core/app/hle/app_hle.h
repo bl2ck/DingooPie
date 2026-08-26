@@ -7,8 +7,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "app_runtime_debug.h"
-#include "app/runtime/app_loader.h"
+#include "app/runtime/app_runtime_debug.h"
+#include "shared/services/guest_package.h"
 #include "shared/config/runtime_constants.h"
 
 // Wires Dingoo SDK imports to host-side HLE implementations.
@@ -32,7 +32,8 @@ bool bridge_fast_os_sem_pend(uint32_t eventVal, uint32_t timeout, uint32_t error
     NativeRuntime* runtime, bool* interrupted);
 bool bridge_fast_os_sem_post(uint32_t eventVal, uint32_t* returnValue);
 void bridge_release_game_resources(void);
-RuntimeError bridge_init(NativeRuntime* runtime, app* _app);
-RuntimeError bridge_init_task(NativeRuntime* runtime, app* _app, bool isMainRuntime);
+bool bridge_run_semaphore_regression(void);
+RuntimeError bridge_init(NativeRuntime* runtime, GuestPackage* app);
+RuntimeError bridge_init_task(NativeRuntime* runtime, GuestPackage* app, bool isMainRuntime);
 
 #endif

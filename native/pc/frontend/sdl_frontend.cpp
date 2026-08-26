@@ -2231,6 +2231,14 @@ static uint64_t parsePositiveEnv(const char* name, uint64_t defaultValue, uint64
     return parsed;
 }
 
+static bool frontendEnvEnabled(const char* name)
+{
+    const char* value = getenv(name);
+    return value && value[0] && strcmp(value, "0") != 0 &&
+        SDL_strcasecmp(value, "false") != 0 &&
+        SDL_strcasecmp(value, "off") != 0;
+}
+
 static void disableTextComposition(void)
 {
     SDL_SetHint(SDL_HINT_IME_SHOW_UI, "0");
@@ -4213,18 +4221,22 @@ void frontendApplyVideoSettings(const EmulatorSettings& settings)
 
 void frontendApplyAudioSettings(const EmulatorSettings& settings)
 {
+    bool validationCapture = frontendEnvEnabled(
+        "DINGOO_PIE_AUDIO_VALIDATION_CAPTURE");
     audioOutputSetMasterVolumePercent(settings.audioVolumePercent);
     audioOutputSetBufferSamples(settings.audioBufferSamples);
     audioOutputSetBufferLatencyMode(settings.audioBufferLatency);
     audioOutputSetEffect(settings.audioEffect);
     audioOutputSetNoiseReduction(settings.digitalNoiseReduction);
-    printf("frontend: audio settings volume=%d buffer_samples=%d buffer_latency=%s effect=%s digital_noise_reduction=%s audio_disabled=%u\n",
+    audioOutputSetValidationCaptureEnabled(validationCapture);
+    printf("frontend: audio settings volume=%d buffer_samples=%d buffer_latency=%s effect=%s digital_noise_reduction=%s audio_disabled=%u validation_capture=%u\n",
         settings.audioVolumePercent,
         settings.audioBufferSamples,
         emulatorAudioBufferLatencyName(settings.audioBufferLatency),
         emulatorAudioEffectName(settings.audioEffect),
         emulatorDigitalNoiseReductionName(settings.digitalNoiseReduction),
-        settings.audioDisabled ? 1u : 0u);
+        settings.audioDisabled ? 1u : 0u,
+        validationCapture ? 1u : 0u);
 }
 
 void frontendApplyInputSettings(const EmulatorSettings& settings)

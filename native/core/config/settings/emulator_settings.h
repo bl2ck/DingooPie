@@ -1,7 +1,7 @@
-#ifndef DINGOO_PIE_EMULATOR_SETTINGS_H
-#define DINGOO_PIE_EMULATOR_SETTINGS_H
+#ifndef DINGOO_PIE_CONFIG_SETTINGS_EMULATOR_SETTINGS_H
+#define DINGOO_PIE_CONFIG_SETTINGS_EMULATOR_SETTINGS_H
 
-#include "execution_backend.h"
+#include "shared/execution/execution_backend.h"
 
 #include <string>
 #include <vector>

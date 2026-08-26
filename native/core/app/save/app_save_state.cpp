@@ -1,4 +1,4 @@
-#include "app_save_state.h"
+#include "app/save/app_save_state.h"
 #include "shared/save/save_file_storage.h"
 #include "shared/save/save_state_format.h"
 
@@ -187,19 +187,25 @@ static bool readWholeFile(const std::string& path, std::vector<uint8_t>* out)
     return ok;
 }
 
-static bool readSaveStateHeader(const std::string& path, AppSaveStateFileHeader* out)
+template <typename Header>
+static bool readSaveStateHeader(const std::string& path, Header* out,
+    bool storagePath = false)
 {
     if (!out)
     {
         return false;
     }
 
+    FILE* file = storagePath ? saveFileOpen(path, "rb") : NULL;
+    if (!storagePath)
+    {
 #ifdef _WIN32
-    std::wstring widePath = platformUtf8ToWide(path);
-    FILE* file = _wfopen(widePath.c_str(), L"rb");
+        std::wstring widePath = platformUtf8ToWide(path);
+        file = _wfopen(widePath.c_str(), L"rb");
 #else
-    FILE* file = fopen(path.c_str(), "rb");
+        file = fopen(path.c_str(), "rb");
 #endif
+    }
     if (!file)
     {
         return false;
@@ -872,15 +878,17 @@ std::string saveStateAppIdForPath(const std::string& appPath)
     return appId;
 }
 
-std::string saveStatePathForSlot(const std::string& appPath, int slot)
+static std::string saveStateNativePathForSlot(const std::string& appPath,
+    SaveStateGameFormat format, int slot)
 {
     if (slot < 1 || slot > kSaveStateSlotCount)
     {
         return "";
     }
 
-    std::string dir = platformGetAppSaveDirectory(
-        appPath, saveStateAppIdForPath(appPath));
+    std::string dir = format == SAVE_STATE_FORMAT_CC ?
+        platformGetCcSaveDirectory(appPath, saveStateAppIdForPath(appPath)) :
+        platformGetAppSaveDirectory(appPath, saveStateAppIdForPath(appPath));
     if (dir.empty())
     {
         return "";
@@ -892,26 +900,32 @@ std::string saveStatePathForSlot(const std::string& appPath, int slot)
     return dir + "\\" + saveStateFileStemForPath(appPath) + slotSuffix;
 }
 
-SaveStateGameFormat saveStateFormatForPath(const std::string& appPath)
-{
-    return gamePathHasCcExtension(appPath) ? SAVE_STATE_FORMAT_CC : SAVE_STATE_FORMAT_APP;
-}
-
 std::string saveStatePathForSlot(const std::string& appPath,
-    SaveStateGameFormat, int slot)
+    SaveStateGameFormat format, int slot)
 {
-    std::string path = saveStatePathForSlot(appPath, slot);
+    std::string path = saveStateNativePathForSlot(appPath, format, slot);
+    if (path.empty() || format != SAVE_STATE_FORMAT_CC)
+    {
+        return path;
+    }
+
     size_t slash = path.find_last_of("\\/");
-    if (path.empty() || slash == std::string::npos || slash + 1 >= path.size())
+    if (slash == std::string::npos || slash + 1 >= path.size())
     {
         return "";
     }
     return saveFilePathJoin(path.substr(0, slash), path.substr(slash + 1));
 }
 
-std::string saveStateThumbnailPathForSlot(const std::string& appPath, int slot)
+SaveStateGameFormat saveStateFormatForPath(const std::string& appPath)
 {
-    std::string path = saveStatePathForSlot(appPath, slot);
+    return gamePathHasCcExtension(appPath) ? SAVE_STATE_FORMAT_CC : SAVE_STATE_FORMAT_APP;
+}
+
+std::string saveStateThumbnailPathForSlot(const std::string& appPath,
+    SaveStateGameFormat format, int slot)
+{
+    std::string path = saveStateNativePathForSlot(appPath, format, slot);
     if (path.empty())
     {
         return "";
@@ -926,17 +940,35 @@ std::string saveStateThumbnailPathForSlot(const std::string& appPath, int slot)
     return path;
 }
 
-bool saveStateDeleteSlot(const std::string& appPath,
-    SaveStateGameFormat, int slot)
+bool saveStateSlotExists(const std::string& appPath,
+    SaveStateGameFormat format, int slot)
 {
-    const std::string statePath = saveStatePathForSlot(appPath, slot);
-    const std::string thumbnailPath = saveStateThumbnailPathForSlot(appPath, slot);
+    const std::string path = saveStatePathForSlot(appPath, format, slot);
+    return !path.empty() && (format == SAVE_STATE_FORMAT_CC ?
+        saveFileExists(path) : fileExists(path));
+}
+
+bool saveStateDeleteSlot(const std::string& appPath,
+    SaveStateGameFormat format, int slot)
+{
+    const std::string statePath = saveStatePathForSlot(appPath, format, slot);
+    const std::string thumbnailPath = saveStateThumbnailPathForSlot(appPath, format, slot);
     if (statePath.empty() || thumbnailPath.empty())
     {
         return false;
     }
 #ifdef _WIN32
-    bool stateDeleted = DeleteFileW(platformUtf8ToWide(statePath).c_str()) != FALSE;
+    bool stateDeleted = false;
+    if (format == SAVE_STATE_FORMAT_CC)
+    {
+        SaveFilePath stateParts;
+        stateDeleted = saveFilePathSplit(statePath, &stateParts) &&
+            platformDeleteStorageFile(stateParts.directory, stateParts.relativePath);
+    }
+    else
+    {
+        stateDeleted = DeleteFileW(platformUtf8ToWide(statePath).c_str()) != FALSE;
+    }
     DWORD thumbnailAttributes = GetFileAttributesW(platformUtf8ToWide(thumbnailPath).c_str());
     bool thumbnailDeleted = thumbnailAttributes == INVALID_FILE_ATTRIBUTES ||
         DeleteFileW(platformUtf8ToWide(thumbnailPath).c_str()) != FALSE;
@@ -947,34 +979,50 @@ bool saveStateDeleteSlot(const std::string& appPath,
     return stateDeleted && thumbnailDeleted;
 }
 
-SaveStateSlotInfo saveStateSlotInfo(const std::string& appPath, int slot)
+SaveStateSlotInfo saveStateSlotInfo(const std::string& appPath,
+    SaveStateGameFormat format, int slot)
 {
     SaveStateSlotInfo info;
     info.exists = false;
-    info.path = saveStatePathForSlot(appPath, slot);
+    info.path = saveStateNativePathForSlot(appPath, format, slot);
     info.modifiedTime = 0;
     info.runtimeCountValid = false;
     info.runtimeCount = 0;
     if (!info.path.empty())
     {
-        info.exists = fileExists(info.path);
+        const std::string storagePath = saveStatePathForSlot(appPath, format, slot);
+        info.exists = format == SAVE_STATE_FORMAT_CC ?
+            saveFileExists(storagePath) : fileExists(info.path);
         if (info.exists)
         {
             info.modifiedTime = fileModifiedTime(info.path);
             AppSaveStateFileHeader header;
-            if (readSaveStateHeader(info.path, &header) &&
+            if (readSaveStateHeader(format == SAVE_STATE_FORMAT_CC ?
+                    storagePath : info.path, &header,
+                    format == SAVE_STATE_FORMAT_CC) &&
                 header.magic == kAppSaveStateMagic &&
                 header.headerSize == kAppSaveStateHeaderSize)
             {
                 info.runtimeCountValid = true;
                 info.runtimeCount = 1u + header.taskRegisterCount;
             }
+            else if (format == SAVE_STATE_FORMAT_CC)
+            {
+                CcSaveStateFileHeader ccHeader;
+                if (readSaveStateHeader(storagePath, &ccHeader, true) &&
+                    ccHeader.magic == kCcSaveStateMagic &&
+                    ccHeader.headerSize == kCcSaveStateHeaderSize)
+                {
+                    info.runtimeCountValid = true;
+                    info.runtimeCount = ccHeader.taskCount;
+                }
+            }
         }
     }
     return info;
 }
 
-bool saveStateWriteSlot(const std::string& appPath, int slot,
+bool saveStateWriteSlot(const std::string& appPath, SaveStateGameFormat format, int slot,
     const AppRuntimeState& state, std::string* error,
     SaveStateProgressCallback progressCallback, void* progressUserData)
 {
@@ -984,7 +1032,7 @@ bool saveStateWriteSlot(const std::string& appPath, int slot,
         return false;
     }
 
-    std::string path = saveStatePathForSlot(appPath, slot);
+    std::string path = saveStatePathForSlot(appPath, format, slot);
     if (path.empty())
     {
         if (error) *error = "invalid slot";
@@ -1063,7 +1111,7 @@ bool saveStateWriteSlot(const std::string& appPath, int slot,
     return true;
 }
 
-bool saveStateReadSlot(const std::string& appPath, int slot,
+bool saveStateReadSlot(const std::string& appPath, SaveStateGameFormat format, int slot,
     AppRuntimeState* state, std::string* error,
     SaveStateProgressCallback progressCallback, void* progressUserData)
 {
@@ -1078,7 +1126,7 @@ bool saveStateReadSlot(const std::string& appPath, int slot,
     memset(&state->heap, 0, sizeof(state->heap));
     state->osTicks = 0;
 
-    std::string path = saveStatePathForSlot(appPath, slot);
+    std::string path = saveStatePathForSlot(appPath, format, slot);
     std::vector<uint8_t> bytes;
     if (path.empty() || !readWholeFile(path, &bytes))
     {
@@ -1161,4 +1209,105 @@ bool saveStateReadSlot(const std::string& appPath, int slot,
     }
 
     return true;
+}
+
+bool saveStateRunRegressionTests(void)
+{
+    AppRuntimeState state;
+    memset(&state.registers, 0, sizeof(state.registers));
+    memset(&state.heap, 0, sizeof(state.heap));
+    state.registers.running = true;
+    state.registers.pc = 0x81234567u;
+    state.registers.hi = 0x13579bdfu;
+    state.registers.lo = 0x2468ace0u;
+    for (size_t index = 0; index < 32; ++index)
+    {
+        state.registers.gpr[index] = 0x10000000u + (uint32_t)index * 0x01010101u;
+        state.registers.fpr[index] = (float)index * 1.25f;
+    }
+    for (size_t index = 0; index < 128; ++index)
+    {
+        state.registers.vfpu[index] = (float)index / 3.0f;
+    }
+    state.heap.valid = true;
+    state.heap.beginAddress = 0x84000000u;
+    state.heap.size = 0x00100000u;
+    state.heap.freeNext = 0x84001000u;
+    state.heap.freeLen = 0x000ff000u;
+    state.heap.left = state.heap.freeLen;
+    state.heap.min = 0x84000000u;
+    state.heap.top = 0x84100000u;
+    state.osTicks = 0x10203040u;
+    state.hleSemaphoreCounts.resize(128);
+    for (size_t index = 0; index < state.hleSemaphoreCounts.size(); ++index)
+    {
+        state.hleSemaphoreCounts[index] = (uint32_t)(index % 5);
+    }
+    for (int task = 0; task < 3; ++task)
+    {
+        AppRuntimeRegisterSnapshot snapshot = state.registers;
+        snapshot.pc += (uint32_t)(task + 1) * 4u;
+        state.taskRegisters.push_back(snapshot);
+    }
+    for (int regionIndex = 0; regionIndex < 4; ++regionIndex)
+    {
+        AppRuntimeStateRegion region;
+        region.start = 0x80000000u + (uint32_t)regionIndex * 0x00100000u;
+        region.size = 256u * 1024u;
+        region.perms = 3;
+        region.data.resize(region.size);
+        for (size_t index = 0; index < region.data.size(); ++index)
+        {
+            region.data[index] = regionIndex == 0 ? 0 :
+                (uint8_t)((index * 37u + (size_t)regionIndex * 19u) & 0xffu);
+        }
+        state.regions.push_back(region);
+    }
+
+    std::vector<uint8_t> payload;
+    std::string error;
+    if (!buildSaveStatePayload(state, &payload, &error) || payload.empty())
+    {
+        printf("save-state-regression: payload build failed: %s\n", error.c_str());
+        return false;
+    }
+
+    bool stressPassed = true;
+    size_t compressedSize = 0;
+    for (int iteration = 0; iteration < 100 && stressPassed; ++iteration)
+    {
+        std::vector<uint8_t> compressed;
+        std::vector<uint8_t> restored;
+        stressPassed = saveStateCompressPayload(payload, &compressed, NULL, NULL) &&
+            saveStateDecompressPayload(compressed, 0, compressed.size(), payload.size(),
+                &restored, NULL, NULL) && restored == payload;
+        compressedSize = compressed.size();
+    }
+
+    std::vector<uint8_t> compressed;
+    bool corruptionRejected = saveStateCompressPayload(payload, &compressed, NULL, NULL);
+    if (corruptionRejected && !compressed.empty())
+    {
+        compressed[0] = 0xff;
+        std::vector<uint8_t> restored;
+        corruptionRejected = !saveStateDecompressPayload(compressed, 0,
+            compressed.size(), payload.size(), &restored, NULL, NULL);
+    }
+    else
+    {
+        corruptionRejected = false;
+    }
+
+    AppRuntimeState invalidState = state;
+    invalidState.regions[0].size++;
+    std::vector<uint8_t> invalidPayload;
+    bool invalidRegionRejected = !buildSaveStatePayload(
+        invalidState, &invalidPayload, NULL);
+    bool passed = stressPassed && corruptionRejected && invalidRegionRejected;
+    printf("save-state-regression: result=%s iterations=100 payload=%u compressed=%u "
+        "corruption_rejected=%u invalid_region_rejected=%u\n",
+        passed ? "pass" : "fail", (unsigned int)payload.size(),
+        (unsigned int)compressedSize, corruptionRejected ? 1u : 0u,
+        invalidRegionRejected ? 1u : 0u);
+    return passed;
 }

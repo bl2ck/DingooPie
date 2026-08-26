@@ -1,79 +1,61 @@
 #include "shared/game/game_runtime.h"
 
-#include "app_runtime.h"
-#include "app_hle.h"
+#include "app/runtime/app_runtime.h"
+#include "app/hle/app_hle.h"
 #include "cc/runtime/cc_runtime.h"
 #include "cc/save/cc_save_state.h"
-#include "app_save_state.h"
+#include "app/save/app_save_state.h"
+#include "shared/execution/thread_join.h"
 #include "shared/services/audio_output.h"
 #include "runtime_resource_monitor.h"
 #include "sdl_frontend.h"
 
-#include <mutex>
-#include <condition_variable>
-#include <chrono>
 #include <limits>
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
-#include <thread>
 
-static std::mutex g_gameRuntimeMutex;
-static std::condition_variable g_ccRuntimeCondition;
-static std::thread g_ccRuntimeThread;
-static GameFormat g_activeFormat = GAME_FORMAT_UNKNOWN;
-static bool g_ccRuntimeThreadComplete = true;
+static pthread_mutex_t g_gameRuntimeMutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_t g_ccRuntimeThread;
+static bool g_ccRuntimeThreadStarted = false;
+static GameFormat g_activeGameFormat = GAME_FORMAT_UNKNOWN;
 static std::string g_ccGamePath;
 static std::vector<std::string> g_ccCheatFeatureKeys;
+static RuntimeThreadCompletion g_ccRuntimeThreadCompletion =
+    RUNTIME_THREAD_COMPLETION_INITIALIZER;
 
-static void runCcGame(void)
+static const uint32_t kRuntimeStopTimeoutMs = 5000;
+
+static void* runCcGame(void*)
 {
+    struct RuntimeThreadCompletionGuard
+    {
+        ~RuntimeThreadCompletionGuard()
+        {
+            runtimeThreadCompletionSignal(&g_ccRuntimeThreadCompletion);
+        }
+    } completionGuard;
     CcRuntimeStats stats = {};
     bool ok = ccRuntimeRunFile(g_ccGamePath.c_str(), g_ccCheatFeatureKeys, &stats);
     if (!ok)
     {
-        printf("game-runtime: CC execution failed: %s\n",
+        printf("cc-runtime: execution failed: %s\n",
             stats.error[0] ? stats.error : "unknown error");
         frontendRequestQuit();
     }
     else
     {
-        printf("game-runtime: CC execution stopped instructions=%llu frames=%u tasks=%u\n",
+        printf("cc-runtime: execution stopped instructions=%llu frames=%u tasks=%u\n",
             (unsigned long long)stats.instructions,
             stats.framesSubmitted,
             stats.tasksCreated);
         if (stats.guestCompleted)
         {
-            printf("game-runtime: CC guest completed; exiting emulator\n");
+            printf("cc-runtime: guest completed; exiting emulator\n");
             frontendRequestQuit();
         }
     }
-    {
-        std::lock_guard<std::mutex> lock(g_gameRuntimeMutex);
-        if (g_activeFormat == GAME_FORMAT_CC)
-        {
-            g_activeFormat = GAME_FORMAT_UNKNOWN;
-        }
-        g_ccRuntimeThreadComplete = true;
-    }
-    g_ccRuntimeCondition.notify_all();
-}
-
-static void joinCcRuntimeThread(void)
-{
-    if (!g_ccRuntimeThread.joinable())
-    {
-        return;
-    }
-    {
-        std::unique_lock<std::mutex> lock(g_gameRuntimeMutex);
-        if (!g_ccRuntimeCondition.wait_for(lock, std::chrono::seconds(5), [] {
-                return g_ccRuntimeThreadComplete;
-            }))
-        {
-            printf("game-runtime: CC runtime stop is taking longer than expected\n");
-        }
-    }
-    g_ccRuntimeThread.join();
+    return NULL;
 }
 
 bool gameRuntimeStart(const char* gamePath, const EmulatorOptions& options,
@@ -82,10 +64,15 @@ bool gameRuntimeStart(const char* gamePath, const EmulatorOptions& options,
 {
     const std::string normalizedPath = gamePathNormalize(gamePath);
     const GameFormat format = gameFormatFromPath(normalizedPath);
-    if (gameRuntimeActiveFormat() != GAME_FORMAT_UNKNOWN ||
-        g_ccRuntimeThread.joinable())
+    pthread_mutex_lock(&g_gameRuntimeMutex);
+    const bool runtimeStarted = g_ccRuntimeThreadStarted;
+    pthread_mutex_unlock(&g_gameRuntimeMutex);
+    if (gameRuntimeActiveFormat() != GAME_FORMAT_UNKNOWN || runtimeStarted)
     {
-        gameRuntimeStop();
+        if (!gameRuntimeStop())
+        {
+            return false;
+        }
     }
     if (format == GAME_FORMAT_APP)
     {
@@ -94,8 +81,9 @@ bool gameRuntimeStart(const char* gamePath, const EmulatorOptions& options,
             enabledCheatFeatureKeys);
         if (started)
         {
-            std::lock_guard<std::mutex> lock(g_gameRuntimeMutex);
-            g_activeFormat = GAME_FORMAT_APP;
+            pthread_mutex_lock(&g_gameRuntimeMutex);
+            g_activeGameFormat = GAME_FORMAT_APP;
+            pthread_mutex_unlock(&g_gameRuntimeMutex);
         }
         return started;
     }
@@ -111,46 +99,74 @@ bool gameRuntimeStart(const char* gamePath, const EmulatorOptions& options,
     runtimeResourceMonitorSetActive(resourceMonitorAutoOpen);
     g_ccGamePath = normalizedPath;
     g_ccCheatFeatureKeys = enabledCheatFeatureKeys;
+    runtimeThreadCompletionReset(&g_ccRuntimeThreadCompletion);
+    pthread_t thread;
+    const int createResult = pthread_create(&thread, NULL, runCcGame, NULL);
+    if (createResult != 0)
     {
-        std::lock_guard<std::mutex> lock(g_gameRuntimeMutex);
-        g_activeFormat = GAME_FORMAT_CC;
-        g_ccRuntimeThreadComplete = false;
-    }
-    try
-    {
-        g_ccRuntimeThread = std::thread(runCcGame);
-    }
-    catch (...)
-    {
-        std::lock_guard<std::mutex> lock(g_gameRuntimeMutex);
-        g_activeFormat = GAME_FORMAT_UNKNOWN;
-        g_ccRuntimeThreadComplete = true;
-        printf("game-runtime: failed to create CC runtime thread\n");
+        printf("game-runtime: failed to create CC runtime thread: %d\n", createResult);
         return false;
     }
-    printf("game-runtime: started CC game: %s\n", normalizedPath.c_str());
+    pthread_mutex_lock(&g_gameRuntimeMutex);
+    g_ccRuntimeThread = thread;
+    g_ccRuntimeThreadStarted = true;
+    g_activeGameFormat = GAME_FORMAT_CC;
+    pthread_mutex_unlock(&g_gameRuntimeMutex);
+    printf("game-runtime: starting CC game: %s\n", normalizedPath.c_str());
     return true;
 }
 
-void gameRuntimeStop(void)
+bool gameRuntimeStop(void)
 {
-    GameFormat format;
+    pthread_t ccThread = {};
+    bool joinCcThread = false;
+    pthread_mutex_lock(&g_gameRuntimeMutex);
+    const GameFormat format = g_activeGameFormat;
+    if (g_ccRuntimeThreadStarted)
     {
-        std::lock_guard<std::mutex> lock(g_gameRuntimeMutex);
-        format = g_activeFormat;
+        ccThread = g_ccRuntimeThread;
+        joinCcThread = true;
     }
+    pthread_mutex_unlock(&g_gameRuntimeMutex);
     if (format == GAME_FORMAT_APP)
     {
-        appRuntimeStop();
+        const bool stopped = appRuntimeStop();
+        if (stopped)
+        {
+            pthread_mutex_lock(&g_gameRuntimeMutex);
+            g_activeGameFormat = GAME_FORMAT_UNKNOWN;
+            pthread_mutex_unlock(&g_gameRuntimeMutex);
+            audioOutputResetAfterRuntimeStop();
+        }
+        return stopped;
     }
-    if (format == GAME_FORMAT_CC || g_ccRuntimeThread.joinable())
+    if (!joinCcThread)
     {
-        ccRuntimeRequestStop();
-        joinCcRuntimeThread();
+        return true;
     }
+    ccRuntimeRequestStop();
+    int joinError = 0;
+    const RuntimeThreadJoinResult joinResult = runtimeThreadJoinWithTimeout(
+        ccThread, &g_ccRuntimeThreadCompletion, kRuntimeStopTimeoutMs, &joinError);
+    if (joinResult != RUNTIME_THREAD_JOINED)
+    {
+        if (joinResult == RUNTIME_THREAD_JOIN_TIMEOUT)
+        {
+            printf("game-runtime: CC runtime thread did not stop within %u ms\n",
+                kRuntimeStopTimeoutMs);
+        }
+        else
+        {
+            printf("game-runtime: CC runtime thread join failed: %d\n", joinError);
+        }
+        return false;
+    }
+    pthread_mutex_lock(&g_gameRuntimeMutex);
+    g_ccRuntimeThreadStarted = false;
+    g_activeGameFormat = GAME_FORMAT_UNKNOWN;
+    pthread_mutex_unlock(&g_gameRuntimeMutex);
     audioOutputResetAfterRuntimeStop();
-    std::lock_guard<std::mutex> lock(g_gameRuntimeMutex);
-    g_activeFormat = GAME_FORMAT_UNKNOWN;
+    return true;
 }
 
 void gameRuntimeApplySettings(void)
@@ -193,8 +209,10 @@ void gameRuntimeCopyDiagnostics(char* identity, size_t identitySize,
 
 GameFormat gameRuntimeActiveFormat(void)
 {
-    std::lock_guard<std::mutex> lock(g_gameRuntimeMutex);
-    return g_activeFormat;
+    pthread_mutex_lock(&g_gameRuntimeMutex);
+    const GameFormat format = g_activeGameFormat;
+    pthread_mutex_unlock(&g_gameRuntimeMutex);
+    return format;
 }
 
 uint32_t gameRuntimeActiveUnitCount(void)
@@ -298,7 +316,6 @@ bool gameRuntimeGetGameInfo(AppRuntimeInfo* out)
     out->appMainEntry = cc.origin;
     out->importCount = cc.importCount;
     out->exportCount = cc.exportCount;
-    out->packageResourceCount = cc.resourceCount;
     out->resourceCount = cc.resourceCount;
     return true;
 }
@@ -439,7 +456,8 @@ bool gameRuntimeWriteState(const std::string& gamePath, int slot,
     std::string* error, SaveStateProgressCallback progressCallback,
     void* progressUserData)
 {
-    if (gameRuntimeActiveFormat() == GAME_FORMAT_CC)
+    const SaveStateGameFormat format = saveStateFormatForPath(gamePath);
+    if (format == SAVE_STATE_FORMAT_CC)
     {
         CcRuntimeState state;
         return ccRuntimeCaptureState(&state, error) &&
@@ -447,8 +465,8 @@ bool gameRuntimeWriteState(const std::string& gamePath, int slot,
                 progressCallback, progressUserData);
     }
     AppRuntimeState state;
-    return appRuntimeCaptureState(&state) &&
-        saveStateWriteSlot(gamePath, slot, state, error,
+    return appRuntimeCaptureState(&state, error) &&
+        saveStateWriteSlot(gamePath, format, slot, state, error,
             progressCallback, progressUserData);
 }
 
@@ -456,7 +474,8 @@ bool gameRuntimeReadState(const std::string& gamePath, int slot,
     std::string* error, SaveStateProgressCallback progressCallback,
     void* progressUserData)
 {
-    if (gameRuntimeActiveFormat() == GAME_FORMAT_CC)
+    const SaveStateGameFormat format = saveStateFormatForPath(gamePath);
+    if (format == SAVE_STATE_FORMAT_CC)
     {
         CcRuntimeState state;
         return saveStateReadCcSlot(gamePath, slot, &state, error,
@@ -464,7 +483,7 @@ bool gameRuntimeReadState(const std::string& gamePath, int slot,
             ccRuntimeRestoreState(state, error);
     }
     AppRuntimeState state;
-    return saveStateReadSlot(gamePath, slot, &state, error,
+    return saveStateReadSlot(gamePath, format, slot, &state, error,
         progressCallback, progressUserData) &&
-        appRuntimeRestoreState(state);
+        appRuntimeRestoreState(state, error);
 }

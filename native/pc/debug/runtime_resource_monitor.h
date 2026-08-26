@@ -1,8 +1,6 @@
 #ifndef DINGOO_PIE_RUNTIME_RESOURCE_MONITOR_H
 #define DINGOO_PIE_RUNTIME_RESOURCE_MONITOR_H
 
-#include "app_loader.h"
-#include "shared/services/guest_package.h"
 #include "shared/services/guest_package.h"
 
 #include <stdint.h>
@@ -60,7 +58,6 @@ void runtimeResourceMonitorSetActive(bool active);
 bool runtimeResourceMonitorIsCapturing(void);
 bool runtimeResourceMonitorMatchesApp(const char* appPath, const char* appSha256);
 void runtimeResourceMonitorSetAppSha256(const char* appSha256);
-void runtimeResourceMonitorSetAppResources(app* loadedApp);
 void runtimeResourceMonitorSetGuestResources(GuestPackage* package);
 void runtimeResourceMonitorRecordGuestOpen(
     const char* requestName, const GuestResourceEntry* entry, bool cached);
@@ -71,11 +68,11 @@ void runtimeResourceMonitorRecordGuestClose(const GuestResourceEntry* entry);
 void runtimeResourceMonitorRecordOpen(
     RuntimeResourceMonitorSource source,
     const char* requestName,
-    const app_resource_entry* entry,
+    const GuestResourceEntry* entry,
     bool cached);
 void runtimeResourceMonitorRecordLoadContent(
     RuntimeResourceMonitorSource source,
-    const app_resource_entry* entry,
+    const GuestResourceEntry* entry,
     uint32_t guestAddress,
     const void* data,
     uint32_t bytesRead,
@@ -98,11 +95,11 @@ void runtimeResourceMonitorRecordPackageClose(const char* requestName);
 void runtimeResourceMonitorRecordExternalClose(const char* requestName);
 void runtimeResourceMonitorRecordSeek(
     RuntimeResourceMonitorSource source,
-    const app_resource_entry* entry,
+    const GuestResourceEntry* entry,
     uint32_t positionAfter);
 void runtimeResourceMonitorRecordClose(
     RuntimeResourceMonitorSource source,
-    const app_resource_entry* entry);
+    const GuestResourceEntry* entry);
 RuntimeResourceMonitorSnapshot runtimeResourceMonitorGetSnapshot(void);
 
 #endif

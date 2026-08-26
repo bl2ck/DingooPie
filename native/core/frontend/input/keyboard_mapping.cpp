@@ -1,4 +1,4 @@
-#include "keyboard_mapping.h"
+#include "frontend/input/keyboard_mapping.h"
 
 #include <ctype.h>
 #include <stdio.h>

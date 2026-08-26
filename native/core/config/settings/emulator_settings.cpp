@@ -1,11 +1,11 @@
-#include "emulator_settings.h"
+#include "config/settings/emulator_settings.h"
 
 #include "shared/game/game_paths.h"
 #include "framebuffer.h"
-#include "guest_filesystem.h"
+#include "shared/services/guest_filesystem.h"
 #include "platform_win32.h"
 #include "ppsspp_backend.h"
-#include "runtime_log.h"
+#include "shared/diagnostics/runtime_log.h"
 #include "app_hle.h"
 
 #include <stdio.h>

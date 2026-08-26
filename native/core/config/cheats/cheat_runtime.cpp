@@ -1,7 +1,7 @@
-#include "cheat_runtime.h"
+#include "config/cheats/cheat_runtime.h"
 
 #include "shared/game/game_paths.h"
-#include "cheat_engine.h"
+#include "config/cheats/cheat_engine.h"
 #include "platform_win32.h"
 
 #include <stdio.h>
@@ -313,11 +313,18 @@ static void resetEntryEnabledStateLocked(void)
     }
 }
 
-static bool loadCandidate(const std::string& path, CheatSet* out)
+enum CheatCandidateLoadResult
+{
+    CHEAT_CANDIDATE_NOT_FOUND = 0,
+    CHEAT_CANDIDATE_LOADED,
+    CHEAT_CANDIDATE_INVALID
+};
+
+static CheatCandidateLoadResult loadCandidate(const std::string& path, CheatSet* out)
 {
     if (!fileExists(path))
     {
-        return false;
+        return CHEAT_CANDIDATE_NOT_FOUND;
     }
 
     std::string error;
@@ -325,11 +332,11 @@ static bool loadCandidate(const std::string& path, CheatSet* out)
     if (!cheatLoadFile(path, &loaded, &error))
     {
         printf("cheat: failed to load %s: %s\n", path.c_str(), error.c_str());
-        return false;
+        return CHEAT_CANDIDATE_INVALID;
     }
 
     *out = loaded;
-    return true;
+    return CHEAT_CANDIDATE_LOADED;
 }
 
 static void logApplyStats(const char* reason, const CheatApplyStats& stats)
@@ -440,7 +447,7 @@ uint32_t cheatRuntimeRevision(void)
 }
 
 void cheatRuntimeLoadForGame(
-    const char* gameSha256,
+    const char* appSha256,
     const char* gamePath,
     const std::vector<std::string>& enabledFeatureKeys)
 {
@@ -450,7 +457,7 @@ void cheatRuntimeLoadForGame(
     g_cheatShaMismatch = false;
     g_lastFrameApplyCount = 0;
     clearManualApplyLocked();
-    g_currentGameSha256 = normalizeSha(gameSha256);
+    g_currentGameSha256 = normalizeSha(appSha256);
     g_cheatRevision++;
 
     std::string dir = defaultCheatDirectory();
@@ -458,35 +465,36 @@ void cheatRuntimeLoadForGame(
 
     if (gamePath && gamePath[0])
     {
-        std::string cheatName = gameCheatFileNameFromPath(gamePath);
-        std::string namePath = cheatName.empty() ? "" : joinPath(dir, cheatName);
-        if (!namePath.empty() && loadCandidate(namePath, &loaded))
+        std::vector<std::string> cheatNames = gameCheatFileNamesFromPath(gamePath);
+        for (size_t i = 0; i < cheatNames.size(); ++i)
         {
-            g_cheatSet = loaded;
-            resetEntryEnabledStateLocked();
-            g_cheatLoaded = true;
-        }
-        if (!g_cheatLoaded && (gamePathHasAppExtension(gamePath) || gamePathHasCcExtension(gamePath)))
-        {
-            std::string legacyName = gameLegacyCheatFileNameFromPath(gamePath);
-            std::string legacyPath = legacyName.empty() ? "" : joinPath(dir, legacyName);
-            if (!legacyPath.empty() && legacyPath != namePath &&
-                loadCandidate(legacyPath, &loaded))
+            std::string candidatePath = joinPath(dir, cheatNames[i]);
+            CheatCandidateLoadResult result = loadCandidate(candidatePath, &loaded);
+            if (result == CHEAT_CANDIDATE_NOT_FOUND)
+            {
+                continue;
+            }
+            if (result == CHEAT_CANDIDATE_LOADED)
             {
                 g_cheatSet = loaded;
                 resetEntryEnabledStateLocked();
                 g_cheatLoaded = true;
             }
+            break;
         }
     }
 
     if (g_cheatLoaded)
     {
-        g_cheatShaMismatch = !cheatSetMatchesApp(g_cheatSet, gameSha256);
+        g_cheatShaMismatch = !cheatSetMatchesApp(g_cheatSet, appSha256);
         if (!g_cheatShaMismatch)
         {
             setEnabledFeatureKeysLocked(enabledFeatureKeys);
         }
+    }
+    if (!cheatAvailableLocked())
+    {
+        g_cheatRequestedEnabled = false;
     }
     refreshEffectiveEnabledLocked();
 

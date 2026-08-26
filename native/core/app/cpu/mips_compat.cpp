@@ -1,4 +1,4 @@
-#include "mips_compat.h"
+#include "app/cpu/mips_compat.h"
 
 #include <SDL2/SDL.h>
 #include <stdint.h>
@@ -6,10 +6,10 @@
 #include <stdio.h>
 #include <vector>
 
-#include "app_memory.h"
+#include "app/memory/app_memory.h"
 #include "app/runtime/app_runtime_context.h"
-#include "framebuffer.h"
-#include "runtime_log.h"
+#include "frontend/video/framebuffer.h"
+#include "shared/diagnostics/runtime_log.h"
 
 
 static EmulatorOptions g_options;
@@ -22,7 +22,7 @@ static uint32_t jalTarget(uint32_t pc, uint32_t insn);
 static bool jalTargetsNamedImportOrWrapper(
     const uint8_t* bin,
     uint32_t scanSize,
-    const app* appInfo,
+    const GuestPackage* appInfo,
     uint32_t callPc,
     uint32_t callInsn,
     const char* const* importNames,
@@ -382,7 +382,7 @@ static RowCopyLoopKind instructionLooksLikeRowCopyLoop(
     uint32_t off,
     uint32_t scanSize,
     uint32_t address,
-    const app* appInfo)
+    const GuestPackage* appInfo)
 {
     if (off + 40 * sizeof(uint32_t) > scanSize)
     {
@@ -842,7 +842,7 @@ static uint32_t jalTarget(uint32_t pc, uint32_t insn)
 }
 
 static bool importOffsetHasName(
-    const app* appInfo,
+    const GuestPackage* appInfo,
     uint32_t offset,
     const char* const* importNames,
     uint32_t importNameCount)
@@ -854,7 +854,7 @@ static bool importOffsetHasName(
 
     for (uint32_t i = 0; i < appInfo->import_count; ++i)
     {
-        app_import_entry* entry = appInfo->import_data[i];
+        GuestImportEntry* entry = appInfo->import_data[i];
         if (!entry || !entry->name || entry->offset != offset)
         {
             continue;
@@ -873,7 +873,7 @@ static bool importOffsetHasName(
 static bool jalTargetsNamedImportOrWrapper(
     const uint8_t* bin,
     uint32_t scanSize,
-    const app* appInfo,
+    const GuestPackage* appInfo,
     uint32_t callPc,
     uint32_t callInsn,
     const char* const* importNames,
@@ -948,7 +948,7 @@ static void writeLe32(uint8_t* data, uint32_t value)
     data[3] = (uint8_t)((value >> 24) & 0xFF);
 }
 
-static void patchCacheInstructions(app* appInfo, const EmulatorOptions& options, uint32_t* patchedCache)
+static void patchCacheInstructions(GuestPackage* appInfo, const EmulatorOptions& options, uint32_t* patchedCache)
 {
     *patchedCache = 0;
 
@@ -2047,7 +2047,7 @@ static void hookPixelLoop16(NativeRuntime* runtime, uint64_t address, uint32_t s
     }
 }
 
-RuntimeError runtimeCompatInstallHooks(NativeRuntime* runtime, app* appInfo, const EmulatorOptions& options)
+RuntimeError runtimeCompatInstallHooks(NativeRuntime* runtime, GuestPackage* appInfo, const EmulatorOptions& options)
 {
     g_options = options;
     g_objectFlagsPredicateAddresses.clear();

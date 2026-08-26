@@ -4,8 +4,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <vector>
-#include "app/runtime/app_loader.h"
-#include "mips_runtime.h"
+#include "shared/services/guest_package.h"
+#include "app/cpu/mips_runtime.h"
 
 #define OS_NO_ERR 0x0
 

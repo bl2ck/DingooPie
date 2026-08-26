@@ -1,9 +1,9 @@
-#ifndef DINGOO_PIE_COMPAT_PROFILE_H
-#define DINGOO_PIE_COMPAT_PROFILE_H
+#ifndef DINGOO_PIE_CONFIG_COMPATIBILITY_COMPAT_PROFILE_H
+#define DINGOO_PIE_CONFIG_COMPATIBILITY_COMPAT_PROFILE_H
 
 #include <stdint.h>
 
-#include "execution_backend.h"
+#include "shared/execution/execution_backend.h"
 
 // Central registry for content-hash keyed compatibility rules.
 // File names are intentionally not used because users often rename .app files.

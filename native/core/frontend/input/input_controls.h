@@ -1,7 +1,7 @@
-#ifndef DINGOO_PIE_INPUT_CONTROLS_H
-#define DINGOO_PIE_INPUT_CONTROLS_H
+#ifndef DINGOO_PIE_FRONTEND_INPUT_INPUT_CONTROLS_H
+#define DINGOO_PIE_FRONTEND_INPUT_INPUT_CONTROLS_H
 
-#include "input_state.h"
+#include "frontend/input/input_state.h"
 
 #include <SDL2/SDL.h>
 #include <string>

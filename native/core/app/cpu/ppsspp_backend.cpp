@@ -1,4 +1,4 @@
-#include "ppsspp_backend.h"
+#include "app/cpu/ppsspp_backend.h"
 
 #include <stdio.h>
 #include <cstdlib>
@@ -231,7 +231,7 @@ RuntimeError ppssppIrJitStart(NativeRuntime* runtime, uint64_t begin, uint64_t u
     }
     return RUNTIME_OK;
 #else
-    printf("DingooPie: PPSSPP IR JIT backend is not compiled into this build\n");
+    printf("ppsspp-backend: IR JIT backend is not compiled into this build\n");
     return RUNTIME_ERROR_BACKEND_UNAVAILABLE;
 #endif
 }

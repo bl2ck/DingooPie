@@ -1,40 +1,38 @@
-#ifndef DINGOO_PIE_GUEST_FILESYSTEM_H
-#define DINGOO_PIE_GUEST_FILESYSTEM_H
+#ifndef DINGOO_PIE_SHARED_SERVICES_GUEST_FILESYSTEM_H
+#define DINGOO_PIE_SHARED_SERVICES_GUEST_FILESYSTEM_H
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "app/runtime/app_loader.h"
 #include "shared/services/guest_package.h"
-#include "mips_runtime.h"
 
-typedef enum {
-    _file_type_file,
-    _file_type_mem
-} _file_type_e;
+enum GuestFileType
+{
+    GUEST_FILE_TYPE_FILE = 0,
+    GUEST_FILE_TYPE_MEMORY
+};
 
-typedef struct {
-    uint32_t type; // _file_type_e
-    uint32_t data; // void*
-    uint32_t eof;  // bool
-} _file_t;
+struct GuestFile
+{
+    uint32_t type;
+    uint32_t data;
+    uint32_t eof;
+};
 
-typedef struct {
-    uint32_t base;   // VM buffer base address
-    uint32_t size;   // VM buffer length in bytes
-    uint32_t offset; // Current read/write offset
-    uint32_t read;   // bool
-    uint32_t write;  // bool
-    uint32_t alloc;  // bool
-} _file_mem_t;
+struct GuestMemoryFile
+{
+    uint32_t base;
+    uint32_t size;
+    uint32_t offset;
+    uint32_t read;
+    uint32_t write;
+    uint32_t alloc;
+};
 
-typedef void FSYS_FILE;
-extern void fsys_set_app(app* inApp);
-extern void fsys_set_app_package(app* inApp);
-extern void fsys_reset_guest_package(GuestPackage* package);
+extern void fsys_set_guest_package(GuestPackage* guestPackage);
+extern void fsys_reset_guest_package(GuestPackage* guestPackage);
 extern void fsys_set_game_identity(const char* sha256Hex);
 extern void fsys_set_game_name(const char* gameName);
 extern void fsys_set_save_directory(const char* directory);
-extern void fsys_set_app_identity(const char* sha256Hex);
 extern bool fsys_saw_suspicious_open_failure(void);
 extern bool fsys_saw_successful_save_write(void);
 extern uint32_t fsys_fopen(const char* name, const char* mode);
@@ -46,9 +44,9 @@ extern uint32_t fsys_fwrite(void* ptr, uint32_t size, uint32_t count, uint32_t s
 extern uint32_t fsys_feof(uint32_t stream);
 extern bool fsys_read_cached(uint32_t stream, uint32_t size, uint32_t count, const uint8_t** data, uint32_t* bytesRead, uint32_t* itemsRead);
 extern bool fsys_seek_cached(uint32_t stream, uint32_t offset, uint32_t origin, uint32_t* ret);
-extern bool fsys_stream_is_app_package(uint32_t stream);
+extern bool fsys_stream_is_guest_package(uint32_t stream);
 extern bool fsys_stream_is_external_file(uint32_t stream);
-extern app_resource_entry* fsys_stream_resource(uint32_t stream);
+extern GuestResourceEntry* fsys_stream_resource(uint32_t stream);
 extern uint32_t fsys_stream_position(uint32_t stream);
 extern const char* fsys_stream_request_name(uint32_t stream);
 extern void fsys_record_load_to_guest(

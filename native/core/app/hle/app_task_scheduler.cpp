@@ -1,16 +1,16 @@
-#include "app_task_scheduler.h"
+#include "app/hle/app_task_scheduler.h"
 #include <assert.h>
-#include "app_task_lifecycle.h"
-#include "app_memory.h"
+#include "app/hle/app_task_lifecycle.h"
+#include "app/memory/app_memory.h"
 #include <pthread.h>
 #include <SDL2/SDL.h>
-#include "mips_runtime.h"
-#include "execution_backend.h"
-#include "framebuffer.h"
+#include "app/cpu/mips_runtime.h"
+#include "shared/execution/execution_backend.h"
+#include "frontend/video/framebuffer.h"
 #include "app/memory/app_framebuffer_mapping.h"
-#include "runtime_log.h"
-#include "app_hle.h"
-#include "app/runtime/app_loader.h"
+#include "shared/diagnostics/runtime_log.h"
+#include "app/hle/app_hle.h"
+#include "shared/services/guest_package.h"
 #include "app/runtime/app_runtime_context.h"
 #include <cstdlib>
 #include <cstring>
@@ -28,6 +28,8 @@ struct TaskStruct
     uint32_t dataPtr;
     uint32_t stackPtr;
     uint32_t priority;
+    uint64_t profileLastTicks;
+    uint64_t profileInstructionCount;
 };
 
 static bool taskProfileEnabled()
@@ -52,14 +54,15 @@ static ExecutionBackend subtaskBackendFromEnv()
     }
     if (!recognized)
     {
-        printf("task: unknown DINGOO_PIE_SUBTASK_BACKEND, using interpreter\n");
+        printf("task: invalid DINGOO_PIE_SUBTASK_BACKEND='%s'; using compatibility mode\n",
+            value);
         return EXECUTION_BACKEND_COMPATIBILITY;
     }
     if (backend == EXECUTION_BACKEND_PPSSPP_IRJIT)
     {
         // The PPSSPP adapter still owns global CPU/JIT state, so running host
         // pthread-backed Dingoo tasks through it serializes or corrupts state.
-        printf("task: ppsspp_irjit is not thread-local; using interpreter for subtask\n");
+        printf("task: ppsspp_irjit uses process-global state; using compatibility mode for subtask\n");
         return EXECUTION_BACKEND_COMPATIBILITY;
     }
     return backend;
@@ -79,11 +82,17 @@ void taskSchedulerRequestShutdown(const char* reason)
     }
 
     pthread_mutex_lock(&s_taskRuntimeMutex);
+    size_t runtimeCount = s_taskRuntimes.size();
     for (size_t i = 0; i < s_taskRuntimes.size(); ++i)
     {
         nativeRuntimeRequestStop(s_taskRuntimes[i]);
     }
     pthread_mutex_unlock(&s_taskRuntimeMutex);
+    if (runtimeCount != 0)
+    {
+        printf("task: shutdown stop requested for %u subtask runtime(s)\n",
+            (unsigned int)runtimeCount);
+    }
 }
 
 bool taskSchedulerIsShutdownRequested(void)
@@ -149,41 +158,43 @@ void taskSchedulerSnapshotRuntimes(std::vector<NativeRuntime*>* out)
     pthread_mutex_unlock(&s_taskRuntimeMutex);
 }
 
-static void hook_task_profile(NativeRuntime* runtime, uint64_t address, uint32_t size, void* user_data)
+static void hookTaskProfile(NativeRuntime* runtime, uint64_t address, uint32_t size, void* userData)
 {
     (void)runtime;
     (void)address;
     (void)size;
 
-    TaskStruct* taskStruct = (TaskStruct*)user_data;
-    static uint64_t lastTicks = 0;
-    static uint64_t instructionCount = 0;
-
-    if (!lastTicks)
+    TaskStruct* taskStruct = (TaskStruct*)userData;
+    if (!taskStruct)
     {
-        lastTicks = SDL_GetTicks64();
+        return;
     }
 
-    instructionCount++;
+    if (!taskStruct->profileLastTicks)
+    {
+        taskStruct->profileLastTicks = SDL_GetTicks64();
+    }
+
+    taskStruct->profileInstructionCount++;
     uint64_t now = SDL_GetTicks64();
-    uint64_t elapsedMs = now - lastTicks;
+    uint64_t elapsedMs = now - taskStruct->profileLastTicks;
     if (elapsedMs >= runtimeLogProfileIntervalMs())
     {
         printf("profile:task entry=0x%08x priority=%u instr=%llu/s\n",
-            taskStruct ? taskStruct->taskFuncAddr : 0,
-            taskStruct ? taskStruct->priority : 0,
-            (unsigned long long)runtimeLogRatePerSecond(instructionCount, elapsedMs));
-        instructionCount = 0;
-        lastTicks = now;
+            taskStruct->taskFuncAddr,
+            taskStruct->priority,
+            (unsigned long long)runtimeLogRatePerSecond(
+                taskStruct->profileInstructionCount, elapsedMs));
+        taskStruct->profileInstructionCount = 0;
+        taskStruct->profileLastTicks = now;
     }
 }
 
-static bool hook_mem_invalid(NativeRuntime* runtime, RuntimeMemoryAccess type, uint64_t address, int size, int64_t value, void* user_data)
+static bool hookInvalidMemory(NativeRuntime* runtime, RuntimeMemoryAccess type,
+    uint64_t address, int size, int64_t value, void* userData)
 {
-    printf(">>> mem_invalid type:%s addr:0x%" PRIx64 " size:0x%x value:0x%" PRIx64 "\n",
-        appRuntimeMemoryAccessName(type), address, size, value);
-    appRuntimeDebugDumpRegisters(runtime);
-    appRuntimeDebugDumpReturnDisassembly(runtime);
+    (void)userData;
+    appRuntimeDebugReportInvalidMemory(runtime, type, address, size, value);
     return false;
 }
 
@@ -248,7 +259,12 @@ void* subTaskRun(void* data)
     }
     printf("task: subTaskRun backend=%s\n", executionBackendName(backend));
 
-    AppRuntimeProgramImage image = appRuntimeProgramImage();
+    const AppRuntimeProgramImage image = appRuntimeProgramImage();
+    if (!image.data || !image.size || !image.package)
+    {
+        printf("task: APP program image is unavailable\n");
+        return NULL;
+    }
     err = nativeRuntimeMapMemory(runtime, image.address, image.size, RUNTIME_PROT_ALL, image.data);
     if (err)
     {
@@ -272,7 +288,7 @@ void* subTaskRun(void* data)
 
     if (appFramebufferInitialize(runtime))
     {
-        printf("task: InitFb failed\n");
+        printf("task: framebuffer initialization failed\n");
         return NULL;
     }
 
@@ -283,10 +299,11 @@ void* subTaskRun(void* data)
         return NULL;
     }
 
-    nativeRuntimeAddHook(runtime, &trace, RUNTIME_HOOK_MEM_INVALID, (void*)hook_mem_invalid, NULL, 1, 0);
+    nativeRuntimeAddHook(runtime, &trace, RUNTIME_HOOK_MEM_INVALID,
+        (void*)hookInvalidMemory, NULL, 1, 0);
     if (taskProfileEnabled())
     {
-        nativeRuntimeAddHook(runtime, &trace, RUNTIME_HOOK_CODE, (void*)hook_task_profile, taskStruct, 1, 0xffffffffu);
+        nativeRuntimeAddHook(runtime, &trace, RUNTIME_HOOK_CODE, (void*)hookTaskProfile, taskStruct, 1, 0xffffffffu);
     }
 
     uint32_t sp = taskStruct->stackPtr;
@@ -338,6 +355,8 @@ uint32_t OSTaskCreate(uint32_t taskFuncAddr, uint32_t dataPtr, uint32_t stackPtr
     taskStruct->taskFuncAddr = taskFuncAddr;
     taskStruct->stackPtr = stackPtr;
     taskStruct->priority = priority;
+    taskStruct->profileLastTicks = 0;
+    taskStruct->profileInstructionCount = 0;
 
     int ret = pthread_create(&taskStruct->tid, NULL, subTaskRun, taskStruct);
     if (ret)

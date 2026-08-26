@@ -1,4 +1,4 @@
-#include "compat_profile.h"
+#include "config/compatibility/compat_profile.h"
 
 #include <stddef.h>
 #include <string.h>

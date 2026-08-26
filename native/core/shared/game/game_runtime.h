@@ -1,18 +1,20 @@
 #ifndef DINGOO_PIE_SHARED_GAME_GAME_RUNTIME_H
 #define DINGOO_PIE_SHARED_GAME_GAME_RUNTIME_H
 
-#include "emulator_options.h"
-#include "app_runtime.h"
+#include "config/settings/emulator_options.h"
 #include "shared/game/game_paths.h"
+#include "shared/game/game_runtime_types.h"
 #include "shared/save/save_slots.h"
 
+#include <stddef.h>
+#include <stdint.h>
 #include <string>
 #include <vector>
 
 bool gameRuntimeStart(const char* gamePath, const EmulatorOptions& options,
     bool requireOptimizedBackend, bool resourceMonitorAutoOpen,
     const std::vector<std::string>& enabledCheatFeatureKeys);
-void gameRuntimeStop(void);
+bool gameRuntimeStop(void);
 void gameRuntimeApplySettings(void);
 void gameRuntimeCopyDiagnostics(char* identity, size_t identitySize,
     char* lastTask, size_t lastTaskSize, char* lastHle, size_t lastHleSize);

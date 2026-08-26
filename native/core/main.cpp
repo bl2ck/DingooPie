@@ -1,11 +1,13 @@
 #include "app_runtime.h"
+#include "app/hle/app_hle.h"
+#include "app/save/app_save_state.h"
 #include "shared/game/game_paths.h"
-#include "cheat_runtime.h"
+#include "config/cheats/cheat_runtime.h"
 #include "debug_console.h"
-#include "emulator_options.h"
-#include "emulator_settings.h"
+#include "config/settings/emulator_options.h"
+#include "config/settings/emulator_settings.h"
 #include "frontend_menu.h"
-#include "runtime_log.h"
+#include "shared/diagnostics/runtime_log.h"
 #include "sdl_frontend.h"
 #include "platform_win32.h"
 #include "shared/game/game_runtime.h"
@@ -101,6 +103,23 @@ static void applyStartupDebugSettings(EmulatorSettings* settings, bool externalD
     }
 }
 
+static bool coreRegressionRequested(int argc, char* argv[])
+{
+    return argc == 2 && argv && argv[1] &&
+        strcmp(argv[1], "--core-regression") == 0;
+}
+
+static bool runCoreRegressionTests(void)
+{
+    bool semaphorePassed = bridge_run_semaphore_regression();
+    bool saveStatePassed = saveStateRunRegressionTests();
+    printf("core-regression: semaphore=%s save_state=%s result=%s\n",
+        semaphorePassed ? "pass" : "fail",
+        saveStatePassed ? "pass" : "fail",
+        semaphorePassed && saveStatePassed ? "pass" : "fail");
+    return semaphorePassed && saveStatePassed;
+}
+
 int main(int argc, char* argv[])
 {
     platformBeginHighResolutionTiming();
@@ -111,6 +130,13 @@ int main(int argc, char* argv[])
     }
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
+
+    if (coreRegressionRequested(argc, argv))
+    {
+        bool passed = runCoreRegressionTests();
+        platformEndHighResolutionTiming();
+        return passed ? 0 : 1;
+    }
 
     EmulatorSettings settings = emulatorLoadSettings();
     runtimeLogInitialize(settings.debugProfile, runtimeLogEnvEnabled("DINGOO_PIE_PROFILE"));

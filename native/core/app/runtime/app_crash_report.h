@@ -1,8 +1,8 @@
-#ifndef DINGOO_PIE_CRASH_LOG_H
-#define DINGOO_PIE_CRASH_LOG_H
+#ifndef DINGOO_PIE_APP_RUNTIME_APP_CRASH_REPORT_H
+#define DINGOO_PIE_APP_RUNTIME_APP_CRASH_REPORT_H
 
-#include "execution_backend.h"
-#include "mips_runtime.h"
+#include "shared/execution/execution_backend.h"
+#include "app/cpu/mips_runtime.h"
 
 #include <string>
 

@@ -252,6 +252,9 @@ static_assert(MENU_INPUT_VIRTUAL_SCALE_150 == MENU_INPUT_VIRTUAL_SCALE_75 +
 static_assert(MENU_SETTINGS_EXECUTION_MODE_COMPATIBILITY ==
     MENU_SETTINGS_EXECUTION_MODE_AUTO + 1,
     "Execution mode commands must match menu order");
+static_assert(MENU_SETTINGS_LANGUAGE_ENGLISH == MENU_SETTINGS_LANGUAGE_CHINESE +
+    UI_LANGUAGE_COUNT - 1,
+    "Language commands must match menu order");
 
 static const unsigned int MENU_FILE_RECENT_BASE = 3000;
 static const unsigned int MENU_FILE_RECENT_MAX =
@@ -745,7 +748,8 @@ static void refreshSaveLoadSlotMenus(void)
         SaveStateSlotInfo info = {};
         if (canSave)
         {
-            info = saveStateSlotInfo(g_currentAppPath, slot);
+            info = saveStateSlotInfo(g_currentAppPath,
+                saveStateFormatForPath(g_currentAppPath), slot);
         }
         UINT saveId = MENU_SAVE_SLOT_BASE + (UINT)(slot - 1);
         UINT loadId = MENU_LOAD_SLOT_BASE + (UINT)(slot - 1);
@@ -2136,7 +2140,8 @@ static bool saveStateSlotNow(int slot, std::string* errorOut, bool showProgress)
         error.empty() ? "" : ": ", error.c_str());
     if (ok)
     {
-        std::string thumbnailPath = saveStateThumbnailPathForSlot(g_currentAppPath, slot);
+        std::string thumbnailPath = saveStateThumbnailPathForSlot(
+            g_currentAppPath, saveStateFormatForPath(g_currentAppPath), slot);
         if (!thumbnailPath.empty() &&
             !frontendSaveScreenshotThumbnail(thumbnailPath.c_str(), 160, 120))
         {
@@ -2167,7 +2172,8 @@ static bool loadStateSlotNow(int slot, std::string* errorOut, bool showProgress)
 #endif
     uint32_t expected = 0;
     bool paused = waitForSaveStatePause("load", &expected, NULL);
-    SaveStateSlotInfo info = saveStateSlotInfo(g_currentAppPath, slot);
+    SaveStateSlotInfo info = saveStateSlotInfo(g_currentAppPath,
+        saveStateFormatForPath(g_currentAppPath), slot);
     bool runtimeCountMatches = paused &&
         (gameRuntimeActiveFormat() == GAME_FORMAT_CC ||
             validateSaveStateRuntimeCount(info, expected, &error));
@@ -2254,7 +2260,8 @@ static bool confirmAndSaveStateSlot(int slot, std::string* errorOut)
         return false;
     }
 
-    SaveStateSlotInfo info = saveStateSlotInfo(g_currentAppPath, slot);
+    SaveStateSlotInfo info = saveStateSlotInfo(g_currentAppPath,
+        saveStateFormatForPath(g_currentAppPath), slot);
     SaveStateDialogSlot dialogSlot = makeSaveStateDialogSlot(slot, info);
     UiTextId confirmText = info.exists ?
         TXT_DIALOG_STATE_CONFIRM_OVERWRITE :
@@ -2311,7 +2318,8 @@ static bool confirmAndLoadStateSlot(int slot, std::string* errorOut)
         return false;
     }
 
-    SaveStateSlotInfo info = saveStateSlotInfo(g_currentAppPath, slot);
+    SaveStateSlotInfo info = saveStateSlotInfo(g_currentAppPath,
+        saveStateFormatForPath(g_currentAppPath), slot);
     if (!info.exists)
     {
 #ifdef _WIN32
@@ -2370,7 +2378,8 @@ bool frontendMenuLoadStateSlotForAutomation(int slot)
         return false;
     }
 
-    SaveStateSlotInfo info = saveStateSlotInfo(g_currentAppPath, slot);
+    SaveStateSlotInfo info = saveStateSlotInfo(g_currentAppPath,
+        saveStateFormatForPath(g_currentAppPath), slot);
     if (!info.exists)
     {
         printf("frontend: load state slot %d failed: state slot is empty\n", slot);

@@ -1,5 +1,5 @@
-#ifndef DINGOO_PIE_CHEAT_ENGINE_H
-#define DINGOO_PIE_CHEAT_ENGINE_H
+#ifndef DINGOO_PIE_CONFIG_CHEATS_CHEAT_ENGINE_H
+#define DINGOO_PIE_CONFIG_CHEATS_CHEAT_ENGINE_H
 
 #include <stddef.h>
 #include <stdint.h>

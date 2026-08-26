@@ -1,0 +1,12 @@
+diff --git a/Core/MIPS/IR/IRCompVFPU.cpp b/Core/MIPS/IR/IRCompVFPU.cpp
+--- a/Core/MIPS/IR/IRCompVFPU.cpp
++++ b/Core/MIPS/IR/IRCompVFPU.cpp
+@@ -307,7 +307,7 @@ namespace MIPSComp {
+ 
+ 	void IRFrontend::GetVectorRegs(u8 regs[4], VectorSize N, int vectorReg) {
+ 		::GetVectorRegs(regs, N, vectorReg);
+-		ApplyVoffset(regs, N);
++		ApplyVoffset(regs, GetNumVectorElements(N));
+ 	}
+ 
+ 	void IRFrontend::GetMatrixRegs(u8 regs[16], MatrixSize N, int matrixReg) {

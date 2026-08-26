@@ -1,19 +1,19 @@
-#include "pause_gate.h"
+#include "shared/execution/pause_gate.h"
 
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
 
-static std::mutex s_PauseGateMutex;
-static std::condition_variable s_PauseGateCondition;
-static std::atomic<bool> s_PauseGatePaused(false);
-static std::atomic<unsigned int> s_PauseGateWaiterCount(0);
-static std::atomic<uint32_t> s_PauseGateRestoreGeneration(0);
+static std::mutex s_pauseMutex;
+static std::condition_variable s_pauseCondition;
+static std::atomic<bool> s_paused(false);
+static std::atomic<unsigned int> s_waiterCount(0);
+static std::atomic<uint32_t> s_restoreGeneration(0);
 
 void pauseGateSetPaused(bool paused)
 {
-    bool previous = s_PauseGatePaused.exchange(paused, std::memory_order_acq_rel);
+    bool previous = s_paused.exchange(paused, std::memory_order_acq_rel);
     if (previous == paused)
     {
         return;
@@ -23,7 +23,7 @@ void pauseGateSetPaused(bool paused)
     // wake guest threads that are already blocked in pauseGateWaitForResume().
     if (!paused)
     {
-        s_PauseGateCondition.notify_all();
+        s_pauseCondition.notify_all();
     }
 }
 
@@ -34,7 +34,7 @@ bool pauseGateWaitForPaused(uint32_t timeoutMs)
 
 bool pauseGateWaitForPausedWaiters(uint32_t timeoutMs, uint32_t minimumWaiters)
 {
-    if (!s_PauseGatePaused.load(std::memory_order_acquire))
+    if (!s_paused.load(std::memory_order_acquire))
     {
         return false;
     }
@@ -42,69 +42,69 @@ bool pauseGateWaitForPausedWaiters(uint32_t timeoutMs, uint32_t minimumWaiters)
     {
         return true;
     }
-    if (s_PauseGateWaiterCount.load(std::memory_order_acquire) >= minimumWaiters)
+    if (s_waiterCount.load(std::memory_order_acquire) >= minimumWaiters)
     {
         return true;
     }
 
-    std::unique_lock<std::mutex> lock(s_PauseGateMutex);
-    return s_PauseGateCondition.wait_for(lock, std::chrono::milliseconds(timeoutMs), [minimumWaiters] {
-        return s_PauseGateWaiterCount.load(std::memory_order_acquire) >= minimumWaiters ||
-            !s_PauseGatePaused.load(std::memory_order_acquire);
-    }) && s_PauseGateWaiterCount.load(std::memory_order_acquire) >= minimumWaiters;
+    std::unique_lock<std::mutex> lock(s_pauseMutex);
+    return s_pauseCondition.wait_for(lock, std::chrono::milliseconds(timeoutMs), [minimumWaiters] {
+        return s_waiterCount.load(std::memory_order_acquire) >= minimumWaiters ||
+            !s_paused.load(std::memory_order_acquire);
+    }) && s_waiterCount.load(std::memory_order_acquire) >= minimumWaiters;
 }
 
 bool pauseGateWaitForResume(void)
 {
-    if (!s_PauseGatePaused.load(std::memory_order_acquire))
+    if (!s_paused.load(std::memory_order_acquire))
     {
         return false;
     }
 
     bool waited = false;
-    std::unique_lock<std::mutex> lock(s_PauseGateMutex);
-    while (s_PauseGatePaused.load(std::memory_order_acquire))
+    std::unique_lock<std::mutex> lock(s_pauseMutex);
+    while (s_paused.load(std::memory_order_acquire))
     {
         if (!waited)
         {
-            s_PauseGateWaiterCount.fetch_add(1, std::memory_order_acq_rel);
-            s_PauseGateCondition.notify_all();
+            s_waiterCount.fetch_add(1, std::memory_order_acq_rel);
+            s_pauseCondition.notify_all();
             waited = true;
         }
-        s_PauseGateCondition.wait(lock);
+        s_pauseCondition.wait(lock);
     }
     if (waited)
     {
-        s_PauseGateWaiterCount.fetch_sub(1, std::memory_order_acq_rel);
-        s_PauseGateCondition.notify_all();
+        s_waiterCount.fetch_sub(1, std::memory_order_acq_rel);
+        s_pauseCondition.notify_all();
     }
     return waited;
 }
 
 bool pauseGateWaitForNoWaiters(uint32_t timeoutMs)
 {
-    if (s_PauseGateWaiterCount.load(std::memory_order_acquire) == 0)
+    if (s_waiterCount.load(std::memory_order_acquire) == 0)
     {
         return true;
     }
 
-    std::unique_lock<std::mutex> lock(s_PauseGateMutex);
-    return s_PauseGateCondition.wait_for(lock, std::chrono::milliseconds(timeoutMs), [] {
-        return s_PauseGateWaiterCount.load(std::memory_order_acquire) == 0;
+    std::unique_lock<std::mutex> lock(s_pauseMutex);
+    return s_pauseCondition.wait_for(lock, std::chrono::milliseconds(timeoutMs), [] {
+        return s_waiterCount.load(std::memory_order_acquire) == 0;
     });
 }
 
 uint32_t pauseGateWaiterCount(void)
 {
-    return s_PauseGateWaiterCount.load(std::memory_order_acquire);
+    return s_waiterCount.load(std::memory_order_acquire);
 }
 
 void pauseGateMarkRuntimeRestored(void)
 {
-    s_PauseGateRestoreGeneration.fetch_add(1, std::memory_order_acq_rel);
+    s_restoreGeneration.fetch_add(1, std::memory_order_acq_rel);
 }
 
 uint32_t pauseGateRestoreGeneration(void)
 {
-    return s_PauseGateRestoreGeneration.load(std::memory_order_acquire);
+    return s_restoreGeneration.load(std::memory_order_acquire);
 }

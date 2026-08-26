@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include "app_runtime.h"
+#include "app/runtime/app_runtime_debug.h"
 #include "shared/game/game_runtime.h"
 #include "platform_win32.h"
 #include "resource_ids.h"
@@ -1225,10 +1226,9 @@ static void refreshResourceMonitorWindow(bool force)
         {
             swprintf(status, sizeof(status) / sizeof(status[0]),
                 resourceMonitorChinese() ?
-                L"App: %ls | \u5305\u7d22\u5f15: %u | \u8d44\u6e90\u8868: %u | \u5df2\u52a0\u8f7d: 0 | \u5df2\u5378\u8f7d: 0 | App \u5305/\u5185\u90e8/\u5916\u90e8: 0/0/0" :
-                L"App: %ls | package index: %u | table: %u | loaded: 0 | unloaded: 0 | app/internal/external: 0/0/0",
+                L"App: %ls | \u8d44\u6e90\u8868: %u | \u5df2\u52a0\u8f7d: 0 | \u5df2\u5378\u8f7d: 0 | App \u5305/\u5185\u90e8/\u5916\u90e8: 0/0/0" :
+                L"App: %ls | table: %u | loaded: 0 | unloaded: 0 | app/internal/external: 0/0/0",
                 appName.empty() ? L"(unnamed)" : appName.c_str(),
-                (unsigned)appInfo.packageResourceCount,
                 (unsigned)appInfo.resourceCount);
         }
         else
@@ -1243,10 +1243,9 @@ static void refreshResourceMonitorWindow(bool force)
                 sizeof(readBytesText) / sizeof(readBytesText[0]));
             swprintf(status, sizeof(status) / sizeof(status[0]),
                 resourceMonitorChinese() ?
-                L"App: %ls | \u5305\u7d22\u5f15: %u | \u8d44\u6e90\u8868: %u | \u5df2\u52a0\u8f7d: %u | \u5df2\u5378\u8f7d: %u | App \u5305/\u5185\u90e8/\u5916\u90e8: %u/%u/%u | \u8bfb\u53d6\u6b21\u6570: %llu | \u8bfb\u53d6\u5b57\u8282: %ls" :
-                L"App: %ls | package index: %u | table: %u | loaded: %u | unloaded: %u | app/internal/external: %u/%u/%u | read count: %llu | read bytes: %ls",
+                L"App: %ls | \u8d44\u6e90\u8868: %u | \u5df2\u52a0\u8f7d: %u | \u5df2\u5378\u8f7d: %u | App \u5305/\u5185\u90e8/\u5916\u90e8: %u/%u/%u | \u8bfb\u53d6\u6b21\u6570: %llu | \u8bfb\u53d6\u5b57\u8282: %ls" :
+                L"App: %ls | table: %u | loaded: %u | unloaded: %u | app/internal/external: %u/%u/%u | read count: %llu | read bytes: %ls",
                 appName.empty() ? L"(unnamed)" : appName.c_str(),
-                (unsigned)appInfo.packageResourceCount,
                 (unsigned)appInfo.resourceCount,
                 loadedStats.count,
                 unloadedStats.count,

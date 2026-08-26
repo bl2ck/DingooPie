@@ -1,24 +1,11 @@
 #ifndef DINGOO_PIE_APP_RUNTIME_APP_RUNTIME_STATE_H
 #define DINGOO_PIE_APP_RUNTIME_APP_RUNTIME_STATE_H
 
-#include "app_heap_snapshot.h"
+#include "app/memory/app_heap_snapshot.h"
+#include "shared/game/game_runtime_types.h"
 
 #include <stdint.h>
 #include <vector>
-
-struct AppRuntimeRegisterSnapshot
-{
-    bool running;
-    uint32_t gpr[32];
-    float fpr[32];
-    float vfpu[128];
-    uint32_t vfpuCtrl[16];
-    uint32_t pc;
-    uint32_t hi;
-    uint32_t lo;
-    uint32_t fcr31;
-    uint32_t fpcond;
-};
 
 struct AppRuntimeStateRegion
 {

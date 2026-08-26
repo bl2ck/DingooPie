@@ -1,6 +1,6 @@
-#include "framebuffer.h"
-#include "cheat_runtime.h"
-#include "pause_gate.h"
+#include "frontend/video/framebuffer.h"
+#include "config/cheats/cheat_runtime.h"
+#include "shared/execution/pause_gate.h"
 
 #include <atomic>
 #include <chrono>
@@ -13,7 +13,7 @@
 #include <windows.h>
 #endif
 
-uint32_t VM_LCD_FB_ADDRESS = 0x94000000;
+uint32_t kLcdFramebufferAddress = 0x94000000;
 static const uint32_t kLcdFramebufferAliases[] =
 {
     0x94000000u,
@@ -21,8 +21,8 @@ static const uint32_t kLcdFramebufferAliases[] =
     0x90000000u,
     0x10000000u
 };
-uint8_t s_LcdFrameBufferPtr[VM_LCD_FB_SIZE] = { 0 };
-// The guest writes directly to s_LcdFrameBufferPtr. The frontend only reads
+uint8_t s_framebufferPixels[VM_LCD_FB_SIZE] = { 0 };
+// The guest writes directly to s_framebufferPixels. The frontend only reads
 // submitted snapshots so it never presents a frame while the guest is halfway
 // through a large blit or tile update.
 static uint8_t s_presentedFrameBuffers[2][VM_LCD_FB_SIZE] = { 0 };
@@ -31,21 +31,21 @@ static std::atomic<int> s_presentedFrameIndex(0);
 static std::atomic<bool> s_transientPartialProtectionEnabled(false);
 static bool s_hasDeferredFrame = false;
 static std::mutex s_presentedFrameMutex;
-static std::atomic<int> s_FbUpdateRequested(1);
-static std::atomic<uint64_t> s_FbWriteCount(0);
-static std::atomic<uint64_t> s_FbWriteBytes(0);
-static std::atomic<uint32_t> s_SubmittedFrameCount(0);
-static std::atomic<uint64_t> s_SubmittedFrameProfileCount(0);
-static std::atomic<uint64_t> s_FramebufferCopyMicros(0);
-static std::atomic<uint64_t> s_LastSubmittedFrameMicros(0);
-static std::atomic<uint64_t> s_FrameIntervalMicros(0);
-static std::atomic<uint64_t> s_MaxFrameIntervalMicros(0);
-static std::atomic<uint64_t> s_FrameIntervalsOver25ms(0);
-static std::atomic<uint64_t> s_FrameIntervalsOver33ms(0);
-static std::atomic<bool> s_FramebufferProfileEnabled(false);
-static std::mutex s_FramePacingMutex;
-static uint64_t s_FramePacingLastMicros = 0;
-static uint32_t s_FramePacingFastStreak = 0;
+static std::atomic<int> s_updateRequested(1);
+static std::atomic<uint64_t> s_writeCount(0);
+static std::atomic<uint64_t> s_writeBytes(0);
+static std::atomic<uint32_t> s_submittedFrameCount(0);
+static std::atomic<uint64_t> s_profileSubmittedFrameCount(0);
+static std::atomic<uint64_t> s_copyMicros(0);
+static std::atomic<uint64_t> s_lastSubmittedMicros(0);
+static std::atomic<uint64_t> s_totalFrameIntervalMicros(0);
+static std::atomic<uint64_t> s_maxFrameIntervalMicros(0);
+static std::atomic<uint64_t> s_frameIntervalsOver25Ms(0);
+static std::atomic<uint64_t> s_frameIntervalsOver33Ms(0);
+static std::atomic<bool> s_profileEnabled(false);
+static std::mutex s_framePacingMutex;
+static uint64_t s_lastPacedFrameMicros = 0;
+static uint32_t s_fastFrameStreak = 0;
 
 static uint64_t framebufferNowMicros(void)
 {
@@ -55,7 +55,7 @@ static uint64_t framebufferNowMicros(void)
 
 static bool framebufferWriteProfileEnabled(void)
 {
-    return s_FramebufferProfileEnabled.load();
+    return s_profileEnabled.load();
 }
 
 static bool framebufferEnvEnabled(const char* name, bool defaultEnabled)
@@ -135,26 +135,26 @@ static uint64_t paceFramebufferSubmission(void)
         return nowMicros;
     }
 
-    std::lock_guard<std::mutex> lock(s_FramePacingMutex);
-    if (!s_FramePacingLastMicros)
+    std::lock_guard<std::mutex> lock(s_framePacingMutex);
+    if (!s_lastPacedFrameMicros)
     {
-        s_FramePacingLastMicros = nowMicros;
-        s_FramePacingFastStreak = 0;
+        s_lastPacedFrameMicros = nowMicros;
+        s_fastFrameStreak = 0;
         return nowMicros;
     }
 
-    uint64_t elapsedMicros = nowMicros >= s_FramePacingLastMicros ?
-        nowMicros - s_FramePacingLastMicros : 0;
+    uint64_t elapsedMicros = nowMicros >= s_lastPacedFrameMicros ?
+        nowMicros - s_lastPacedFrameMicros : 0;
     uint64_t fastThresholdMicros = (intervalMicros * 3ull) / 4ull;
     if (elapsedMicros > 0 && elapsedMicros < fastThresholdMicros)
     {
-        if (s_FramePacingFastStreak < UINT32_MAX)
+        if (s_fastFrameStreak < UINT32_MAX)
         {
-            s_FramePacingFastStreak++;
+            s_fastFrameStreak++;
         }
-        if (s_FramePacingFastStreak >= 3)
+        if (s_fastFrameStreak >= 3)
         {
-            uint64_t nextMicros = s_FramePacingLastMicros + intervalMicros;
+            uint64_t nextMicros = s_lastPacedFrameMicros + intervalMicros;
             if (nowMicros < nextMicros)
             {
                 nowMicros = waitUntilFramebufferMicros(nextMicros);
@@ -163,9 +163,9 @@ static uint64_t paceFramebufferSubmission(void)
     }
     else
     {
-        s_FramePacingFastStreak = 0;
+        s_fastFrameStreak = 0;
     }
-    s_FramePacingLastMicros = nowMicros;
+    s_lastPacedFrameMicros = nowMicros;
     return nowMicros;
 }
 
@@ -248,15 +248,15 @@ static bool framebufferLooksLikeTransientPartial(const uint8_t* current,
 
 static void resetFramebufferPacing(void)
 {
-    std::lock_guard<std::mutex> lock(s_FramePacingMutex);
-    s_FramePacingLastMicros = 0;
-    s_FramePacingFastStreak = 0;
-    s_LastSubmittedFrameMicros.store(0, std::memory_order_release);
+    std::lock_guard<std::mutex> lock(s_framePacingMutex);
+    s_lastPacedFrameMicros = 0;
+    s_fastFrameStreak = 0;
+    s_lastSubmittedMicros.store(0, std::memory_order_release);
 }
 
 void framebufferSetProfileEnabled(bool enabled)
 {
-    s_FramebufferProfileEnabled.store(enabled);
+    s_profileEnabled.store(enabled);
 }
 
 static void writeLe16File(FILE* fp, uint16_t value)
@@ -386,13 +386,13 @@ static void maybeDumpPresentedFrame(const uint8_t* pixels, uint32_t frameNumber)
 
 void framebufferReset(void)
 {
-    memset(s_LcdFrameBufferPtr, 0, sizeof(s_LcdFrameBufferPtr));
+    memset(s_framebufferPixels, 0, sizeof(s_framebufferPixels));
     memset(s_presentedFrameBuffers, 0, sizeof(s_presentedFrameBuffers));
     memset(s_deferredFrameBuffer, 0, sizeof(s_deferredFrameBuffer));
     s_hasDeferredFrame = false;
     s_transientPartialProtectionEnabled.store(false, std::memory_order_release);
     s_presentedFrameIndex.store(0, std::memory_order_release);
-    s_SubmittedFrameCount.store(0, std::memory_order_release);
+    s_submittedFrameCount.store(0, std::memory_order_release);
     resetFramebufferPacing();
 }
 
@@ -409,7 +409,7 @@ uint32_t framebufferGuestAlias(size_t index)
 
 uint32_t framebufferGuestAddress(void)
 {
-    return VM_LCD_FB_ADDRESS;
+    return kLcdFramebufferAddress;
 }
 
 bool framebufferHostPointer(uint32_t addr, void** out)
@@ -423,7 +423,7 @@ bool framebufferHostPointer(uint32_t addr, void** out)
         uint32_t base = kLcdFramebufferAliases[i];
         if (addr >= base && addr < base + VM_LCD_FB_SIZE)
         {
-            *out = (void*)((size_t)addr - (size_t)base + (size_t)s_LcdFrameBufferPtr);
+            *out = (void*)((size_t)addr - (size_t)base + (size_t)s_framebufferPixels);
             return true;
         }
     }
@@ -436,10 +436,10 @@ bool framebufferVmPointer(void* ptr, uint32_t* out)
     {
         return false;
     }
-    if ((size_t)ptr >= (size_t)s_LcdFrameBufferPtr &&
-        (size_t)ptr < (size_t)s_LcdFrameBufferPtr + VM_LCD_FB_SIZE)
+    if ((size_t)ptr >= (size_t)s_framebufferPixels &&
+        (size_t)ptr < (size_t)s_framebufferPixels + VM_LCD_FB_SIZE)
     {
-        *out = (uint32_t)(((size_t)ptr - (size_t)s_LcdFrameBufferPtr) + VM_LCD_FB_ADDRESS);
+        *out = (uint32_t)(((size_t)ptr - (size_t)s_framebufferPixels) + kLcdFramebufferAddress);
         return true;
     }
     return false;
@@ -447,7 +447,7 @@ bool framebufferVmPointer(void* ptr, uint32_t* out)
 
 void* framebufferPixels(void)
 {
-    return s_LcdFrameBufferPtr;
+    return s_framebufferPixels;
 }
 
 void* framebufferPresentedPixels(void)
@@ -487,23 +487,23 @@ void framebufferRequestUpdate(void)
     }
     cheatRuntimeApplyFrame();
     uint64_t beginMicros = paceFramebufferSubmission();
-    uint64_t previousMicros = s_LastSubmittedFrameMicros.exchange(beginMicros, std::memory_order_acq_rel);
+    uint64_t previousMicros = s_lastSubmittedMicros.exchange(beginMicros, std::memory_order_acq_rel);
     if (previousMicros)
     {
         uint64_t interval = beginMicros - previousMicros;
-        s_FrameIntervalMicros.fetch_add(interval, std::memory_order_relaxed);
-        uint64_t currentMax = s_MaxFrameIntervalMicros.load(std::memory_order_relaxed);
+        s_totalFrameIntervalMicros.fetch_add(interval, std::memory_order_relaxed);
+        uint64_t currentMax = s_maxFrameIntervalMicros.load(std::memory_order_relaxed);
         while (interval > currentMax &&
-            !s_MaxFrameIntervalMicros.compare_exchange_weak(currentMax, interval, std::memory_order_relaxed))
+            !s_maxFrameIntervalMicros.compare_exchange_weak(currentMax, interval, std::memory_order_relaxed))
         {
         }
         if (interval > 25000)
         {
-            s_FrameIntervalsOver25ms.fetch_add(1, std::memory_order_relaxed);
+            s_frameIntervalsOver25Ms.fetch_add(1, std::memory_order_relaxed);
         }
         if (interval > 33000)
         {
-            s_FrameIntervalsOver33ms.fetch_add(1, std::memory_order_relaxed);
+            s_frameIntervalsOver33Ms.fetch_add(1, std::memory_order_relaxed);
         }
     }
 
@@ -513,9 +513,9 @@ void framebufferRequestUpdate(void)
         s_presentedFrameIndex.load(std::memory_order_relaxed) & 1];
     bool isTransientPartial =
         s_transientPartialProtectionEnabled.load(std::memory_order_acquire) &&
-        framebufferLooksLikeTransientPartial(s_LcdFrameBufferPtr, previous);
+        framebufferLooksLikeTransientPartial(s_framebufferPixels, previous);
     if (s_hasDeferredFrame &&
-        memcmp(s_deferredFrameBuffer, s_LcdFrameBufferPtr,
+        memcmp(s_deferredFrameBuffer, s_framebufferPixels,
             sizeof(s_deferredFrameBuffer)) == 0 && isTransientPartial)
     {
         return;
@@ -523,18 +523,18 @@ void framebufferRequestUpdate(void)
     s_hasDeferredFrame = false;
     if (isTransientPartial)
     {
-        memcpy(s_deferredFrameBuffer, s_LcdFrameBufferPtr,
+        memcpy(s_deferredFrameBuffer, s_framebufferPixels,
             sizeof(s_deferredFrameBuffer));
         s_hasDeferredFrame = true;
         return;
     }
-    memcpy(s_presentedFrameBuffers[nextIndex], s_LcdFrameBufferPtr, sizeof(s_presentedFrameBuffers[nextIndex]));
-    uint32_t frameNumber = s_SubmittedFrameCount.fetch_add(1, std::memory_order_acq_rel) + 1;
-    s_SubmittedFrameProfileCount.fetch_add(1, std::memory_order_relaxed);
+    memcpy(s_presentedFrameBuffers[nextIndex], s_framebufferPixels, sizeof(s_presentedFrameBuffers[nextIndex]));
+    uint32_t frameNumber = s_submittedFrameCount.fetch_add(1, std::memory_order_acq_rel) + 1;
+    s_profileSubmittedFrameCount.fetch_add(1, std::memory_order_relaxed);
     maybeDumpPresentedFrame(s_presentedFrameBuffers[nextIndex], frameNumber);
     s_presentedFrameIndex.store(nextIndex, std::memory_order_release);
-    s_FbUpdateRequested.store(1, std::memory_order_release);
-    s_FramebufferCopyMicros.fetch_add(framebufferNowMicros() - beginMicros, std::memory_order_relaxed);
+    s_updateRequested.store(1, std::memory_order_release);
+    s_copyMicros.fetch_add(framebufferNowMicros() - beginMicros, std::memory_order_relaxed);
 }
 
 void framebufferSetTransientPartialProtectionEnabled(bool enabled)
@@ -552,27 +552,27 @@ void framebufferPresentRestoredFrame(void)
     resetFramebufferPacing();
     std::lock_guard<std::mutex> lock(s_presentedFrameMutex);
     int nextIndex = s_presentedFrameIndex.load(std::memory_order_relaxed) ^ 1;
-    memcpy(s_presentedFrameBuffers[nextIndex], s_LcdFrameBufferPtr, sizeof(s_presentedFrameBuffers[nextIndex]));
-    uint32_t frameNumber = s_SubmittedFrameCount.fetch_add(1, std::memory_order_acq_rel) + 1;
-    s_SubmittedFrameProfileCount.fetch_add(1, std::memory_order_relaxed);
+    memcpy(s_presentedFrameBuffers[nextIndex], s_framebufferPixels, sizeof(s_presentedFrameBuffers[nextIndex]));
+    uint32_t frameNumber = s_submittedFrameCount.fetch_add(1, std::memory_order_acq_rel) + 1;
+    s_profileSubmittedFrameCount.fetch_add(1, std::memory_order_relaxed);
     maybeDumpPresentedFrame(s_presentedFrameBuffers[nextIndex], frameNumber);
     s_presentedFrameIndex.store(nextIndex, std::memory_order_release);
-    s_FbUpdateRequested.store(1, std::memory_order_release);
+    s_updateRequested.store(1, std::memory_order_release);
 }
 
 int framebufferConsumeUpdateRequest(void)
 {
-    return s_FbUpdateRequested.exchange(0, std::memory_order_acq_rel);
+    return s_updateRequested.exchange(0, std::memory_order_acq_rel);
 }
 
 uint64_t framebufferConsumeSubmittedCount(void)
 {
-    return s_SubmittedFrameProfileCount.exchange(0, std::memory_order_acq_rel);
+    return s_profileSubmittedFrameCount.exchange(0, std::memory_order_acq_rel);
 }
 
 uint64_t framebufferConsumeCopyMicros(void)
 {
-    return s_FramebufferCopyMicros.exchange(0, std::memory_order_acq_rel);
+    return s_copyMicros.exchange(0, std::memory_order_acq_rel);
 }
 
 void framebufferConsumeTimingStats(uint64_t* totalIntervalMicros, uint64_t* maxIntervalMicros,
@@ -580,19 +580,19 @@ void framebufferConsumeTimingStats(uint64_t* totalIntervalMicros, uint64_t* maxI
 {
     if (totalIntervalMicros)
     {
-        *totalIntervalMicros = s_FrameIntervalMicros.exchange(0, std::memory_order_acq_rel);
+        *totalIntervalMicros = s_totalFrameIntervalMicros.exchange(0, std::memory_order_acq_rel);
     }
     if (maxIntervalMicros)
     {
-        *maxIntervalMicros = s_MaxFrameIntervalMicros.exchange(0, std::memory_order_acq_rel);
+        *maxIntervalMicros = s_maxFrameIntervalMicros.exchange(0, std::memory_order_acq_rel);
     }
     if (over25msCount)
     {
-        *over25msCount = s_FrameIntervalsOver25ms.exchange(0, std::memory_order_acq_rel);
+        *over25msCount = s_frameIntervalsOver25Ms.exchange(0, std::memory_order_acq_rel);
     }
     if (over33msCount)
     {
-        *over33msCount = s_FrameIntervalsOver33ms.exchange(0, std::memory_order_acq_rel);
+        *over33msCount = s_frameIntervalsOver33Ms.exchange(0, std::memory_order_acq_rel);
     }
 }
 
@@ -605,8 +605,8 @@ void framebufferTrackWrite(uint32_t address, uint32_t size)
 
     if (framebufferAddressOverlaps(address, size))
     {
-        s_FbWriteCount.fetch_add(1, std::memory_order_relaxed);
-        s_FbWriteBytes.fetch_add(size, std::memory_order_relaxed);
+        s_writeCount.fetch_add(1, std::memory_order_relaxed);
+        s_writeBytes.fetch_add(size, std::memory_order_relaxed);
     }
 }
 
@@ -628,10 +628,10 @@ bool framebufferAddressOverlaps(uint32_t address, uint32_t size)
 
 uint64_t framebufferConsumeWriteCount(void)
 {
-    return s_FbWriteCount.exchange(0, std::memory_order_acq_rel);
+    return s_writeCount.exchange(0, std::memory_order_acq_rel);
 }
 
 uint64_t framebufferConsumeWriteBytes(void)
 {
-    return s_FbWriteBytes.exchange(0, std::memory_order_acq_rel);
+    return s_writeBytes.exchange(0, std::memory_order_acq_rel);
 }

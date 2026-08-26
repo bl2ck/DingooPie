@@ -46,7 +46,7 @@ static const char* monitorSourceName(RuntimeResourceMonitorSource source)
     }
 }
 
-static RuntimeResourceMonitorEntry* findMonitorEntryLocked(const app_resource_entry* entry)
+static RuntimeResourceMonitorEntry* findMonitorEntryLocked(const GuestResourceEntry* entry)
 {
     if (!entry || !entry->name || !entry->name[0])
     {
@@ -68,7 +68,7 @@ static RuntimeResourceMonitorEntry* findMonitorEntryLocked(const app_resource_en
     return NULL;
 }
 
-static RuntimeResourceMonitorEntry* ensureMonitorEntryLocked(const app_resource_entry* entry)
+static RuntimeResourceMonitorEntry* ensureMonitorEntryLocked(const GuestResourceEntry* entry)
 {
     if (!entry || !entry->name || !entry->name[0])
     {
@@ -85,7 +85,7 @@ static RuntimeResourceMonitorEntry* ensureMonitorEntryLocked(const app_resource_
     item.name = entry->name;
     item.offset = entry->offset;
     item.size = entry->size;
-    item.xorKey = entry->xor_key;
+    item.xorKey = entry->xorKey;
     item.firstRevision = g_resourceMonitorSnapshot.revision + 1;
     g_resourceMonitorSnapshot.entries.push_back(item);
     return &g_resourceMonitorSnapshot.entries.back();
@@ -243,7 +243,7 @@ static RuntimeResourceMonitorEntry* ensureExternalMonitorEntryLocked(
 
 static void updateMonitorEntryMetadataLocked(
     RuntimeResourceMonitorEntry* item,
-    const app_resource_entry* entry)
+    const GuestResourceEntry* entry)
 {
     if (!item || !entry)
     {
@@ -252,8 +252,8 @@ static void updateMonitorEntryMetadataLocked(
 
     item->offset = entry->offset;
     item->size = entry->size;
-    item->xorKey = entry->xor_key;
-    item->cached = item->cached || entry->decoded_data || !entry->xor_key;
+    item->xorKey = entry->xorKey;
+    item->cached = item->cached || entry->decoded_data || !entry->xorKey;
 }
 
 static uint32_t updateMonitorEntryLoadLocked(
@@ -386,50 +386,6 @@ void runtimeResourceMonitorSetAppSha256(const char* appSha256)
     pthread_mutex_unlock(&g_resourceMonitorMutex);
 }
 
-void runtimeResourceMonitorSetAppResources(app* loadedApp)
-{
-    pthread_mutex_lock(&g_resourceMonitorMutex);
-    uint32_t resourceCount = loadedApp ? loadedApp->resource_count : 0;
-    uint32_t packageResourceCount = loadedApp ? loadedApp->package_resource_count : 0;
-    g_packageResourceLookup.clear();
-    if (loadedApp)
-    {
-        for (uint32_t i = 0; i < loadedApp->resource_count; ++i)
-        {
-            RuntimeResourceMonitorEntry* item =
-                ensureMonitorEntryLocked(&loadedApp->resource_data[i]);
-            updateMonitorEntryMetadataLocked(item, &loadedApp->resource_data[i]);
-        }
-        g_packageResourceLookup.reserve(loadedApp->package_resource_count);
-        for (uint32_t i = 0; i < loadedApp->package_resource_count; ++i)
-        {
-            const app_package_resource_entry& packageResource =
-                loadedApp->package_resource_data[i];
-            if (!packageResource.name || !packageResource.name[0] ||
-                packageResource.size == 0)
-            {
-                continue;
-            }
-
-            RuntimePackageResourceLookup item;
-            item.name = packageResource.name;
-            item.offset = packageResource.offset;
-            item.size = packageResource.size;
-            g_packageResourceLookup.push_back(item);
-        }
-    }
-    g_resourceMonitorSnapshot.revision++;
-    if (resourceMonitorAutotestEnabled())
-    {
-        printf("resource-monitor-autotest: seeded resources=%u package_resources=%u snapshot=%u revision=%llu\n",
-            resourceCount,
-            packageResourceCount,
-            (unsigned)g_resourceMonitorSnapshot.entries.size(),
-            (unsigned long long)g_resourceMonitorSnapshot.revision);
-    }
-    pthread_mutex_unlock(&g_resourceMonitorMutex);
-}
-
 void runtimeResourceMonitorSetGuestResources(GuestPackage* package)
 {
     pthread_mutex_lock(&g_resourceMonitorMutex);
@@ -524,7 +480,7 @@ void runtimeResourceMonitorRecordGuestClose(const GuestResourceEntry* entry)
 void runtimeResourceMonitorRecordOpen(
     RuntimeResourceMonitorSource source,
     const char* requestName,
-    const app_resource_entry* entry,
+    const GuestResourceEntry* entry,
     bool cached)
 {
     if (!resourceMonitorCaptureEnabled())
@@ -562,7 +518,7 @@ void runtimeResourceMonitorRecordOpen(
 
 void runtimeResourceMonitorRecordLoadContent(
     RuntimeResourceMonitorSource source,
-    const app_resource_entry* entry,
+    const GuestResourceEntry* entry,
     uint32_t guestAddress,
     const void* data,
     uint32_t bytesRead,
@@ -679,7 +635,7 @@ void runtimeResourceMonitorRecordExternalLoadContent(
 
 void runtimeResourceMonitorRecordSeek(
     RuntimeResourceMonitorSource source,
-    const app_resource_entry* entry,
+    const GuestResourceEntry* entry,
     uint32_t positionAfter)
 {
     if (!resourceMonitorCaptureEnabled())
@@ -744,7 +700,7 @@ void runtimeResourceMonitorRecordExternalClose(const char* requestName)
 
 void runtimeResourceMonitorRecordClose(
     RuntimeResourceMonitorSource source,
-    const app_resource_entry* entry)
+    const GuestResourceEntry* entry)
 {
     if (!resourceMonitorCaptureEnabled())
     {

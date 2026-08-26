@@ -1,6 +1,6 @@
-#include "mips_runtime.h"
+#include "app/cpu/mips_runtime.h"
 
-#include "ppsspp_backend.h"
+#include "app/cpu/ppsspp_backend.h"
 
 #include <algorithm>
 #include <atomic>
@@ -13,9 +13,9 @@
 #include <unordered_map>
 #include <vector>
 
-#include "framebuffer.h"
-#include "pause_gate.h"
-#include "runtime_log.h"
+#include "frontend/video/framebuffer.h"
+#include "shared/execution/pause_gate.h"
+#include "shared/diagnostics/runtime_log.h"
 
 struct MemoryRegion
 {
