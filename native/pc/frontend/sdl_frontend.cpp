@@ -17,6 +17,7 @@
 #include "app_save_state.h"
 #include "ui_strings.h"
 #include "runtime_log.h"
+#include "shared/game/game_runtime.h"
 
 #include <SDL2/SDL.h>
 #ifdef _WIN32
@@ -5920,6 +5921,7 @@ void frontendRunLoop(const EmulatorOptions& options)
     uint64_t lastIdlePresentCounter = 0;
     uint64_t performanceFrequency = SDL_GetPerformanceFrequency();
     bool pendingFrameRequest = false;
+    bool runtimeWasActive = false;
     uint16_t frameCopy[SCREEN_WIDTH * SCREEN_HEIGHT];
 
     while (running && !SDL_AtomicGet(&g_quitRequested))
@@ -6165,6 +6167,19 @@ void frontendRunLoop(const EmulatorOptions& options)
         uint64_t activePresentIntervalMs = minimizedThrottle ?
             kMinimizedThrottlePresentIntervalMs : minPresentIntervalMs;
         bool gameRunning = frontendMenuGameRunning();
+        GameFormat activeFormat = gameRuntimeActiveFormat();
+        if (gameRunning && activeFormat != GAME_FORMAT_UNKNOWN)
+        {
+            runtimeWasActive = true;
+        }
+        else if (gameRunning && runtimeWasActive &&
+            activeFormat == GAME_FORMAT_UNKNOWN)
+        {
+            printf("frontend: game runtime completed; returning to idle screen\n");
+            frontendMenuSetGameRunning(false);
+            gameRunning = false;
+            runtimeWasActive = false;
+        }
         if (gameRunning)
         {
             g_idleAnimationClock.pause();

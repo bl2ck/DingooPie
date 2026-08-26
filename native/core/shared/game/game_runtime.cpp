@@ -6,6 +6,7 @@
 #include "app_save_state.h"
 #include "shared/services/audio_output.h"
 #include "runtime_resource_monitor.h"
+#include "sdl_frontend.h"
 
 #include <mutex>
 #include <condition_variable>
@@ -31,6 +32,7 @@ static void runCcGame(void)
     {
         printf("game-runtime: CC execution failed: %s\n",
             stats.error[0] ? stats.error : "unknown error");
+        frontendRequestQuit();
     }
     else
     {
@@ -38,6 +40,11 @@ static void runCcGame(void)
             (unsigned long long)stats.instructions,
             stats.framesSubmitted,
             stats.tasksCreated);
+        if (stats.guestCompleted)
+        {
+            printf("game-runtime: CC guest completed; exiting emulator\n");
+            frontendRequestQuit();
+        }
     }
     {
         std::lock_guard<std::mutex> lock(g_gameRuntimeMutex);
