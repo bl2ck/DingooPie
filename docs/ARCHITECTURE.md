@@ -14,8 +14,9 @@ Technology; game files are external test inputs, not project assets.
 - Prefer generic SDK behavior in the HLE bridge. Add per-sample compatibility
   rules only when logs show a specific guest behavior that cannot be handled
   safely for every app.
-- Keep the PPSSPP IR JIT as the normal execution backend and the in-tree
-  interpreter as the correctness and diagnostic fallback.
+- Keep PPSSPP IR JIT as the normal APP backend and Dynarmic as the normal CC
+  backend. Retain the in-tree MIPS32 and ARM32 interpreters as correctness and
+  diagnostic fallbacks.
 - Keep user configuration optional. A clean command-line run should not create
   `DingooPie.ini`; the file is written only after settings are changed or reset
   through the frontend.
@@ -25,12 +26,12 @@ Technology; game files are external test inputs, not project assets.
 1. `main.cpp` loads settings, initializes SDL, and starts the guest runtime when an
    APP or CC game is selected. Without a startup game, the frontend waits for
    `File/Open Game`.
-2. `app_runtime.cpp` parses the `.app`, computes its SHA256 identity, maps
-   guest memory, initializes the HLE bridge and virtual file system, installs
-   compatibility hooks, and jumps to the guest entry point.
-3. `mips_runtime.cpp` owns the MIPS execution contract. It selects either the
-   PPSSPP IR JIT adapter or the in-tree interpreter and dispatches hooks for
-   mapped SDK imports and compatibility hooks.
+2. `game_runtime.cpp` dispatches `.app` games to `app_runtime.cpp` and `.cc`
+   games to `cc_runtime.cpp`. Both paths compute a SHA256 identity before
+   loading format-specific runtime state.
+3. APP maps MIPS guest memory, initializes the HLE bridge and virtual file
+   system, then selects PPSSPP IR JIT or the in-tree MIPS interpreter. CC maps
+   ARM32 runtime state and selects Dynarmic or the in-tree ARM32 interpreter.
 4. `app_hle.cpp` implements Dingoo SDK calls such as framebuffer submission,
    timers, input, task APIs, resources, audio, and formatted output.
 5. `sdl_frontend.cpp`, `framebuffer.cpp`, and `sdl_audio.cpp` present video,
@@ -65,29 +66,34 @@ or About text.
 
 Current user-facing controls are grouped as File, Options, Settings, Debug, and
 Help. Options contains the Video, Audio, and Input submenus. The menus include
-app opening, game pause/resume, screenshot export, video scale/anti-aliasing/effect adjustment, windowed
-fullscreen, brightness, contrast, gamma, saturation, FPS overlay, virtual controls,
-SDL GameController input, IME disable mode, language, backend/runtime timing
-options, master volume, audio effect, audio disable, debug console/performance log controls, log
+app opening, game pause/resume, screenshot export, video scale/anti-aliasing/effect adjustment,
+fullscreen, brightness, contrast, gamma, saturation, screen orientation, screen
+fill, FPS overlay, virtual controls, SDL GameController input, IME disable mode,
+language, backend/runtime timing options, master volume, audio effect, audio disable, debug console/performance log controls, log
 opening, Resource Monitor, Memory Searcher, Debugger, settings save/reset, and
 About.
 
 ## Source Boundaries
 
-- `app_loader.*`: Dingoo Technology `.app` container parsing and app resource metadata.
-- `app_paths.*`: path normalization and app file-name helpers.
+- `guest_package.*`: Dingoo Technology APP container parsing, executable image
+  loading, and package resource metadata.
+- `game_paths.*`: path normalization, extension checks, and game file-name helpers.
+- `startup_command_line.*`, `startup_game_selection.*`: Windows command-line
+  parsing, startup action validation, and initial game selection.
 - `app_runtime.*`: app bootstrapping, app identity logging,
   and fatal runtime diagnostics.
 - `app_framebuffer_mapping.*`: APP runtime framebuffer alias mapping. The
   frontend framebuffer module owns only pixels, snapshots, pacing, and
   presentation-facing state.
-- `emulator_options.*`: command-line and environment backend options.
+- `emulator_options.*`: environment backend and runtime option parsing.
 - `emulator_settings.*`: frontend settings, optional INI persistence, and
   environment synchronization.
 - `mips_runtime.*`: backend-neutral MIPS runtime, register/memory access,
   hooks, and interpreter implementation.
 - `ppsspp_backend.*`, `ppsspp_bridge.cpp`: PPSSPP IR/x64 JIT adapter and
   Dingoo memory/HLE shim.
+- `cc_runtime.*`, `arm32_dynarmic.*`, `arm32_interpreter.*`: CC runtime,
+  Dynarmic ARM32 JIT adapter, and compatibility interpreter.
 - `mips_compat.*`: exact instruction-level compatibility hooks and
   conservative software-rendering loop promotion for recognized MIPS patterns.
 - `compat_profile.*`: content-hash compatibility profile data used by HLE and
@@ -100,13 +106,15 @@ About.
   Dingoo A320 and Gemei X760+ button state.
 - `framebuffer.*`, `sdl_frontend.*`: framebuffer storage and snapshots, SDL presentation,
   menus, overlays, filters, and screenshots.
+- `app_package_resource_index.*`: read-only APP package resource-name index used
+  when runtime resource events expose offsets without names.
 - `resource_monitor_ui.*`, `runtime_resource_monitor.*`: Resource Monitor UI,
   runtime resource-load snapshots, and transient list highlight state.
 - `sdl_audio.*`, `guest_audio.*`: SDL audio output and waveout-compatible HLE.
 - `app_runtime_debug.*`, `debug_console.*`: register dumps, disassembly diagnostics,
   and optional Win32 debug console.
-- `platform_win32.*`: Windows file picker, UTF-8/UTF-16 conversion, and working
-  directory setup.
+- `platform_win32.*`: Windows file picker, UTF-8/UTF-16 conversion, storage
+  directories, and working-directory setup.
 
 `scripts/check_core_dependencies.ps1` enforces the APP/CC/shared/frontend
 dependency direction before each Release build. The shared file-system header
@@ -169,11 +177,17 @@ guest framebuffer.
 keeps the normal loop, `throttle` lowers frontend presentation and loop cadence,
 and `pause` uses the shared pause gate until the window is restored. Unknown or
 invalid values fall back to the current default.
-`video.portrait=1` is a frontend presentation transform: the guest framebuffer
-stays 320x240, while SDL rendering, screenshot output, and virtual-control
-coordinates rotate 90 degrees counter-clockwise.
-`input.disable_ime=1` is the default. It keeps Windows input methods detached
+`video.screen_orientation` accepts `auto`, `landscape`, or `portrait`.
+Portrait is a frontend presentation transform: the guest framebuffer stays
+320x240, while SDL rendering, screenshot output, and virtual-control coordinates
+rotate 90 degrees counter-clockwise. Auto follows the current renderer shape.
+`video.screen_fill` accepts `aspect`, `blurred`, or `stretch`. Aspect preserves
+the source ratio, blurred fills unused edges from a blurred game image, and
+stretch fills the complete output.
+`input.system_ime_disabled=1` is the default. It keeps Windows input methods detached
 from the SDL window unless the user disables the option from the Input menu.
+`input.virtual_control_scale` and `input.virtual_dpad_type` persist virtual-control
+size and either the joystick or segmented-ring D-pad style.
 `input.keyboard_mapping` and `input.controller_mapping` follow the same Input
 menu group. Empty means the built-in keyboard or SDL GameController defaults;
 non-empty values store only custom differences as comma-separated
@@ -193,17 +207,21 @@ parsing and capture stay idle until that window path is entered.
 global 65% pace. Explicit menu values write their numeric scale into the INI
 and the runtime environment.
 `runtime.cpu_hz=` means `Auto`; explicit CPU clock menu values write the
-selected IR JIT clock to the INI and `DINGOO_PIE_IRJIT_CLOCK_HZ`.
-`runtime.backend=` means `Auto` and resolves through the backend parser to
-PPSSPP IR JIT. `runtime.ostimedly_scale=` means `Auto` and uses the global
-delay scale of 1.0 unless a compatibility profile supplies a narrower app
-override.
+selected guest CPU clock reference to the INI and
+`DINGOO_PIE_IRJIT_CLOCK_HZ`. The environment-variable name is retained, but
+both APP and CC runtimes consume the value.
+`runtime.backend=` means `Auto`: APP resolves to PPSSPP IR JIT and CC resolves
+to Dynarmic when their optimized backends are compiled. Compatibility Mode uses
+the matching in-tree interpreter. `runtime.ostimedly_scale=` means `Auto` and
+uses the global delay scale of 1.0 unless a compatibility profile supplies a
+narrower APP override.
 `runtime.cheats_enabled=0` is the default. The frontend persists this global
 cheat switch and the selected cheat feature names per game. Individual cheat
 features remain unchecked until selected by the user, then restore when the same
 game is loaded again. Cheat lookup preserves the game format suffix, such as
 `GameName.app` -> `cheats\GameName.app.cht` and
-`GameName.cc` -> `cheats\GameName.cc.cht`. The optional `app_sha256` field is
+`GameName.cc` -> `cheats\GameName.cc.cht`, then falls back to the legacy
+`cheats\GameName.cht` filename when the format-specific file is absent. The optional `app_sha256` field is
 validation only and never a lookup key. Missing cheat files are silent; SHA
 mismatches disable the loaded file and show the user a warning.
 `audio.buffer_samples` controls only the SDL output device buffer request; the

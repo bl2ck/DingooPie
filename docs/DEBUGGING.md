@@ -50,8 +50,10 @@ executable. An explicit game takes priority over the recent-game list.
 The menu is ordered as File, Options, Settings, Debug, and Help. Options
 contains Video, Audio, and Input submenus. Video settings are scale, fullscreen,
 anti-aliasing, effect, brightness, contrast, gamma, saturation, minimized
-behavior, portrait mode, and FPS overlay. Audio and input settings follow, then
-runtime settings, the Cheats submenu, Cheat Manager, UI language, and Debug menu items in this
+behavior, screen orientation, screen fill, and FPS overlay. Audio settings also
+include buffer latency; Input includes virtual-control scale, D-pad type,
+mapping, and controller calibration. Runtime settings, the Cheats submenu,
+Cheat Manager, UI language, and Debug menu items follow in this
 order:
 Show Debug Console, Performance Log, Open Debug Log, Resource Monitor, Memory
 Searcher, and Debugger. File > Pause Game/Resume Game freezes game execution and
@@ -64,11 +66,12 @@ enabled.
 The `recent` section writes `last_app` first, followed by the ordered
 `app1`...`app10` recent-game list.
 Runtime-affecting values are saved immediately. Changes to window scale,
-windowed fullscreen, minimized behavior, portrait mode, FPS overlay, CPU clock, Game Speed, System Delay Scale,
+fullscreen, minimized behavior, screen orientation, screen fill, FPS overlay, CPU clock, Game Speed, System Delay Scale,
 audio disable, performance logging, Resource Monitor auto-open,
 anti-aliasing/effect, brightness, contrast,
 gamma, saturation, IME disable mode, virtual controls, language, master volume, audio
-buffer size, audio effect, and debug console visibility apply without relaunching the guest.
+buffer size, buffer latency, audio effect, digital noise reduction, and debug console
+visibility apply without relaunching the guest.
 Changing CPU Execution Mode still relaunches the emulator because the execution
 backend is selected at startup. Restored defaults relaunch only when they change
 the active CPU backend.
@@ -77,28 +80,38 @@ after the guest `waveout` volume so game-internal volume changes remain active.
 `audio.buffer_samples` controls the SDL output buffer request. The default is
 `2048`; larger values reduce underruns at the cost of more audio latency, while
 smaller values reduce latency but can make weak hosts crackle.
+`audio.buffer_latency` accepts `auto`, `110ms`, `120ms`, `130ms`, `140ms`, or
+`150ms`. `auto` currently uses the balanced 130 ms target. This setting controls
+the queued-audio target independently of `audio.buffer_samples`.
 `audio.effect` controls lightweight PCM processing after guest audio is written
 and before master volume is applied. Valid values are `off`, `soft`, `clear`,
 `bass_boost`, and `mono`; the default is `off`.
-`video.minimized_behavior` accepts `normal`, `throttle`, or `pause`. The
-default `throttle` lowers frontend presentation and loop cadence while the
-window is minimized. `pause` automatically pauses game execution and audio on
-minimize, then resumes only pauses that were caused by minimization.
+`audio.digital_noise_reduction` accepts `high`, `medium`, or `low`; the default
+is `high`. It controls the strength of the frontend PCM noise-reduction pass.
+`audio.audio_disabled=1` disables guest audio output; the default is `0`.
+`video.minimized_behavior` accepts `normal`, `throttle`, or `pause`. The default
+`pause` automatically pauses game execution and audio while minimized, then
+resumes only pauses caused by minimization. `throttle` keeps the runtime active
+with reduced frontend presentation and loop cadence.
 The default UI language is Chinese. `Settings -> Language` persists
 `ui.language=english` or `ui.language=chinese` for menus and native file dialogs.
 `runtime.speed_scale=` means `Auto`; the frontend leaves
 `DINGOO_PIE_RUNTIME_SPEED_SCALE` unset so the runtime uses the global 65%
 Auto pace.
 `runtime.cpu_hz=` means `Auto`; explicit CPU clock menu values set
-`DINGOO_PIE_IRJIT_CLOCK_HZ` and apply to the IR JIT immediately.
-`runtime.backend=` means `Auto`, which maps to the PPSSPP IR JIT backend.
+`DINGOO_PIE_IRJIT_CLOCK_HZ`. Despite the legacy environment-variable name,
+the value is the guest CPU clock reference used by both APP and CC runtimes.
+`runtime.backend=` means `Auto`: APP maps to PPSSPP IR JIT and CC maps to
+Dynarmic when the optimized backends are compiled. Compatibility Mode selects
+the matching in-tree interpreter.
 `runtime.ostimedly_scale=` means `Auto`, which maps host SDK delay waits to
 the global 1.0 SDK delay default while explicit values preserve manual
 accuracy/performance choices.
 `runtime.cheats_enabled=1` enables runtime cheat-code application. Cheat files
 are loaded from a `cheats` directory next to `DingooPie.exe` by game filename:
 `GameName.app` loads `cheats\GameName.app.cht`, while `GameName.cc` loads
-`cheats\GameName.cc.cht`. APP also accepts the legacy `GameName.cht` fallback. The optional
+`cheats\GameName.cc.cht`. If that format-specific file is absent, lookup falls
+back to the legacy `cheats\GameName.cht` filename. The optional
 `app_sha256=` field inside the `.cht` file is validation only. The global cheat
 switch is disabled by default; the menu item is `Settings -> Cheats -> Enable Cheats`.
 Individual cheat features start unchecked until the user selects them under
@@ -115,9 +128,13 @@ Use `中文/English` before the group separator when a feature needs both Chines
 and English menu labels.
 Startup does not create `DingooPie.ini`; the file is written only after the user
 changes or resets settings.
-`input.disable_ime=1` is the default and disables the Windows IME for the SDL
+`input.system_ime_disabled=1` is the default and disables the Windows IME for the SDL
 window so input methods cannot intercept gameplay keys. It can be toggled from
 `Input -> Disable IME` and applies immediately.
+`input.show_virtual_controls` enables the on-screen controls.
+`input.virtual_control_scale` accepts `75`, `100`, `125`, or `150`, while
+`input.virtual_dpad_type` accepts `joystick` or `segmented_ring`; the defaults
+are `100` and `joystick`.
 SDL GameController-compatible pads are accepted by the frontend. D-pad and left
 stick feed Dingoo D-pad controls, A/B/X/Y feed the matching face buttons,
 Back/Start feed SELECT/START, and shoulder buttons or analog triggers feed the
@@ -130,6 +147,9 @@ controller physical names include `A`, `B`, `X`, `Y`, `Back`, `Start`,
 `RightY+`, `LeftTrigger`, and `RightTrigger`. Supported controls are `A`, `B`,
 `X`, `Y`, `Start`, `Select`, `L`, `R`, `Up`, `Down`, `Left`, `Right`, `Power`,
 and `None`.
+`input.controller_calibration` stores the calibration result produced by the
+Input Mapping window. An empty value uses the built-in axis ranges and dead zone;
+the calibration and restore-default actions update this field automatically.
 The executable is built as a Windows GUI app by default, so no console is
 shown unless `Debug -> Show Debug Console` or `debug.show_console=1` is enabled.
 `Debug -> Open Debug Log` checks the executable directory first and
@@ -185,11 +205,18 @@ overlay that darkens source-pixel boundaries after scaling and is also applied
 to saved screenshots. Brightness, contrast, and saturation adjustments are
 applied after the selected pixel effect and are also reflected in saved
 screenshots. The guest framebuffer is not modified.
-`video.portrait=1` rotates the SDL presentation and saved screenshots
-90 degrees counter-clockwise, swaps the non-fullscreen window to 240x320 at the
-selected scale, and rotates the virtual control overlay and hit testing with
-the displayed screen. The guest framebuffer remains the fixed Dingoo 320x240
-surface.
+`video.brightness`, `video.contrast`, `video.gamma`, and `video.saturation`
+accept `50`, `75`, `90`, `100`, `110`, `125`, or `150`; all default to `100`.
+`video.show_fps=1` enables the frontend FPS overlay and defaults to `0`.
+`video.screen_orientation` accepts `auto`, `landscape`, or `portrait`. Portrait
+rotates the SDL presentation and saved screenshots 90 degrees counter-clockwise,
+swaps the non-fullscreen window to 240x320 at the selected scale, and rotates
+virtual-control rendering and hit testing. Auto uses portrait only when the
+current renderer output is taller than it is wide. The guest framebuffer remains
+the fixed Dingoo 320x240 surface.
+`video.screen_fill` accepts `aspect`, `blurred`, or `stretch`. Aspect preserves
+the source ratio, blurred extension fills unused edges from a blurred copy of
+the current frame, and stretch fills the complete renderer output.
 Saved screenshots use the current SDL display output size, so a 2x window saves
 640x480 in landscape mode and 480x640 in portrait mode.
 Window scale values are limited to 1, 2, or 3 in `DingooPie.ini`; old or invalid
@@ -431,12 +458,15 @@ per-run artifact directories, and writes CSV/JSON/Markdown summaries:
 See `docs\A320_X760_PLUS_3D_BASELINES.md` for the current local 14-sample
 baseline, known failures, and the manual verification checklist.
 
-For PPSSPP IR JIT rebuild checks, verify that the extracted source contains the
-Dingoo shim sentinels after `scripts\bootstrap_windows.ps1` completes:
+For optimized-backend rebuild checks, verify that bootstrap installs Dynarmic
+and Boost and that the extracted PPSSPP source contains the Dingoo shim
+sentinels after `scripts\bootstrap_windows.ps1` completes:
 
 - `Core\MIPS\x86\X64IRAsm.cpp`: `ppssppShimRead32` and `ppssppShimRunCodeHook`
 - `Core\MemMap.h`: `DINGOO_PIE_DINGOO_MEMORY`
 - `Core\MIPS\IR\IRInst.h`: `MulLow`
+- `Core\MIPS\IR\IRFrontend.cpp`: VFPU bounds handling from
+  `patches\ppsspp-irjit-vfpu-bounds.patch`
 
 The bootstrap script performs this check automatically. Treat a missing sentinel
 as a broken build environment even if CMake can still compile the emulator.

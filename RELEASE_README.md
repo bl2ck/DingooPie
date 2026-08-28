@@ -7,6 +7,8 @@
 
 - Powered by：BL2CK Software
 - 版权：Copyright (c) 2026 BL2CK
+- 作者主页：[bl2ck](https://github.com/bl2ck)
+- 项目主页：[bl2ck/DingooPie](https://github.com/bl2ck/DingooPie)
 
 ### 快速使用
 
@@ -17,13 +19,18 @@
 
 ### 命令行参数
 
+```text
+DingooPie.exe [选项] [game.app|game.cc]
+```
+
 | 参数 | 说明 |
 | --- | --- |
 | `-g, --game <路径>` | 启动一个 `.app` 或 `.cc` 游戏。 |
-| `-c, --config <路径>` | 本次运行使用指定配置文件。 |
+| `-c, --config <路径>` | 本次运行从指定 INI 读取设置，并将后续设置写回该文件。 |
 | `--no-recent` | 本次启动不自动加载最近游戏，不会清空最近游戏列表。 |
 | `-h, --help` | 显示帮助。 |
 | `-V, --version` | 显示版本。 |
+| `--` | 将后续内容作为游戏路径。 |
 
 示例：
 
@@ -33,8 +40,8 @@ DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc"
 DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc" --config "D:\DingooPie\Portable.ini" --no-recent
 ```
 
-也可以直接在程序名后填写一个游戏路径。路径含空格时必须加引号；未指定
-`--config` 时使用程序目录中的 `DingooPie.ini`。
+游戏路径只能指定一次，可直接填写路径，也可使用 `--game`。路径含空格时必须加引号。
+未指定 `--config` 时使用程序目录中的 `DingooPie.ini`。
 
 默认建议使用 `CPU 执行模式 > 自动`。如果个别游戏运行异常，可切换为 `兼容模式` 后重试。
 
@@ -48,7 +55,8 @@ DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc" --config "D:\DingooPie\Porta
 | 滤镜 | 正常 |
 | 亮度 / 对比度 / 伽马 / 饱和度 | 100% / 100% / 100% / 100% |
 | 最小化时 | 自动暂停 |
-| 竖屏模式 | 关闭 |
+| 屏幕方向 | 横屏 |
+| 画面填充 | 保持比例 |
 | 显示 FPS | 关闭 |
 | 主音量 | 100% |
 | 音频缓冲 | 2048 采样 |
@@ -58,6 +66,8 @@ DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc" --config "D:\DingooPie\Porta
 | 禁用音频 | 关闭 |
 | 禁用系统输入法 | 开启 |
 | 显示虚拟按键 | 关闭 |
+| 虚拟按键大小 | 100% |
+| 方向键类型 | 摇杆 |
 | CPU 执行模式 | 自动 |
 | CPU 时钟 | 自动 |
 | 游戏速度 | 自动 |
@@ -67,13 +77,13 @@ DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc" --config "D:\DingooPie\Porta
 
 ### 菜单与设置
 
-- `文件`：打开游戏、最近游戏、重启游戏、暂停/恢复游戏、保存截图、保存存档、读取存档、存档管理器、退出模拟器。
-- `选项 > 视频`：窗口缩放、全屏、抗锯齿、滤镜、画面参数、最小化行为、竖屏模式和 FPS 显示。
+- `文件`：打开游戏、最近游戏/清除最近游戏、重启游戏、暂停/恢复游戏、保存截图、保存即时存档、读取即时存档、存档管理器、退出模拟器。
+- `选项 > 视频`：窗口缩放、全屏、抗锯齿、滤镜、画面参数、最小化行为、屏幕方向、画面填充和 FPS 显示。
 - `选项 > 音频`：主音量、音频缓冲、音频缓冲延迟、音频效果、数字降噪和禁用音频。
-- `选项 > 输入`：禁用系统输入法、显示虚拟按键、按键手柄映射和手柄摇杆校准。
-- `设置`：CPU 执行模式、CPU 时钟、游戏速度、系统延迟比例、金手指、语言和恢复默认设置。
-- `调试器`：显示调试控制台、启用性能日志、打开调试日志、资源监视器、内存搜索器和游戏调试器。
-- `帮助`：查看版本、支持格式和软件信息。
+- `选项 > 输入`：禁用系统输入法、显示虚拟按键、虚拟按键大小、方向键类型、键盘与手柄映射和手柄摇杆校准。
+- `设置`：CPU 执行模式、CPU 时钟、游戏速度、系统延迟比例、金手指、金手指管理器、语言和恢复默认设置。
+- `调试`：显示调试控制台、启用性能日志、打开调试日志、资源监视器、内存搜索器和调试器。
+- `帮助`：作者主页、项目主页和关于丁果派。
 
 设置会自动保存到 `DingooPie.exe` 同目录的 `DingooPie.ini`。大多数选项会立即生效；切换 CPU 执行模式时，当前游戏会自动重启。
 
@@ -100,10 +110,11 @@ DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc" --config "D:\DingooPie\Porta
 
 每个游戏提供 15 个即时存档档位：
 
-- 存档文件：`savestates\游戏名.slotN.dps`
-- 缩略图：`savestates\游戏名.slotN.thumb.bmp`
+- 存档文件：`saves\<游戏 SHA-256>\savestates\游戏名.slotN.dps`
+- 缩略图：`saves\<游戏 SHA-256>\savestates\游戏名.slotN.thumb.bmp`
 - `文件 > 存档管理器` 可查看缩略图、保存、读取、删除存档或打开存档目录。
 - 保存和读取前会要求确认；如果当前游戏阶段与存档阶段不同，请先进入相同场景后再读取。
+- PC 版即时存档可与安卓版互通。游戏文件内容必须完全一致；可在两端对应的 `savestates` 目录间复制 `.dps` 文件。游戏文件名不同时，需要同步调整存档文件名。缩略图可选，不影响读取存档。
 
 ### 金手指
 
@@ -114,12 +125,13 @@ DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc" --config "D:\DingooPie\Porta
 游戏名.cc  -> cheats\游戏名.cc.cht
 ```
 
+未找到格式专用文件时，会兼容读取 `cheats\游戏名.cht`。
 打开游戏后，在 `设置 > 金手指` 中启用金手指并选择需要的功能，也可以使用金手指管理器统一启用、停用、应用或刷新。
 没有匹配文件或文件不适用于当前游戏时，游戏仍可正常运行，相关金手指不会应用。
 
 ### 调试功能
 
-PC 版保留以下用户可操作的调试功能：
+需要排查游戏问题时，可使用以下调试功能：
 
 - 调试控制台和调试日志：查看模拟器运行信息及错误提示。
 - 性能日志：记录当前游戏的运行统计。
@@ -146,6 +158,8 @@ Game files are not included. Use legally obtained game samples.
 
 - Powered by: BL2CK Software
 - Copyright (c) 2026 BL2CK
+- Author Homepage: [bl2ck](https://github.com/bl2ck)
+- Project Homepage: [bl2ck/DingooPie](https://github.com/bl2ck/DingooPie)
 
 ### Quick Start
 
@@ -156,13 +170,18 @@ Game files are not included. Use legally obtained game samples.
 
 ### Command-Line Options
 
+```text
+DingooPie.exe [options] [game.app|game.cc]
+```
+
 | Option | Description |
 | --- | --- |
 | `-g, --game <path>` | Launch one `.app` or `.cc` game. |
-| `-c, --config <path>` | Use the specified settings file for this run. |
-| `--no-recent` | Skip recent-game auto-start without clearing the recent list. |
+| `-c, --config <path>` | Read settings from this INI and write later changes back to it. |
+| `--no-recent` | Skip automatic recent-game startup for this run without clearing the recent list. |
 | `-h, --help` | Show help. |
 | `-V, --version` | Show the version. |
+| `--` | Treat the following value as the game path. |
 
 Examples:
 
@@ -172,8 +191,8 @@ DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc"
 DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc" --config "D:\DingooPie\Portable.ini" --no-recent
 ```
 
-You can also place one game path directly after the executable name. Quote paths
-containing spaces. Without `--config`, `DingooPie.ini` beside the executable is used.
+Specify one game either directly or with `--game`, and quote paths containing spaces.
+Without `--config`, `DingooPie.ini` beside the executable is used.
 
 `CPU Execution Mode > Auto` is recommended. If a game does not run correctly, retry with `Compatibility Mode`.
 
@@ -187,7 +206,8 @@ containing spaces. Without `--config`, `DingooPie.ini` beside the executable is 
 | Filter | Normal |
 | Brightness / contrast / gamma / saturation | 100% / 100% / 100% / 100% |
 | When minimized | Auto Pause |
-| Portrait mode | Off |
+| Screen orientation | Landscape |
+| Screen fill | Keep Aspect Ratio |
 | Show FPS | Off |
 | Master volume | 100% |
 | Audio buffer | 2048 samples |
@@ -197,6 +217,8 @@ containing spaces. Without `--config`, `DingooPie.ini` beside the executable is 
 | Disable audio | Off |
 | Disable system IME | On |
 | Show virtual controls | Off |
+| Virtual control size | 100% |
+| D-pad type | Joystick |
 | CPU execution mode | Auto |
 | CPU clock | Auto |
 | Game speed | Auto |
@@ -206,13 +228,13 @@ containing spaces. Without `--config`, `DingooPie.ini` beside the executable is 
 
 ### Menus And Settings
 
-- `File`: Open Game, Recent Games, Restart Game, Pause/Resume Game, Save Screenshot, Save Slot, Load Slot, Save Manager, and Exit Emulator.
-- `Options > Video`: window scale, fullscreen, anti-aliasing, filters, image adjustments, minimized behavior, portrait mode, and FPS display.
+- `File`: Open Game, Recent Games/Clear Recent Games, Restart Game, Pause/Resume Game, Save Screenshot, Save State, Load State, Save Manager, and Exit Emulator.
+- `Options > Video`: window scale, fullscreen, anti-aliasing, filters, image adjustments, minimized behavior, screen orientation, screen fill, and FPS display.
 - `Options > Audio`: master volume, audio buffer, audio buffer latency, audio effect, digital noise reduction, and audio disable.
-- `Options > Input`: Disable System IME, Show Virtual Controls, Input Mapping, and Joystick Calibration.
-- `Settings`: CPU Execution Mode, CPU Clock, Game Speed, System Delay Scale, Cheats, Language, and Restore Default Settings.
-- `Debugger`: Show Debug Console, Enable Performance Log, Open Debug Log, Resource Monitor, Memory Searcher, and Debugger.
-- `Help`: version, supported formats, and software information.
+- `Options > Input`: Disable System IME, Show Virtual Controls, Virtual Control Size, D-pad Type, Input Mapping, and Joystick Calibration.
+- `Settings`: CPU Execution Mode, CPU Clock, Game Speed, System Delay Scale, Cheats, Cheat Manager, Language, and Restore Default Settings.
+- `Debug`: Show Debug Console, Enable Performance Log, Open Debug Log, Resource Monitor, Memory Searcher, and Debugger.
+- `Help`: Author Homepage, Project Homepage, and About DingooPie.
 
 Settings are saved automatically in `DingooPie.ini` beside `DingooPie.exe`. Most options apply immediately. Changing CPU Execution Mode automatically restarts the current game.
 
@@ -239,10 +261,11 @@ SDL GameController-compatible devices are supported. Keyboard/controller mapping
 
 Each game provides 15 instant save slots:
 
-- State files: `savestates\GameName.slotN.dps`
-- Preview images: `savestates\GameName.slotN.thumb.bmp`
+- State files: `saves\<game SHA-256>\savestates\GameName.slotN.dps`
+- Preview images: `saves\<game SHA-256>\savestates\GameName.slotN.thumb.bmp`
 - `File > Save Manager` can display previews, save, load, delete states, or open the save directory.
 - Saving and loading require confirmation. If the current game phase differs from the saved phase, enter the same scene before loading.
+- PC instant saves can be transferred to and from the Android version. The game files must be byte-identical; copy the `.dps` file between the corresponding `savestates` directories. Rename the state file when the game filenames differ. Preview images are optional and do not affect loading.
 
 ### Cheats
 
@@ -253,12 +276,13 @@ GameName.app -> cheats\GameName.app.cht
 GameName.cc  -> cheats\GameName.cc.cht
 ```
 
+If the format-specific file is missing, DingooPie also accepts the legacy `cheats\GameName.cht` filename.
 After opening a game, enable cheats and select features under `Settings > Cheats`, or use Cheat Manager to enable, disable, apply, or refresh entries.
 If no matching file exists or the file does not match the current game, gameplay continues normally and those cheats are not applied.
 
 ### Debugging Features
 
-The PC version retains the following user-accessible debugging features:
+Use the following debugging features when troubleshooting a game:
 
 - Debug Console and Debug Log: view emulator status and error messages.
 - Performance Log: record runtime statistics for the current game.

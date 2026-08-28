@@ -9,15 +9,16 @@
 3. 在 `设置 > 金手指` 中勾选需要的功能，或打开
    `设置 > 金手指 > 金手指管理器` 用列表视图管理。
 
-金手指文件放在 `DingooPie.exe` 同级目录下的 `cheats` 文件夹中，并且必须与
-游戏文件同名：
+金手指文件放在 `DingooPie.exe` 同级目录下的 `cheats` 文件夹中，优先使用保留
+游戏格式后缀的文件名：
 
 ```text
 游戏名.app -> cheats\游戏名.app.cht
 游戏名.cc  -> cheats\游戏名.cc.cht
 ```
 
-没有同名 `.cht` 文件时，游戏会正常运行。如果 `.cht` 文件声明的 `app_sha256`
+未找到格式专用文件时，会兼容读取 `cheats\游戏名.cht`。两种文件均不存在时，
+游戏会正常运行。如果 `.cht` 文件声明的 `app_sha256`
 与当前游戏不一致，DingooPie 会提示警告并停用该金手指文件。
 
 已勾选的功能会按游戏保存，并在下次启动同一游戏时自动恢复。功能名变更后需要
@@ -75,15 +76,16 @@ Cheats are disabled by default. To use them:
 3. Select features from `Settings > Cheats`, or open
    `Settings > Cheats > Cheat Manager` for the list view.
 
-Cheat files live in a `cheats` folder next to `DingooPie.exe`. Keep the game
-format suffix in the cheat filename:
+Cheat files live in a `cheats` folder next to `DingooPie.exe`. The preferred
+filename keeps the game format suffix:
 
 ```text
 GameName.app -> cheats\GameName.app.cht
 GameName.cc  -> cheats\GameName.cc.cht
 ```
 
-If no same-name `.cht` file exists, the game runs normally. If a `.cht` file
+If the format-specific file is missing, the legacy `cheats\GameName.cht`
+filename is also accepted. If neither file exists, the game runs normally. If a `.cht` file
 declares an `app_sha256` that does not match the current game, DingooPie shows a
 warning and disables that cheat file.
 

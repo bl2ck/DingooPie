@@ -7,7 +7,10 @@ This project builds with the following third-party components.
 | w64devkit | `v2.8.0`, `w64devkit-x64-2.8.0.7z.exe` | MinGW-w64 GCC, CMake, Make, and core Windows build tools. |
 | SDL2 | `2.26.5`, official development package `SDL2-devel-2.26.5-mingw.zip` | Window, input, timer, and audio backend. |
 | Capstone | MSYS2 package `mingw-w64-x86_64-capstone 5.0.9-1` | MIPS disassembly diagnostics. |
-| PPSSPP | GitHub source archive `ppsspp-master.zip` plus `patches/ppsspp-irjit-dingoo.patch` | IR/x64 MIPS JIT backend core. |
+| PPSSPP | GitHub source archive `ppsspp-master.zip` plus `patches/ppsspp-irjit-dingoo.patch` and `patches/ppsspp-irjit-vfpu-bounds.patch` | IR/x64 MIPS JIT backend core. |
+| Dynarmic | Source archive at commit `a41c380246d3d9f9874f0f792d234dc0cc17c180` | ARM32 JIT backend for CC games. |
+| Boost headers | NuGet package `boost 1.84.0` | Header dependency used while building Dynarmic. |
+| Dynarmic bundled dependencies | fmt, mcl, robin-map, Xbyak, Zydis, and Zycore from the Dynarmic source archive | Code generation and support libraries used by Dynarmic. |
 | Dingoo SDK references | `flatmush/dingoo-sdk` snapshot, when available | SDK import names and constants. |
 | MinGW pthread runtime | MSYS2 package `mingw-w64-x86_64-libwinpthread 14.0.0.r98.g19f5121a2-1`, `libwinpthread-1.dll` | Runtime support for host pthread-backed guest task scheduling. |
 

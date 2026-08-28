@@ -7,7 +7,6 @@ $coreRoot = Join-Path $ProjectRoot 'native\core'
 $violations = New-Object System.Collections.Generic.List[string]
 $allowedIncludes = @{
     'native/core/shared/game/game_runtime.cpp' = @('app/', 'cc/', 'frontend/')
-    'native/core/shared/services/guest_filesystem.h' = @('app/runtime/app_loader.h')
 }
 
 function Test-Includes {

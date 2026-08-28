@@ -26,8 +26,10 @@ package to `release\`. The release contains:
 
 `README.md` is copied from `RELEASE_README.md` when that file exists; otherwise
 the root `README.md` is used. The release README is intentionally user-facing:
-keep it limited to basic operation, input, menus, and cheat usage. Detailed
-implementation and build notes belong in the root README or `docs\`.
+keep it limited to installation and operation, command-line use, menus and
+settings, input, saves, cheats, debugging tools, and troubleshooting. Detailed
+development, build, dependency, and internal implementation notes belong under
+`docs\`.
 `manifest.sha256` records SHA256 hashes for the core release files: the
 executable, runtime DLLs, and release README. Cheat files are copied into the
 release when present but are not listed in `manifest.sha256`. Stale files in
@@ -55,7 +57,6 @@ copies tracked project files from:
 - `patches\`
 - `resources\`
 - `scripts\`
-- `tools\`
 
 It also includes the root project files required to rebuild the source package,
 such as `CMakeLists.txt`, `LICENSE`, `README.md`, `THIRD_PARTY.md`,
@@ -70,7 +71,9 @@ screenshots, or framebuffer dumps.
 
 ## Third-Party Code
 
-PPSSPP is downloaded and patched by `bootstrap_windows.ps1`. Do not edit
-`third_party\ppsspp-master` as source. Keep Dingoo-specific PPSSPP changes in
-`patches\ppsspp-irjit-dingoo.patch`, then rebuild and run the smoke/profile
+PPSSPP and Dynarmic are downloaded by `bootstrap_windows.ps1`; Boost headers are
+downloaded for the Dynarmic build. Do not edit generated trees under
+`third_party\` as project source. Keep Dingoo-specific PPSSPP changes in
+`patches\ppsspp-irjit-dingoo.patch` and
+`patches\ppsspp-irjit-vfpu-bounds.patch`, then rebuild and run the smoke/profile
 commands from `docs\DEBUGGING.md`.
