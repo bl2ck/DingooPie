@@ -74,9 +74,12 @@ if (!$profileMutexHeld) {
 }
 
 try {
-Get-Process DingooPie,dingoo-pie -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process DingooPie,dingoo-pie -ErrorAction SilentlyContinue |
+    Stop-Process -Force -PassThru |
+    Wait-Process -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 250
 Get-ChildItem -LiteralPath $BuildDir -Filter "DingooPie-debug-*.log" -File -ErrorAction SilentlyContinue |
-    Remove-Item -Force
+    Remove-Item -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $savedLog, $resultJson -ErrorAction SilentlyContinue
 
 $hadConfig = Test-Path -LiteralPath $ini
@@ -130,6 +133,7 @@ try {
     $env:DINGOO_PIE_DUMP_FRAME_END = $DumpFrameEnd
     $env:DINGOO_PIE_DUMP_FRAME_STEP = $DumpFrameStep
 
+    $startedAt = Get-Date
     $process = Start-Process -FilePath $exe `
         -ArgumentList @($AppPath) `
         -WorkingDirectory $BuildDir `
@@ -142,8 +146,8 @@ try {
     $aliveAfterWait = -not $process.HasExited
     $stoppedByScript = $false
     if ($aliveAfterWait) {
-        Stop-Process -Id $process.Id -Force
         $stoppedByScript = $true
+        Stop-Process -Id $process.Id -Force
         try {
             Wait-Process -Id $process.Id -Timeout 5 -ErrorAction SilentlyContinue
         } catch {
@@ -151,6 +155,7 @@ try {
     }
 
     $rawLog = Get-ChildItem -LiteralPath $BuildDir -Filter "DingooPie-debug-*.log" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -ge $startedAt.AddSeconds(-1) } |
         Sort-Object LastWriteTime -Descending |
         Select-Object -First 1
     if ($rawLog) {
@@ -238,12 +243,12 @@ try {
         return @($items | Select-Object -Skip $count)
     }
 
-    function First-LogValue($items, $pattern, $replacement) {
+    function First-LogValue($items, $pattern, $replacement, $value = "") {
         $match = $items | Select-String -Pattern $pattern | Select-Object -First 1
         if (!$match) {
             return ""
         }
-        return ($match.Line -replace $replacement, "")
+        return ($match.Line -replace $replacement, $value)
     }
 
     $frontendRawCount = $frontend.Count
@@ -256,6 +261,14 @@ try {
     $hle = @(Skip-Samples $hle $SkipProfileSamples)
 
     $cpu = if ($Backend -eq "interpreter") { $interpreter } else { $irjit }
+    $appHash = First-LogValue $lines '^(DingooPie|app-runtime): app sha256: ' '^.*sha256: '
+    if ([string]::IsNullOrWhiteSpace($appHash)) {
+        $appHash = First-LogValue $lines '^cc-arm: game settings .*app_sha256=' '^.*app_sha256=([0-9A-F]+).*$' '$1'
+    }
+    $effectiveBackend = First-LogValue $lines '^(DingooPie|app-runtime): execution backend effective: ' '^.*effective: '
+    if ([string]::IsNullOrWhiteSpace($effectiveBackend)) {
+        $effectiveBackend = First-LogValue $lines '^cc-arm: settings .*effective_backend=' '^.*effective_backend=([^ ]+).*$' '$1'
+    }
 
     $result = [pscustomobject]@{
         name = $Name
@@ -268,13 +281,13 @@ try {
         exit_code = $exitCode
         process_alive_after_wait = $aliveAfterWait
         stopped_by_script = $stoppedByScript
-        app_hash = First-LogValue $lines '^DingooPie: app sha256: ' '^.*sha256: '
-        compat_profile = First-LogValue $lines '^DingooPie: compat profile: ' '^.*profile: '
-        effective_backend = First-LogValue $lines '^DingooPie: execution backend effective: ' '^.*effective: '
-        saw_app_start = [bool]($lines | Select-String -Pattern '^DingooPie: start app: ' -Quiet)
-        saw_app_hash = [bool]($lines | Select-String -Pattern '^DingooPie: app sha256: ' -Quiet)
-        saw_runtime_start = [bool]($lines | Select-String -Pattern '^DingooPie: native runtime start ' -Quiet)
-        failed_to_open_app = [bool]($lines | Select-String -Pattern '^DingooPie: failed to open app: ' -Quiet)
+        app_hash = $appHash
+        compat_profile = First-LogValue $lines '^(DingooPie|app-runtime): compat profile: ' '^.*profile: '
+        effective_backend = $effectiveBackend
+        saw_app_start = [bool]($lines | Select-String -Pattern '^(DingooPie: start app: |app-runtime: start APP: |game-runtime: starting CC game: )' -Quiet)
+        saw_app_hash = ![string]::IsNullOrWhiteSpace($appHash)
+        saw_runtime_start = [bool]($lines | Select-String -Pattern '^(DingooPie|app-runtime): native runtime start |^game-runtime: starting CC game: ' -Quiet)
+        failed_to_open_app = [bool]($lines | Select-String -Pattern '^(DingooPie|app-runtime): failed to open app: |^game-runtime: (unsupported game path|failed to create CC runtime thread): ' -Quiet)
         skipped_profile_samples = $SkipProfileSamples
         frontend_raw_samples = $frontendRawCount
         irjit_raw_samples = $irjitRawCount

@@ -37,6 +37,7 @@
 #include <gdiplus.h>
 #endif
 #include <ctype.h>
+#include <algorithm>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -49,9 +50,21 @@
 static SDL_Window* g_window = NULL;
 static SDL_Renderer* g_renderer = NULL;
 static SDL_Texture* g_frameTexture = NULL;
+static SDL_Texture* g_blurredBackdropTexture = NULL;
 static SDL_Texture* g_fpsOverlayTexture = NULL;
 static SDL_Texture* g_idleTitleTexture = NULL;
 static SDL_Texture* g_idleSymbolTextures[4] = {};
+#ifdef _WIN32
+struct VirtualTextTexture
+{
+    std::string label;
+    SDL_Texture* texture = NULL;
+    int fontSize = 0;
+    int width = 0;
+    int height = 0;
+};
+static VirtualTextTexture g_virtualTextTextures[8];
+#endif
 static int g_fpsOverlayValue = -1;
 static int g_fpsOverlayWidth = 0;
 static int g_fpsOverlayHeight = 0;
@@ -126,7 +139,10 @@ static const uint32_t kMinimizedThrottleLoopDelayMs = 50;
 static const uint64_t kIdlePresentIntervalUs = 16667;
 static const uint64_t kIdleWakeMarginUs = 2000;
 static const uint32_t kIdleMaxWaitMs = 4;
+static const int kBlurredBackdropWidth = SCREEN_WIDTH / 4;
+static const int kBlurredBackdropHeight = SCREEN_HEIGHT / 4;
 static const double kPi = 3.14159265358979323846;
+static uint32_t g_blurredBackdropUpdateCounter = 0;
 
 static bool inputTraceEnabled(void);
 static void openFirstGameController(void);
@@ -338,10 +354,22 @@ struct VirtualControlButton
     bool drawFrame;
 };
 
+static bool virtualButtonHasControl(
+    const VirtualControlButton& button, uint32_t controlBit);
+
 static uint32_t g_virtualMouseControls = 0;
 static bool g_virtualMouseButtonHeld = false;
+static bool g_virtualMouseControlsDpad = false;
 static uint64_t g_virtualMouseReleaseTicks = 0;
+static uint64_t g_virtualMousePressedAtTicks = 0;
+static int g_virtualDpadOffsetX = 0;
+static int g_virtualDpadOffsetY = 0;
+static double g_virtualDpadVisualOffsetX = 0.0;
+static double g_virtualDpadVisualOffsetY = 0.0;
+static uint64_t g_virtualDpadVisualUpdateTicks = 0;
 static const uint64_t kVirtualMouseClickHoldMs = 180;
+static const uint64_t kVirtualGameplayButtonMinimumPressMs = 48;
+static const int kVirtualControlButtonCapacity = 20;
 static uint64_t g_postRestoreInputBlockUntilTicks = 0;
 static const uint64_t kPostRestoreInputBlockMs = 160;
 
@@ -385,6 +413,37 @@ static bool frontendPostRestoreInputBlocked(void)
 static bool virtualControlsVisible(void)
 {
     return g_frontendSettings && g_frontendSettings->showVirtualControls;
+}
+
+static int virtualControlScalePercent(void)
+{
+    if (!g_frontendSettings)
+    {
+        return 100;
+    }
+    for (size_t index = 0;
+        index < sizeof(EMULATOR_VIRTUAL_CONTROL_SCALE_VALUES) /
+            sizeof(EMULATOR_VIRTUAL_CONTROL_SCALE_VALUES[0]);
+        ++index)
+    {
+        if (g_frontendSettings->virtualControlScalePercent ==
+            EMULATOR_VIRTUAL_CONTROL_SCALE_VALUES[index])
+        {
+            return g_frontendSettings->virtualControlScalePercent;
+        }
+    }
+    return 100;
+}
+
+static VirtualDpadType virtualDpadType(void)
+{
+    if (!g_frontendSettings ||
+        g_frontendSettings->virtualDpadType < VIRTUAL_DPAD_JOYSTICK ||
+        g_frontendSettings->virtualDpadType >= VIRTUAL_DPAD_TYPE_COUNT)
+    {
+        return VIRTUAL_DPAD_JOYSTICK;
+    }
+    return g_frontendSettings->virtualDpadType;
 }
 
 static bool portraitModeEnabled(void)
@@ -559,6 +618,68 @@ static void renderVirtualDrawLine(int x1, int y1, int x2, int y2)
     else
     {
         SDL_RenderDrawLine(g_renderer, x1, y1, x2, y2);
+    }
+}
+
+static void renderVirtualFillCircle(int centerX, int centerY, int radius)
+{
+    for (int y = -radius; y <= radius; ++y)
+    {
+        int halfWidth = (int)sqrt((double)(radius * radius - y * y));
+        renderVirtualDrawLine(centerX - halfWidth, centerY + y,
+            centerX + halfWidth, centerY + y);
+    }
+}
+
+static void renderVirtualDrawCircle(int centerX, int centerY, int radius)
+{
+    const int segments = std::max(64, std::min(256, radius * 4));
+    int previousX = centerX + radius;
+    int previousY = centerY;
+    for (int i = 1; i <= segments; ++i)
+    {
+        double angle = (double)i * kPi * 2.0 / (double)segments;
+        int x = centerX + (int)(cos(angle) * radius);
+        int y = centerY + (int)(sin(angle) * radius);
+        renderVirtualDrawLine(previousX, previousY, x, y);
+        previousX = x;
+        previousY = y;
+    }
+}
+
+static void renderVirtualFillArcBand(int centerX, int centerY,
+    int innerRadius, int outerRadius, int directionX, int directionY)
+{
+    int64_t innerRadiusSquared = (int64_t)innerRadius * innerRadius;
+    int64_t outerRadiusSquared = (int64_t)outerRadius * outerRadius;
+    int tangentX = -directionY;
+    int tangentY = directionX;
+    for (int localY = -outerRadius; localY <= outerRadius; ++localY)
+    {
+        int runStart = 0;
+        bool runActive = false;
+        for (int localX = -outerRadius; localX <= outerRadius; ++localX)
+        {
+            int64_t distanceSquared =
+                (int64_t)localX * localX + (int64_t)localY * localY;
+            int forward = localX * directionX + localY * directionY;
+            int lateral = abs(localX * tangentX + localY * tangentY);
+            bool inside = distanceSquared >= innerRadiusSquared &&
+                distanceSquared <= outerRadiusSquared && forward > 0 &&
+                (int64_t)lateral * 1000 <= (int64_t)forward * 424;
+            if (inside && !runActive)
+            {
+                runStart = localX;
+                runActive = true;
+            }
+            if ((!inside || localX == outerRadius) && runActive)
+            {
+                int runEnd = inside && localX == outerRadius ? localX : localX - 1;
+                renderVirtualDrawLine(centerX + runStart, centerY + localY,
+                    centerX + runEnd, centerY + localY);
+                runActive = false;
+            }
+        }
     }
 }
 
@@ -1223,6 +1344,20 @@ static void resetIdleTextures(void)
     resetIdleSymbolTextures();
 }
 
+#ifdef _WIN32
+static void resetVirtualTextTextures(void)
+{
+    for (size_t i = 0; i < sizeof(g_virtualTextTextures) / sizeof(g_virtualTextTextures[0]); ++i)
+    {
+        if (g_virtualTextTextures[i].texture)
+        {
+            SDL_DestroyTexture(g_virtualTextTextures[i].texture);
+        }
+        g_virtualTextTextures[i] = VirtualTextTexture();
+    }
+}
+#endif
+
 void frontendReleaseIdleResources(void)
 {
     g_idleAnimationClock.reset();
@@ -1398,6 +1533,199 @@ static bool drawIdleTitle(int width, int height)
 }
 #endif
 
+static int virtualButtonSystemFontSize(const VirtualControlButton& button)
+{
+    SDL_Rect textRect = portraitModeEnabled() ?
+        rotateVirtualRectCcw(button.rect) : button.rect;
+    int scalePercent = virtualControlScalePercent();
+    bool compact = !portraitModeEnabled() &&
+        (virtualButtonHasControl(button, CONTROL_BUTTON_START) ||
+            virtualButtonHasControl(button, CONTROL_BUTTON_SELECT));
+    if (compact)
+    {
+        int maximumSize = std::max(1, (18 * scalePercent + 50) / 100);
+        return std::max(1, std::min(maximumSize, textRect.h * 2 / 5));
+    }
+    return std::max(1, textRect.h * 2 / 5);
+}
+
+#ifdef _WIN32
+static VirtualTextTexture* virtualTextTextureForLabel(const char* label)
+{
+    if (!label || !label[0])
+    {
+        return NULL;
+    }
+    VirtualTextTexture* emptyEntry = NULL;
+    for (size_t i = 0; i < sizeof(g_virtualTextTextures) / sizeof(g_virtualTextTextures[0]); ++i)
+    {
+        if (g_virtualTextTextures[i].label == label)
+        {
+            return &g_virtualTextTextures[i];
+        }
+        if (!emptyEntry && g_virtualTextTextures[i].label.empty())
+        {
+            emptyEntry = &g_virtualTextTextures[i];
+        }
+    }
+    if (emptyEntry)
+    {
+        emptyEntry->label = label;
+    }
+    return emptyEntry;
+}
+
+static bool ensureVirtualTextTexture(const char* label, int fontSize,
+    VirtualTextTexture** outEntry)
+{
+    if (!g_renderer || !outEntry || fontSize <= 0)
+    {
+        return false;
+    }
+    VirtualTextTexture* entry = virtualTextTextureForLabel(label);
+    if (!entry)
+    {
+        return false;
+    }
+    if (entry->texture && entry->fontSize == fontSize)
+    {
+        *outEntry = entry;
+        return true;
+    }
+    if (entry->texture)
+    {
+        SDL_DestroyTexture(entry->texture);
+        entry->texture = NULL;
+    }
+
+    wchar_t wideLabel[16] = {};
+    int wideLength = MultiByteToWideChar(CP_UTF8, 0, label, -1,
+        wideLabel, (int)(sizeof(wideLabel) / sizeof(wideLabel[0])));
+    if (wideLength <= 1)
+    {
+        return false;
+    }
+    HFONT font = CreateFontW(-fontSize, 0, 0, 0, FW_NORMAL,
+        FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    HDC measureDc = font ? CreateCompatibleDC(NULL) : NULL;
+    if (!font || !measureDc)
+    {
+        if (measureDc) DeleteDC(measureDc);
+        if (font) DeleteObject(font);
+        return false;
+    }
+    HGDIOBJ oldFont = SelectObject(measureDc, font);
+    SIZE textSize = {};
+    bool measured = GetTextExtentPoint32W(
+        measureDc, wideLabel, wideLength - 1, &textSize) != 0;
+    SelectObject(measureDc, oldFont);
+    DeleteDC(measureDc);
+    if (!measured || textSize.cx <= 0 || textSize.cy <= 0)
+    {
+        DeleteObject(font);
+        return false;
+    }
+
+    int padding = std::max(2, fontSize / 8);
+    int textureWidth = textSize.cx + padding * 2;
+    int textureHeight = textSize.cy + padding * 2;
+    BITMAPINFO bitmapInfo = {};
+    bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bitmapInfo.bmiHeader.biWidth = textureWidth;
+    bitmapInfo.bmiHeader.biHeight = -textureHeight;
+    bitmapInfo.bmiHeader.biPlanes = 1;
+    bitmapInfo.bmiHeader.biBitCount = 32;
+    bitmapInfo.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = NULL;
+    HDC dc = CreateCompatibleDC(NULL);
+    HBITMAP bitmap = dc ? CreateDIBSection(
+        dc, &bitmapInfo, DIB_RGB_COLORS, &bits, NULL, 0) : NULL;
+    if (!dc || !bitmap || !bits)
+    {
+        if (bitmap) DeleteObject(bitmap);
+        if (dc) DeleteDC(dc);
+        DeleteObject(font);
+        return false;
+    }
+
+    memset(bits, 0, (size_t)textureWidth * (size_t)textureHeight * 4u);
+    HGDIOBJ oldBitmap = SelectObject(dc, bitmap);
+    oldFont = SelectObject(dc, font);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, RGB(255, 255, 255));
+    RECT drawRect = { 0, 0, textureWidth, textureHeight };
+    DrawTextW(dc, wideLabel, -1, &drawRect,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
+    SelectObject(dc, oldFont);
+    SelectObject(dc, oldBitmap);
+
+    uint8_t* pixels = (uint8_t*)bits;
+    for (int y = 0; y < textureHeight; ++y)
+    {
+        for (int x = 0; x < textureWidth; ++x)
+        {
+            uint8_t* pixel = pixels +
+                ((size_t)y * (size_t)textureWidth + (size_t)x) * 4u;
+            uint8_t alpha = std::max(pixel[0], std::max(pixel[1], pixel[2]));
+            pixel[0] = 255;
+            pixel[1] = 255;
+            pixel[2] = 255;
+            pixel[3] = alpha;
+        }
+    }
+
+    entry->texture = SDL_CreateTexture(g_renderer, SDL_PIXELFORMAT_BGRA32,
+        SDL_TEXTUREACCESS_STATIC, textureWidth, textureHeight);
+    if (entry->texture)
+    {
+        SDL_SetTextureBlendMode(entry->texture, SDL_BLENDMODE_BLEND);
+        if (SDL_UpdateTexture(entry->texture, NULL, bits, textureWidth * 4) != 0)
+        {
+            SDL_DestroyTexture(entry->texture);
+            entry->texture = NULL;
+        }
+    }
+    DeleteObject(bitmap);
+    DeleteDC(dc);
+    DeleteObject(font);
+    if (!entry->texture)
+    {
+        return false;
+    }
+    entry->fontSize = fontSize;
+    entry->width = textureWidth;
+    entry->height = textureHeight;
+    *outEntry = entry;
+    return true;
+}
+
+static bool drawVirtualSystemTextCentered(
+    const VirtualControlButton& button, SDL_Color color)
+{
+    SDL_Rect textRect = portraitModeEnabled() ?
+        rotateVirtualRectCcw(button.rect) : button.rect;
+    VirtualTextTexture* entry = NULL;
+    if (!ensureVirtualTextTexture(button.label,
+            virtualButtonSystemFontSize(button), &entry))
+    {
+        return false;
+    }
+    SDL_Rect destination =
+    {
+        textRect.x + (textRect.w - entry->width) / 2,
+        textRect.y + (textRect.h - entry->height) / 2,
+        entry->width,
+        entry->height
+    };
+    SDL_SetTextureColorMod(entry->texture, color.r, color.g, color.b);
+    SDL_SetTextureAlphaMod(entry->texture, color.a);
+    return SDL_RenderCopy(g_renderer, entry->texture, NULL, &destination) == 0;
+}
+#endif
+
 static bool drawIdleScreen(uint64_t animationTimeMs)
 {
     if (!g_renderer)
@@ -1443,6 +1771,24 @@ static uint32_t virtualControlMask(uint32_t controlBit)
     return 1u << controlBit;
 }
 
+static uint32_t virtualGameplayButtonControlMask(void)
+{
+    return virtualControlMask(CONTROL_BUTTON_A) |
+        virtualControlMask(CONTROL_BUTTON_B) |
+        virtualControlMask(CONTROL_BUTTON_X) |
+        virtualControlMask(CONTROL_BUTTON_Y) |
+        virtualControlMask(CONTROL_BUTTON_START) |
+        virtualControlMask(CONTROL_BUTTON_SELECT) |
+        virtualControlMask(CONTROL_TRIGGER_LEFT) |
+        virtualControlMask(CONTROL_TRIGGER_RIGHT);
+}
+
+static bool virtualControlMaskOnlyHasGameplayButtons(uint32_t controlMask)
+{
+    return controlMask &&
+        (controlMask & ~virtualGameplayButtonControlMask()) == 0;
+}
+
 static bool virtualButtonHasControl(const VirtualControlButton& button, uint32_t controlBit)
 {
     return (button.controlMask & virtualControlMask(controlBit)) != 0;
@@ -1451,6 +1797,36 @@ static bool virtualButtonHasControl(const VirtualControlButton& button, uint32_t
 static bool virtualButtonPressed(const VirtualControlButton& button)
 {
     return button.controlMask && (g_virtualMouseControls & button.controlMask) == button.controlMask;
+}
+
+static bool getLandscapeVirtualGameDestination(SDL_Rect* outRect)
+{
+    if (!outRect || !g_renderer || portraitModeEnabled())
+    {
+        return false;
+    }
+
+    int outputWidth = 0;
+    int outputHeight = 0;
+    if (!getVirtualControlCoordinateSize(&outputWidth, &outputHeight) ||
+        outputWidth <= 0 || outputHeight <= 0)
+    {
+        return false;
+    }
+
+    int width = outputWidth;
+    int height = (int)(((int64_t)width * SCREEN_HEIGHT) / SCREEN_WIDTH);
+    if (height > outputHeight)
+    {
+        height = outputHeight;
+        width = (int)(((int64_t)height * SCREEN_WIDTH) / SCREEN_HEIGHT);
+    }
+
+    outRect->x = (outputWidth - width) / 2;
+    outRect->y = (outputHeight - height) / 2;
+    outRect->w = width;
+    outRect->h = height;
+    return true;
 }
 
 static int buildVirtualControls(VirtualControlButton* outButtons, int maxButtons)
@@ -1467,28 +1843,173 @@ static int buildVirtualControls(VirtualControlButton* outButtons, int maxButtons
         return 0;
     }
 
-    const int baseUnit = width < 500 ? 34 : 42;
-    const int scalePercent = g_frontendSettings ?
-        g_frontendSettings->virtualControlScalePercent : 100;
-    const int unit = std::max(24, baseUnit * scalePercent / 100);
-    const int gap = unit / 5;
-    const int margin = unit / 2;
-    const int dpadX = margin;
-    const int dpadY = height - margin - unit * 3;
-    const int faceX = width - margin - unit * 3;
-    const int faceY = height - margin - unit * 3;
-    const int centerY = height - margin - unit;
-    const int startSelectW = unit * 3 / 2;
+    const int shortSide = std::min(width, height);
+    const int minimumUnit = std::max(28, shortSide / 30);
+    const int maximumUnit = std::max(minimumUnit, shortSide / 7);
+    int unit = std::min(width / 13, height / 10);
+    unit = std::max(minimumUnit, std::min(unit, maximumUnit));
+
+    SDL_Rect gameRect = { 0, 0, width, height };
+    bool useSideBands = false;
+    if (getLandscapeVirtualGameDestination(&gameRect))
+    {
+        int leftBand = gameRect.x;
+        int rightBand = width - gameRect.x - gameRect.w;
+        int bandPadding = std::max(6, shortSide / 90);
+        int sideBandUnit = (std::min(leftBand, rightBand) - bandPadding * 2) / 3;
+        if (sideBandUnit >= minimumUnit)
+        {
+            unit = std::min(sideBandUnit, maximumUnit);
+            useSideBands = true;
+        }
+    }
+
+    unit = std::max(1, (unit * virtualControlScalePercent() + 50) / 100);
+
+    const int gap = std::max(6, unit / 4);
+    int margin = std::max(unit / 3, shortSide / 80);
+    int bottomMargin = std::max(unit * 2 / 3, shortSide / 45);
+    int shoulderTopMargin = margin;
+    if (g_frontendSettings && g_frontendSettings->showFps)
+    {
+        shoulderTopMargin += std::max(unit / 2, shortSide / 32);
+    }
+    int dpadY = height - bottomMargin - unit * 3;
+    int faceY = dpadY;
+    const int startSelectW = unit * 5 / 4;
+    const int startSelectH = unit * 5 / 8;
     const int shoulderW = unit * 2;
-    const int shoulderH = unit;
+    const int shoulderH = unit * 3 / 4;
+
+    int dpadX = margin;
+    int faceX = width - margin - unit * 3;
+    int selectX = width / 2 - startSelectW - gap;
+    int startX = width / 2 + gap;
+    int startSelectY = height - margin - startSelectH;
+    int leftShoulderX = margin;
+    int rightShoulderX = width - margin - shoulderW;
+
+    if (useSideBands)
+    {
+        int leftBand = gameRect.x;
+        int rightBand = width - gameRect.x - gameRect.w;
+        dpadX = std::max(0, (leftBand - unit * 3) / 2);
+        faceX = std::min(width - unit * 3,
+            gameRect.x + gameRect.w + (rightBand - unit * 3) / 2);
+        dpadY = height / 2 - unit * 3 / 2;
+        faceY = dpadY;
+        leftShoulderX = dpadX + (unit * 3 - shoulderW) / 2;
+        rightShoulderX = faceX + (unit * 3 - shoulderW) / 2;
+        selectX = (leftBand - startSelectW) / 2;
+        startX = gameRect.x + gameRect.w + (rightBand - startSelectW) / 2;
+    }
+
+    SDL_Rect selectRect = { selectX, startSelectY, startSelectW, startSelectH };
+    SDL_Rect startRect = { startX, startSelectY, startSelectW, startSelectH };
+    SDL_Rect leftShoulderRect = { leftShoulderX, shoulderTopMargin, shoulderW, shoulderH };
+    SDL_Rect rightShoulderRect = { rightShoulderX, shoulderTopMargin, shoulderW, shoulderH };
+    SDL_Rect dpadRects[8] =
+    {
+        { dpadX, dpadY, unit, unit },
+        { dpadX + unit * 2, dpadY, unit, unit },
+        { dpadX + unit * 2, dpadY + unit * 2, unit, unit },
+        { dpadX, dpadY + unit * 2, unit, unit },
+        { dpadX + unit, dpadY, unit, unit },
+        { dpadX, dpadY + unit, unit, unit },
+        { dpadX + unit * 2, dpadY + unit, unit, unit },
+        { dpadX + unit, dpadY + unit * 2, unit, unit }
+    };
+    SDL_Rect faceRects[4] =
+    {
+        { faceX + unit, faceY, unit, unit },
+        { faceX, faceY + unit, unit, unit },
+        { faceX + unit * 2, faceY + unit, unit, unit },
+        { faceX + unit, faceY + unit * 2, unit, unit }
+    };
+    SDL_Rect faceChordRects[4] =
+    {
+        { faceX, faceY, unit, unit },
+        { faceX + unit * 2, faceY, unit, unit },
+        { faceX + unit * 2, faceY + unit * 2, unit, unit },
+        { faceX, faceY + unit * 2, unit, unit }
+    };
+    int dpadDirections[8][2] =
+    {
+        { -1, -1 }, { 1, -1 }, { 1, 1 }, { -1, 1 },
+        { 0, -1 }, { -1, 0 }, { 1, 0 }, { 0, 1 }
+    };
+
+    if (portraitModeEnabled())
+    {
+        const int portraitWidth = height;
+        const int portraitHeight = width;
+        const int rowWidth = startSelectW * 2 + gap;
+        const int rowX = (portraitWidth - rowWidth) / 2;
+        const int rowY = portraitHeight - margin - startSelectH;
+        const int controlY = rowY - gap - unit * 3;
+        const int dpadPhysicalX = margin;
+        const int facePhysicalX = portraitWidth - margin - unit * 3;
+        const auto toVirtualRect = [width](const SDL_Rect& rect)
+        {
+            return SDL_Rect{ width - rect.y - rect.h, rect.x, rect.h, rect.w };
+        };
+        selectRect = toVirtualRect({ rowX, rowY, startSelectW, startSelectH });
+        startRect = toVirtualRect({ rowX + startSelectW + gap, rowY,
+            startSelectW, startSelectH });
+        leftShoulderRect = toVirtualRect({ margin, shoulderTopMargin, shoulderW, shoulderH });
+        rightShoulderRect = toVirtualRect({ portraitWidth - margin - shoulderW,
+            shoulderTopMargin, shoulderW, shoulderH });
+
+        const SDL_Rect portraitDpadRects[8] =
+        {
+            { dpadPhysicalX, controlY, unit, unit },
+            { dpadPhysicalX + unit * 2, controlY, unit, unit },
+            { dpadPhysicalX + unit * 2, controlY + unit * 2, unit, unit },
+            { dpadPhysicalX, controlY + unit * 2, unit, unit },
+            { dpadPhysicalX + unit, controlY, unit, unit },
+            { dpadPhysicalX, controlY + unit, unit, unit },
+            { dpadPhysicalX + unit * 2, controlY + unit, unit, unit },
+            { dpadPhysicalX + unit, controlY + unit * 2, unit, unit }
+        };
+        const SDL_Rect portraitFaceRects[4] =
+        {
+            { facePhysicalX + unit, controlY, unit, unit },
+            { facePhysicalX, controlY + unit, unit, unit },
+            { facePhysicalX + unit * 2, controlY + unit, unit, unit },
+            { facePhysicalX + unit, controlY + unit * 2, unit, unit }
+        };
+        const SDL_Rect portraitFaceChordRects[4] =
+        {
+            { facePhysicalX, controlY, unit, unit },
+            { facePhysicalX + unit * 2, controlY, unit, unit },
+            { facePhysicalX + unit * 2, controlY + unit * 2, unit, unit },
+            { facePhysicalX, controlY + unit * 2, unit, unit }
+        };
+        const int portraitDpadDirections[8][2] =
+        {
+            { 1, -1 }, { 1, 1 }, { -1, 1 }, { -1, -1 },
+            { 1, 0 }, { 0, -1 }, { 0, 1 }, { -1, 0 }
+        };
+        for (int i = 0; i < 8; ++i)
+        {
+            dpadRects[i] = toVirtualRect(portraitDpadRects[i]);
+            dpadDirections[i][0] = portraitDpadDirections[i][0];
+            dpadDirections[i][1] = portraitDpadDirections[i][1];
+        }
+        for (int i = 0; i < 4; ++i)
+        {
+            faceRects[i] = toVirtualRect(portraitFaceRects[i]);
+            faceChordRects[i] = toVirtualRect(portraitFaceChordRects[i]);
+        }
+    }
 
     int count = 0;
-#define ADD_VIRTUAL_BUTTON_EX(text, mask, rx, ry, rw, rh, dx, dy, framed) \
+#define ADD_VIRTUAL_BUTTON_EX(text, mask, buttonRect, dx, dy, framed) \
     do { \
         if (count < maxButtons) { \
             outButtons[count].label = text; \
             outButtons[count].controlMask = mask; \
-            outButtons[count].rect = SDL_Rect{ rx, ry, rw, rh }; \
+            outButtons[count].rect = buttonRect; \
             outButtons[count].dpadDx = dx; \
             outButtons[count].dpadDy = dy; \
             outButtons[count].drawFrame = framed; \
@@ -1496,42 +2017,84 @@ static int buildVirtualControls(VirtualControlButton* outButtons, int maxButtons
         } \
     } while (0)
 
-    ADD_VIRTUAL_BUTTON_EX("", virtualControlMask(CONTROL_DPAD_UP) | virtualControlMask(CONTROL_DPAD_LEFT),
-        dpadX, dpadY, unit, unit, -1, -1, false);
-    ADD_VIRTUAL_BUTTON_EX("", virtualControlMask(CONTROL_DPAD_UP) | virtualControlMask(CONTROL_DPAD_RIGHT),
-        dpadX + unit * 2, dpadY, unit, unit, 1, -1, false);
-    ADD_VIRTUAL_BUTTON_EX("", virtualControlMask(CONTROL_DPAD_DOWN) | virtualControlMask(CONTROL_DPAD_RIGHT),
-        dpadX + unit * 2, dpadY + unit * 2, unit, unit, 1, 1, false);
-    ADD_VIRTUAL_BUTTON_EX("", virtualControlMask(CONTROL_DPAD_DOWN) | virtualControlMask(CONTROL_DPAD_LEFT),
-        dpadX, dpadY + unit * 2, unit, unit, -1, 1, false);
+    ADD_VIRTUAL_BUTTON_EX("", virtualControlMask(CONTROL_DPAD_UP) | virtualControlMask(CONTROL_DPAD_LEFT), dpadRects[0], dpadDirections[0][0], dpadDirections[0][1], false);
+    ADD_VIRTUAL_BUTTON_EX("", virtualControlMask(CONTROL_DPAD_UP) | virtualControlMask(CONTROL_DPAD_RIGHT), dpadRects[1], dpadDirections[1][0], dpadDirections[1][1], false);
+    ADD_VIRTUAL_BUTTON_EX("", virtualControlMask(CONTROL_DPAD_DOWN) | virtualControlMask(CONTROL_DPAD_RIGHT), dpadRects[2], dpadDirections[2][0], dpadDirections[2][1], false);
+    ADD_VIRTUAL_BUTTON_EX("", virtualControlMask(CONTROL_DPAD_DOWN) | virtualControlMask(CONTROL_DPAD_LEFT), dpadRects[3], dpadDirections[3][0], dpadDirections[3][1], false);
+    ADD_VIRTUAL_BUTTON_EX("", virtualControlMask(CONTROL_DPAD_UP), dpadRects[4], dpadDirections[4][0], dpadDirections[4][1], true);
+    ADD_VIRTUAL_BUTTON_EX("", virtualControlMask(CONTROL_DPAD_LEFT), dpadRects[5], dpadDirections[5][0], dpadDirections[5][1], true);
+    ADD_VIRTUAL_BUTTON_EX("", virtualControlMask(CONTROL_DPAD_RIGHT), dpadRects[6], dpadDirections[6][0], dpadDirections[6][1], true);
+    ADD_VIRTUAL_BUTTON_EX("", virtualControlMask(CONTROL_DPAD_DOWN), dpadRects[7], dpadDirections[7][0], dpadDirections[7][1], true);
 
-    ADD_VIRTUAL_BUTTON_EX("", virtualControlMask(CONTROL_DPAD_UP),
-        dpadX + unit, dpadY, unit, unit, 0, -1, true);
-    ADD_VIRTUAL_BUTTON_EX("", virtualControlMask(CONTROL_DPAD_LEFT),
-        dpadX, dpadY + unit, unit, unit, -1, 0, true);
-    ADD_VIRTUAL_BUTTON_EX("", virtualControlMask(CONTROL_DPAD_RIGHT),
-        dpadX + unit * 2, dpadY + unit, unit, unit, 1, 0, true);
-    ADD_VIRTUAL_BUTTON_EX("", virtualControlMask(CONTROL_DPAD_DOWN),
-        dpadX + unit, dpadY + unit * 2, unit, unit, 0, 1, true);
-
-    ADD_VIRTUAL_BUTTON_EX("X", virtualControlMask(CONTROL_BUTTON_X), faceX + unit, faceY, unit, unit, 0, 0, true);
-    ADD_VIRTUAL_BUTTON_EX("Y", virtualControlMask(CONTROL_BUTTON_Y), faceX, faceY + unit, unit, unit, 0, 0, true);
-    ADD_VIRTUAL_BUTTON_EX("A", virtualControlMask(CONTROL_BUTTON_A), faceX + unit * 2, faceY + unit, unit, unit, 0, 0, true);
-    ADD_VIRTUAL_BUTTON_EX("B", virtualControlMask(CONTROL_BUTTON_B), faceX + unit, faceY + unit * 2, unit, unit, 0, 0, true);
-
-    ADD_VIRTUAL_BUTTON_EX("SELECT", virtualControlMask(CONTROL_BUTTON_SELECT), width / 2 - startSelectW - gap, centerY + unit / 8, startSelectW, unit * 3 / 4, 0, 0, true);
-    ADD_VIRTUAL_BUTTON_EX("START", virtualControlMask(CONTROL_BUTTON_START), width / 2 + gap, centerY + unit / 8, startSelectW, unit * 3 / 4, 0, 0, true);
-
-    ADD_VIRTUAL_BUTTON_EX("L", virtualControlMask(CONTROL_TRIGGER_LEFT), margin, margin, shoulderW, shoulderH, 0, 0, true);
-    ADD_VIRTUAL_BUTTON_EX("R", virtualControlMask(CONTROL_TRIGGER_RIGHT), width - margin - shoulderW, margin, shoulderW, shoulderH, 0, 0, true);
+    ADD_VIRTUAL_BUTTON_EX("", virtualControlMask(CONTROL_BUTTON_X) | virtualControlMask(CONTROL_BUTTON_Y), faceChordRects[0], 0, 0, false);
+    ADD_VIRTUAL_BUTTON_EX("", virtualControlMask(CONTROL_BUTTON_X) | virtualControlMask(CONTROL_BUTTON_A), faceChordRects[1], 0, 0, false);
+    ADD_VIRTUAL_BUTTON_EX("", virtualControlMask(CONTROL_BUTTON_A) | virtualControlMask(CONTROL_BUTTON_B), faceChordRects[2], 0, 0, false);
+    ADD_VIRTUAL_BUTTON_EX("", virtualControlMask(CONTROL_BUTTON_B) | virtualControlMask(CONTROL_BUTTON_Y), faceChordRects[3], 0, 0, false);
+    ADD_VIRTUAL_BUTTON_EX("X", virtualControlMask(CONTROL_BUTTON_X), faceRects[0], 0, 0, true);
+    ADD_VIRTUAL_BUTTON_EX("Y", virtualControlMask(CONTROL_BUTTON_Y), faceRects[1], 0, 0, true);
+    ADD_VIRTUAL_BUTTON_EX("A", virtualControlMask(CONTROL_BUTTON_A), faceRects[2], 0, 0, true);
+    ADD_VIRTUAL_BUTTON_EX("B", virtualControlMask(CONTROL_BUTTON_B), faceRects[3], 0, 0, true);
+    ADD_VIRTUAL_BUTTON_EX("SELECT", virtualControlMask(CONTROL_BUTTON_SELECT), selectRect, 0, 0, true);
+    ADD_VIRTUAL_BUTTON_EX("START", virtualControlMask(CONTROL_BUTTON_START), startRect, 0, 0, true);
+    ADD_VIRTUAL_BUTTON_EX("L", virtualControlMask(CONTROL_TRIGGER_LEFT), leftShoulderRect, 0, 0, true);
+    ADD_VIRTUAL_BUTTON_EX("R", virtualControlMask(CONTROL_TRIGGER_RIGHT), rightShoulderRect, 0, 0, true);
 
 #undef ADD_VIRTUAL_BUTTON_EX
     return count;
 }
 
+static bool getVirtualDpadGeometry(const VirtualControlButton* buttons, int count,
+    int* outUnit, int* outCenterX, int* outCenterY)
+{
+    if (!buttons || count < 8 || !outUnit || !outCenterX || !outCenterY)
+    {
+        return false;
+    }
+
+    int minimumX = buttons[0].rect.x;
+    int minimumY = buttons[0].rect.y;
+    int maximumX = buttons[0].rect.x + buttons[0].rect.w;
+    int maximumY = buttons[0].rect.y + buttons[0].rect.h;
+    for (int i = 1; i < 8; ++i)
+    {
+        minimumX = std::min(minimumX, buttons[i].rect.x);
+        minimumY = std::min(minimumY, buttons[i].rect.y);
+        maximumX = std::max(maximumX, buttons[i].rect.x + buttons[i].rect.w);
+        maximumY = std::max(maximumY, buttons[i].rect.y + buttons[i].rect.h);
+    }
+    *outUnit = std::min(buttons[4].rect.w, buttons[4].rect.h);
+    *outCenterX = (minimumX + maximumX) / 2;
+    *outCenterY = (minimumY + maximumY) / 2;
+    return true;
+}
+
+static void virtualDpadButtonDirection(const VirtualControlButton& button,
+    int centerX, int centerY, int* outDirectionX, int* outDirectionY)
+{
+    int buttonCenterX = button.rect.x + button.rect.w / 2;
+    int buttonCenterY = button.rect.y + button.rect.h / 2;
+    if (outDirectionX)
+    {
+        *outDirectionX = buttonCenterX == centerX ? 0 :
+            (buttonCenterX < centerX ? -1 : 1);
+    }
+    if (outDirectionY)
+    {
+        *outDirectionY = buttonCenterY == centerY ? 0 :
+            (buttonCenterY < centerY ? -1 : 1);
+    }
+}
+
 static void releaseVirtualMouseControls(void)
 {
     g_virtualMouseButtonHeld = false;
+    g_virtualMouseControlsDpad = false;
+    g_virtualMousePressedAtTicks = 0;
+    g_virtualDpadOffsetX = 0;
+    g_virtualDpadOffsetY = 0;
+    g_virtualDpadVisualOffsetX = 0.0;
+    g_virtualDpadVisualOffsetY = 0.0;
+    g_virtualDpadVisualUpdateTicks = 0;
     if (!g_virtualMouseControls)
     {
         g_virtualMouseReleaseTicks = 0;
@@ -1548,8 +2111,8 @@ static uint32_t hitTestVirtualControls(int x, int y)
 {
     mapRendererPointToVirtualControls(&x, &y);
 
-    VirtualControlButton buttons[16];
-    int count = buildVirtualControls(buttons, 16);
+    VirtualControlButton buttons[kVirtualControlButtonCapacity];
+    int count = buildVirtualControls(buttons, kVirtualControlButtonCapacity);
     for (int i = 0; i < count; ++i)
     {
         if (pointInRect(x, y, buttons[i].rect))
@@ -1558,6 +2121,144 @@ static uint32_t hitTestVirtualControls(int x, int y)
         }
     }
     return 0;
+}
+
+static void updateVirtualDpadVisualPosition(void)
+{
+    uint64_t now = SDL_GetTicks64();
+    uint64_t elapsed = g_virtualDpadVisualUpdateTicks ?
+        now - g_virtualDpadVisualUpdateTicks : 16;
+    g_virtualDpadVisualUpdateTicks = now;
+    elapsed = std::min<uint64_t>(elapsed, 32);
+    double follow = 1.0 - exp(-(double)elapsed / 24.0);
+    g_virtualDpadVisualOffsetX +=
+        (g_virtualDpadOffsetX - g_virtualDpadVisualOffsetX) * follow;
+    g_virtualDpadVisualOffsetY +=
+        (g_virtualDpadOffsetY - g_virtualDpadVisualOffsetY) * follow;
+}
+
+static uint32_t virtualDpadControlMask(void)
+{
+    return virtualControlMask(CONTROL_DPAD_UP) |
+        virtualControlMask(CONTROL_DPAD_DOWN) |
+        virtualControlMask(CONTROL_DPAD_LEFT) |
+        virtualControlMask(CONTROL_DPAD_RIGHT);
+}
+
+static bool hitTestVirtualDpadDrag(int x, int y, bool requireInside,
+    uint32_t currentMask, uint32_t* outMask)
+{
+    if (!outMask)
+    {
+        return false;
+    }
+    *outMask = 0;
+    mapRendererPointToVirtualControls(&x, &y);
+
+    VirtualControlButton buttons[kVirtualControlButtonCapacity];
+    int count = buildVirtualControls(buttons, kVirtualControlButtonCapacity);
+    int unit = 0;
+    int centerX = 0;
+    int centerY = 0;
+    if (!getVirtualDpadGeometry(buttons, count, &unit, &centerX, &centerY))
+    {
+        return false;
+    }
+    int deltaX = x - centerX;
+    int deltaY = y - centerY;
+    int directionX = portraitModeEnabled() ? deltaY : deltaX;
+    int directionY = portraitModeEnabled() ? -deltaX : deltaY;
+    int radius = unit * 3 / 2;
+    int64_t distanceSquared =
+        (int64_t)directionX * directionX + (int64_t)directionY * directionY;
+    if (requireInside && distanceSquared > (int64_t)radius * radius)
+    {
+        return false;
+    }
+
+    int maxOffset = std::max(1, unit - 3);
+    double distance = sqrt((double)distanceSquared);
+    if (distance > (double)maxOffset)
+    {
+        double positionScale = (double)maxOffset / distance;
+        directionX = (int)lround(directionX * positionScale);
+        directionY = (int)lround(directionY * positionScale);
+    }
+    g_virtualDpadOffsetX = portraitModeEnabled() ? -directionY : directionX;
+    g_virtualDpadOffsetY = portraitModeEnabled() ? directionX : directionY;
+
+    int engageThreshold = std::max(6, unit / 5);
+    int releaseThreshold = std::max(4, unit / 8);
+    bool leftHeld = (currentMask & virtualControlMask(CONTROL_DPAD_LEFT)) != 0;
+    bool rightHeld = (currentMask & virtualControlMask(CONTROL_DPAD_RIGHT)) != 0;
+    bool upHeld = (currentMask & virtualControlMask(CONTROL_DPAD_UP)) != 0;
+    bool downHeld = (currentMask & virtualControlMask(CONTROL_DPAD_DOWN)) != 0;
+
+    if (directionX <= -engageThreshold || (leftHeld && directionX <= -releaseThreshold))
+        *outMask |= virtualControlMask(CONTROL_DPAD_LEFT);
+    if (directionX >= engageThreshold || (rightHeld && directionX >= releaseThreshold))
+        *outMask |= virtualControlMask(CONTROL_DPAD_RIGHT);
+    if (directionY <= -engageThreshold || (upHeld && directionY <= -releaseThreshold))
+        *outMask |= virtualControlMask(CONTROL_DPAD_UP);
+    if (directionY >= engageThreshold || (downHeld && directionY >= releaseThreshold))
+        *outMask |= virtualControlMask(CONTROL_DPAD_DOWN);
+    return true;
+}
+
+static bool hitTestVirtualDpadSegmentedRing(int x, int y, uint32_t* outMask)
+{
+    if (!outMask)
+    {
+        return false;
+    }
+    *outMask = 0;
+    mapRendererPointToVirtualControls(&x, &y);
+
+    VirtualControlButton buttons[kVirtualControlButtonCapacity];
+    int count = buildVirtualControls(buttons, kVirtualControlButtonCapacity);
+    int unit = 0;
+    int centerX = 0;
+    int centerY = 0;
+    if (!getVirtualDpadGeometry(buttons, count, &unit, &centerX, &centerY))
+    {
+        return false;
+    }
+
+    int deltaX = x - centerX;
+    int deltaY = y - centerY;
+    int absoluteX = abs(deltaX);
+    int absoluteY = abs(deltaY);
+    int outerRadius = unit * 142 / 100;
+    int innerRadius = std::max(3, unit * 34 / 100);
+    int64_t distanceSquared =
+        (int64_t)deltaX * deltaX + (int64_t)deltaY * deltaY;
+    if (distanceSquared > (int64_t)outerRadius * outerRadius ||
+        distanceSquared < (int64_t)innerRadius * innerRadius)
+    {
+        return false;
+    }
+
+    const int cardinalSectorSlope = 625;
+    bool horizontalOnly =
+        (int64_t)absoluteY * 1000 <= (int64_t)absoluteX * cardinalSectorSlope;
+    bool verticalOnly =
+        (int64_t)absoluteX * 1000 <= (int64_t)absoluteY * cardinalSectorSlope;
+    for (int i = 4; i < 8; ++i)
+    {
+        int directionX = 0;
+        int directionY = 0;
+        virtualDpadButtonDirection(
+            buttons[i], centerX, centerY, &directionX, &directionY);
+        bool horizontalMatch = !verticalOnly &&
+            ((directionX < 0 && deltaX < 0) || (directionX > 0 && deltaX > 0));
+        bool verticalMatch = !horizontalOnly &&
+            ((directionY < 0 && deltaY < 0) || (directionY > 0 && deltaY > 0));
+        if (horizontalMatch || verticalMatch)
+        {
+            *outMask |= buttons[i].controlMask;
+        }
+    }
+    return *outMask != 0;
 }
 
 static void updateVirtualMouseControls(uint32_t newMask)
@@ -1585,7 +2286,20 @@ static void scheduleVirtualMouseRelease(void)
         g_virtualMouseReleaseTicks = 0;
         return;
     }
-    g_virtualMouseReleaseTicks = SDL_GetTicks64() + kVirtualMouseClickHoldMs;
+
+    uint64_t now = SDL_GetTicks64();
+    uint64_t releaseAtTicks = now + kVirtualMouseClickHoldMs;
+    if (virtualControlMaskOnlyHasGameplayButtons(g_virtualMouseControls))
+    {
+        releaseAtTicks = g_virtualMousePressedAtTicks +
+            kVirtualGameplayButtonMinimumPressMs;
+    }
+    if (releaseAtTicks <= now)
+    {
+        releaseVirtualMouseControls();
+        return;
+    }
+    g_virtualMouseReleaseTicks = releaseAtTicks;
 }
 
 static void updateVirtualMouseReleaseTimer(void)
@@ -1621,10 +2335,26 @@ static bool handleVirtualControlMouseEvent(const SDL_Event& ev)
 
     if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT)
     {
-        uint32_t mask = hitTestVirtualControls(ev.button.x, ev.button.y);
+        g_virtualMouseReleaseTicks = 0;
+        uint32_t dpadMask = 0;
+        bool dpadHit = virtualDpadType() == VIRTUAL_DPAD_SEGMENTED_RING ?
+            hitTestVirtualDpadSegmentedRing(ev.button.x, ev.button.y, &dpadMask) :
+            hitTestVirtualDpadDrag(ev.button.x, ev.button.y, true, 0, &dpadMask);
+        if (dpadHit)
+        {
+            g_virtualMouseButtonHeld = true;
+            g_virtualMouseControlsDpad = true;
+            updateVirtualMouseControls(dpadMask);
+            return true;
+        }
+
+        uint32_t mask = hitTestVirtualControls(ev.button.x, ev.button.y) &
+            ~virtualDpadControlMask();
         if (mask)
         {
             g_virtualMouseButtonHeld = true;
+            g_virtualMouseControlsDpad = false;
+            g_virtualMousePressedAtTicks = SDL_GetTicks64();
             updateVirtualMouseControls(mask);
             if (inputTraceEnabled())
             {
@@ -1639,12 +2369,24 @@ static bool handleVirtualControlMouseEvent(const SDL_Event& ev)
         if (g_virtualMouseButtonHeld || g_virtualMouseControls)
         {
             g_virtualMouseButtonHeld = false;
+            if (g_virtualMouseControlsDpad)
+            {
+                g_virtualMouseControlsDpad = false;
+                g_virtualMousePressedAtTicks = 0;
+                g_virtualDpadOffsetX = 0;
+                g_virtualDpadOffsetY = 0;
+                updateVirtualMouseControls(0);
+                return true;
+            }
+            uint32_t releasedMask = g_virtualMouseControls;
             scheduleVirtualMouseRelease();
             if (inputTraceEnabled())
             {
-                printf("frontend: virtual mouse release scheduled mask=0x%08X hold_ms=%llu\n",
-                    (unsigned int)g_virtualMouseControls,
-                    (unsigned long long)kVirtualMouseClickHoldMs);
+                uint64_t now = SDL_GetTicks64();
+                uint64_t delayMs = g_virtualMouseReleaseTicks > now ?
+                    g_virtualMouseReleaseTicks - now : 0;
+                printf("frontend: virtual mouse up mask=0x%08X delay_ms=%llu\n",
+                    (unsigned int)releasedMask, (unsigned long long)delayMs);
             }
             return true;
         }
@@ -1653,7 +2395,29 @@ static bool handleVirtualControlMouseEvent(const SDL_Event& ev)
     {
         if (g_virtualMouseButtonHeld)
         {
-            updateVirtualMouseControls(hitTestVirtualControls(ev.motion.x, ev.motion.y));
+            if (g_virtualMouseControlsDpad)
+            {
+                uint32_t dpadMask = 0;
+                if (virtualDpadType() == VIRTUAL_DPAD_SEGMENTED_RING)
+                {
+                    hitTestVirtualDpadSegmentedRing(
+                        ev.motion.x, ev.motion.y, &dpadMask);
+                    updateVirtualMouseControls(dpadMask);
+                }
+                else if (hitTestVirtualDpadDrag(ev.motion.x, ev.motion.y, false,
+                    g_virtualMouseControls, &dpadMask))
+                {
+                    updateVirtualMouseControls(dpadMask);
+                }
+                return true;
+            }
+            uint32_t mask = hitTestVirtualControls(ev.motion.x, ev.motion.y) &
+                ~virtualDpadControlMask();
+            if (mask != g_virtualMouseControls)
+            {
+                g_virtualMousePressedAtTicks = SDL_GetTicks64();
+            }
+            updateVirtualMouseControls(mask);
             return true;
         }
     }
@@ -1666,63 +2430,144 @@ static void drawVirtualButton(const VirtualControlButton& button)
     bool pressed = virtualButtonPressed(button);
     if (button.dpadDx || button.dpadDy)
     {
-        const int cx = button.rect.x + button.rect.w / 2;
-        const int cy = button.rect.y + button.rect.h / 2;
-        const int minSide = button.rect.w < button.rect.h ? button.rect.w : button.rect.h;
+        if (virtualDpadType() == VIRTUAL_DPAD_SEGMENTED_RING)
+        {
+            return;
+        }
+        const int minSide = std::min(button.rect.w, button.rect.h);
+        const int buttonCenterX = button.rect.x + button.rect.w / 2;
+        const int buttonCenterY = button.rect.y + button.rect.h / 2;
+        const int dpadCenterX = buttonCenterX - button.dpadDx * minSide;
+        const int dpadCenterY = buttonCenterY - button.dpadDy * minSide;
+        const double directionLength = sqrt((double)(button.dpadDx * button.dpadDx +
+            button.dpadDy * button.dpadDy));
+        const double directionX = button.dpadDx / directionLength;
+        const double directionY = button.dpadDy / directionLength;
+        const int centerX = dpadCenterX + (int)lround(directionX * minSide);
+        const int centerY = dpadCenterY + (int)lround(directionY * minSide);
         const int spread = minSide / 5;
         const int depth = minSide / 7;
         SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
-        if (button.drawFrame)
-        {
-            SDL_SetRenderDrawColor(g_renderer, 16, 18, 20, pressed ? 220 : 155);
-            renderVirtualFillRect(button.rect);
-            SDL_SetRenderDrawColor(g_renderer, pressed ? 255 : 210, pressed ? 255 : 220, pressed ? 255 : 230, 210);
-            renderVirtualDrawRect(button.rect);
-        }
-
         SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, pressed ? 255 : 235);
-        const int tipX = cx + button.dpadDx * depth;
-        const int tipY = cy + button.dpadDy * depth;
-        const int baseX = cx - button.dpadDx * depth;
-        const int baseY = cy - button.dpadDy * depth;
-        const int perpX = -button.dpadDy * spread;
-        const int perpY = button.dpadDx * spread;
-        renderVirtualDrawLine(tipX, tipY, baseX + perpX, baseY + perpY);
-        renderVirtualDrawLine(tipX, tipY, baseX - perpX, baseY - perpY);
+        const int tipX = centerX + (int)lround(directionX * depth);
+        const int tipY = centerY + (int)lround(directionY * depth);
+        const int baseX = centerX - (int)lround(directionX * depth);
+        const int baseY = centerY - (int)lround(directionY * depth);
+        const int perpendicularX = (int)lround(-directionY * spread);
+        const int perpendicularY = (int)lround(directionX * spread);
+        renderVirtualDrawLine(tipX, tipY,
+            baseX + perpendicularX, baseY + perpendicularY);
+        renderVirtualDrawLine(tipX, tipY,
+            baseX - perpendicularX, baseY - perpendicularY);
+        return;
+    }
+    if (!button.drawFrame && (!button.label || !button.label[0]))
+    {
         return;
     }
 
     SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(g_renderer, 16, 18, 20, pressed ? 220 : 155);
-    renderVirtualFillRect(button.rect);
-    SDL_SetRenderDrawColor(g_renderer, pressed ? 255 : 210, pressed ? 255 : 220, pressed ? 255 : 230, 210);
-    renderVirtualDrawRect(button.rect);
-
-    int scale = 1;
-    if (virtualButtonHasControl(button, CONTROL_BUTTON_A) ||
+    bool faceButton = virtualButtonHasControl(button, CONTROL_BUTTON_A) ||
         virtualButtonHasControl(button, CONTROL_BUTTON_B) ||
         virtualButtonHasControl(button, CONTROL_BUTTON_X) ||
-        virtualButtonHasControl(button, CONTROL_BUTTON_Y) ||
-        virtualButtonHasControl(button, CONTROL_TRIGGER_LEFT) ||
-        virtualButtonHasControl(button, CONTROL_TRIGGER_RIGHT))
+        virtualButtonHasControl(button, CONTROL_BUTTON_Y);
+    if (faceButton)
     {
-        scale = 2;
+        int radius = std::min(button.rect.w, button.rect.h) / 2 - 2;
+        int centerX = button.rect.x + button.rect.w / 2;
+        int centerY = button.rect.y + button.rect.h / 2;
+        SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, pressed ? 112 : 42);
+        renderVirtualFillCircle(centerX, centerY, radius);
+        SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, pressed ? 255 : 210);
+        renderVirtualDrawCircle(centerX, centerY, radius);
     }
-    else if (virtualButtonHasControl(button, CONTROL_BUTTON_START) ||
-        virtualButtonHasControl(button, CONTROL_BUTTON_SELECT))
+    else
     {
-        scale = 1;
+        SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, pressed ? 112 : 42);
+        renderVirtualFillRect(button.rect);
+        SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, pressed ? 255 : 210);
+        renderVirtualDrawRect(button.rect);
     }
-    else if (button.rect.w >= 70)
-    {
-        scale = 2;
-    }
-    int textWidth = (int)strlen(button.label) * 6 * scale;
-    int textHeight = 7 * scale;
-    int textX = button.rect.x + (button.rect.w - textWidth) / 2;
-    int textY = button.rect.y + (button.rect.h - textHeight) / 2;
+
     SDL_Color color = { 255, 255, 255, 235 };
-    drawVirtualText(button.label, textX, textY, scale, color);
+#ifdef _WIN32
+    if (drawVirtualSystemTextCentered(button, color))
+    {
+        return;
+    }
+#endif
+    int scale = faceButton ? 3 : 1;
+    SDL_Rect textRect = portraitModeEnabled() ?
+        rotateVirtualRectCcw(button.rect) : button.rect;
+    int textWidth = rendererTextWidth(button.label, scale);
+    int textHeight = 7 * scale;
+    drawVirtualText(button.label,
+        textRect.x + (textRect.w - textWidth) / 2,
+        textRect.y + (textRect.h - textHeight) / 2,
+        scale, color);
+}
+
+static void drawVirtualSegmentedRingDpad(
+    const VirtualControlButton* buttons, int count, int unit, int centerX, int centerY)
+{
+    if (!buttons || count < 8 || unit <= 0)
+    {
+        return;
+    }
+
+    SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
+    int outerRadius = unit * 140 / 100;
+    int arcInnerRadius = unit;
+    int arcOuterRadius = unit * 124 / 100;
+    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, 24);
+    renderVirtualFillCircle(centerX, centerY, outerRadius);
+    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, 190);
+    renderVirtualDrawCircle(centerX, centerY, outerRadius);
+
+    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, 74);
+    int separatorInnerRadius = unit * 40 / 100;
+    for (int i = 0; i < 4; ++i)
+    {
+        double angle = kPi / 4.0 + (double)i * kPi / 2.0;
+        renderVirtualDrawLine(
+            centerX + (int)lround(cos(angle) * separatorInnerRadius),
+            centerY + (int)lround(sin(angle) * separatorInnerRadius),
+            centerX + (int)lround(cos(angle) * arcOuterRadius),
+            centerY + (int)lround(sin(angle) * arcOuterRadius));
+    }
+
+    for (int i = 4; i < 8; ++i)
+    {
+        int directionX = 0;
+        int directionY = 0;
+        virtualDpadButtonDirection(buttons[i], centerX, centerY,
+            &directionX, &directionY);
+        SDL_SetRenderDrawColor(g_renderer, 255, 255, 255,
+            virtualButtonPressed(buttons[i]) ? 230 : 112);
+        renderVirtualFillArcBand(centerX, centerY,
+            arcInnerRadius, arcOuterRadius, directionX, directionY);
+    }
+
+    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, 145);
+    renderVirtualFillCircle(centerX, centerY, std::max(2, unit * 7 / 100));
+}
+
+static void drawVirtualJoystickDpad(int unit, int centerX, int centerY)
+{
+    int radius = unit * 3 / 2 - 3;
+    SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, 24);
+    renderVirtualFillCircle(centerX, centerY, radius);
+    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, 190);
+    renderVirtualDrawCircle(centerX, centerY, radius);
+
+    updateVirtualDpadVisualPosition();
+    int offsetX = (int)lround(g_virtualDpadVisualOffsetX);
+    int offsetY = (int)lround(g_virtualDpadVisualOffsetY);
+    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, 58);
+    renderVirtualFillCircle(centerX + offsetX, centerY + offsetY, unit / 2);
+    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, 235);
+    renderVirtualDrawCircle(centerX + offsetX, centerY + offsetY, unit / 2);
 }
 
 static void drawVirtualControlsOverlay(void)
@@ -1733,8 +2578,22 @@ static void drawVirtualControlsOverlay(void)
         return;
     }
 
-    VirtualControlButton buttons[16];
-    int count = buildVirtualControls(buttons, 16);
+    VirtualControlButton buttons[kVirtualControlButtonCapacity];
+    int count = buildVirtualControls(buttons, kVirtualControlButtonCapacity);
+    int unit = 0;
+    int centerX = 0;
+    int centerY = 0;
+    if (getVirtualDpadGeometry(buttons, count, &unit, &centerX, &centerY))
+    {
+        if (virtualDpadType() == VIRTUAL_DPAD_SEGMENTED_RING)
+        {
+            drawVirtualSegmentedRingDpad(buttons, count, unit, centerX, centerY);
+        }
+        else
+        {
+            drawVirtualJoystickDpad(unit, centerX, centerY);
+        }
+    }
     for (int i = 0; i < count; ++i)
     {
         drawVirtualButton(buttons[i]);
@@ -4252,10 +5111,11 @@ void frontendApplyInputSettings(const EmulatorSettings& settings)
     inputApplyKeyboardMapping(settings.keyboardMapping);
     applyGameControllerMappingSettings(settings.controllerMapping);
     applyControllerCalibrationSettings(settings.controllerCalibration);
-    printf("frontend: input settings system_ime_disabled=%u show_virtual_controls=%u virtual_control_scale=%d keyboard_mapping=%s controller_mapping=%s controller_calibration=%s\n",
+    printf("frontend: input settings system_ime_disabled=%u show_virtual_controls=%u virtual_control_scale=%d virtual_dpad_type=%s keyboard_mapping=%s controller_mapping=%s controller_calibration=%s\n",
         settings.systemImeDisabled ? 1u : 0u,
         settings.showVirtualControls ? 1u : 0u,
         settings.virtualControlScalePercent,
+        emulatorVirtualDpadTypeName(settings.virtualDpadType),
         settings.keyboardMapping.empty() ? "(default)" : settings.keyboardMapping.c_str(),
         settings.controllerMapping.empty() ? "(default)" : settings.controllerMapping.c_str(),
         settings.controllerCalibration.empty() ? "(default)" : settings.controllerCalibration.c_str());
@@ -4708,8 +5568,8 @@ static bool findVirtualControlClickPoint(uint32_t controlBit, int* outX, int* ou
     }
 
     uint32_t targetMask = virtualControlMask(controlBit);
-    VirtualControlButton buttons[16];
-    int count = buildVirtualControls(buttons, 16);
+    VirtualControlButton buttons[kVirtualControlButtonCapacity];
+    int count = buildVirtualControls(buttons, kVirtualControlButtonCapacity);
     for (int i = 0; i < count; ++i)
     {
         if (buttons[i].controlMask == targetMask)
@@ -4999,6 +5859,206 @@ static void updateAutoPressA(uint64_t now, uint64_t startTicks)
     inputSetSyntheticControl(CONTROL_BUTTON_A, down);
 }
 
+static bool createBlurredBackdropTexture(void)
+{
+    if (g_blurredBackdropTexture)
+    {
+        return true;
+    }
+    if (!g_renderer)
+    {
+        return false;
+    }
+    g_blurredBackdropTexture = SDL_CreateTexture(g_renderer,
+        SDL_PIXELFORMAT_RGB565, SDL_TEXTUREACCESS_STREAMING,
+        kBlurredBackdropWidth, kBlurredBackdropHeight);
+    if (!g_blurredBackdropTexture)
+    {
+        printf("frontend: blurred backdrop texture creation failed: %s\n", SDL_GetError());
+        return false;
+    }
+    SDL_SetTextureScaleMode(g_blurredBackdropTexture, SDL_ScaleModeLinear);
+    g_blurredBackdropUpdateCounter = 0;
+    return true;
+}
+
+static bool updateBlurredBackdropTexture(const uint16_t* pixels)
+{
+    if (!pixels || !createBlurredBackdropTexture())
+    {
+        return false;
+    }
+    if ((g_blurredBackdropUpdateCounter++ & 1u) != 0)
+    {
+        return true;
+    }
+
+    static uint16_t downsampledPixels[kBlurredBackdropWidth * kBlurredBackdropHeight];
+    static uint16_t blurredPixels[kBlurredBackdropWidth * kBlurredBackdropHeight];
+    for (int y = 0; y < kBlurredBackdropHeight; ++y)
+    {
+        for (int x = 0; x < kBlurredBackdropWidth; ++x)
+        {
+            uint32_t red = 0;
+            uint32_t green = 0;
+            uint32_t blue = 0;
+            const int sourceX = x * 4;
+            const int sourceY = y * 4;
+            for (int offsetY = 0; offsetY < 4; ++offsetY)
+            {
+                const uint16_t* source = pixels +
+                    (size_t)(sourceY + offsetY) * SCREEN_WIDTH + sourceX;
+                for (int offsetX = 0; offsetX < 4; ++offsetX)
+                {
+                    const uint16_t pixel = source[offsetX];
+                    red += (pixel >> 11) & 0x1fu;
+                    green += (pixel >> 5) & 0x3fu;
+                    blue += pixel & 0x1fu;
+                }
+            }
+            downsampledPixels[(size_t)y * kBlurredBackdropWidth + x] =
+                (uint16_t)(((red / 16u) << 11) |
+                    ((green / 16u) << 5) | (blue / 16u));
+        }
+    }
+
+    memcpy(blurredPixels, downsampledPixels, sizeof(blurredPixels));
+    for (int y = 1; y < kBlurredBackdropHeight - 1; ++y)
+    {
+        for (int x = 1; x < kBlurredBackdropWidth - 1; ++x)
+        {
+            uint32_t red = 0;
+            uint32_t green = 0;
+            uint32_t blue = 0;
+            for (int offsetY = -1; offsetY <= 1; ++offsetY)
+            {
+                for (int offsetX = -1; offsetX <= 1; ++offsetX)
+                {
+                    const uint16_t pixel = downsampledPixels[
+                        (size_t)(y + offsetY) * kBlurredBackdropWidth +
+                        (size_t)(x + offsetX)];
+                    const uint32_t weight =
+                        offsetX == 0 && offsetY == 0 ? 4u : 1u;
+                    red += ((pixel >> 11) & 0x1fu) * weight;
+                    green += ((pixel >> 5) & 0x3fu) * weight;
+                    blue += (pixel & 0x1fu) * weight;
+                }
+            }
+            blurredPixels[(size_t)y * kBlurredBackdropWidth + x] =
+                (uint16_t)(((red / 12u) << 11) |
+                    ((green / 12u) << 5) | (blue / 12u));
+        }
+    }
+    for (size_t index = 0;
+        index < kBlurredBackdropWidth * kBlurredBackdropHeight; ++index)
+    {
+        blurredPixels[index] = frontendBlendRgb565WithBlack(blurredPixels[index], 44);
+    }
+    if (SDL_UpdateTexture(g_blurredBackdropTexture, NULL, blurredPixels,
+        kBlurredBackdropWidth * sizeof(uint16_t)) != 0)
+    {
+        printf("frontend: blurred backdrop update failed: %s\n", SDL_GetError());
+        return false;
+    }
+    return true;
+}
+
+static int renderPortraitBlurredBackdropRegion(
+    const SDL_Rect& source, const SDL_Rect& destination)
+{
+    SDL_Rect rotatedDestination =
+    {
+        destination.x + (destination.w - destination.h) / 2,
+        destination.y + (destination.h - destination.w) / 2,
+        destination.h,
+        destination.w
+    };
+    return SDL_RenderCopyEx(g_renderer, g_blurredBackdropTexture,
+        &source, &rotatedDestination, -90.0, NULL, SDL_FLIP_NONE);
+}
+
+static bool renderBlurredBackdropEdges(
+    const SDL_Rect& foregroundRect, bool portrait)
+{
+    if (!g_renderer || !g_blurredBackdropTexture)
+    {
+        return false;
+    }
+    int outputWidth = 0;
+    int outputHeight = 0;
+    SDL_GetRendererOutputSize(g_renderer, &outputWidth, &outputHeight);
+    if (outputWidth <= 0 || outputHeight <= 0)
+    {
+        return false;
+    }
+
+    const int sampleWidth = std::max(2, kBlurredBackdropWidth / 24);
+    const int sampleHeight = std::max(2, kBlurredBackdropHeight / 24);
+    if (foregroundRect.x > 0)
+    {
+        SDL_Rect leftDestination = { 0, 0, foregroundRect.x, outputHeight };
+        SDL_Rect rightDestination = {
+            foregroundRect.x + foregroundRect.w, 0,
+            outputWidth - foregroundRect.x - foregroundRect.w, outputHeight };
+        int leftResult = 0;
+        int rightResult = 0;
+        if (portrait)
+        {
+            SDL_Rect leftSource = { 0, 0, kBlurredBackdropWidth, sampleHeight };
+            SDL_Rect rightSource = { 0, kBlurredBackdropHeight - sampleHeight,
+                kBlurredBackdropWidth, sampleHeight };
+            leftResult = renderPortraitBlurredBackdropRegion(leftSource, leftDestination);
+            rightResult = renderPortraitBlurredBackdropRegion(rightSource, rightDestination);
+        }
+        else
+        {
+            SDL_Rect leftSource = { 0, 0, sampleWidth, kBlurredBackdropHeight };
+            SDL_Rect rightSource = { kBlurredBackdropWidth - sampleWidth, 0,
+                sampleWidth, kBlurredBackdropHeight };
+            leftResult = SDL_RenderCopy(g_renderer, g_blurredBackdropTexture,
+                &leftSource, &leftDestination);
+            rightResult = SDL_RenderCopy(g_renderer, g_blurredBackdropTexture,
+                &rightSource, &rightDestination);
+        }
+        if (leftResult != 0 || rightResult != 0)
+        {
+            return false;
+        }
+    }
+    if (foregroundRect.y > 0)
+    {
+        SDL_Rect topDestination = { 0, 0, outputWidth, foregroundRect.y };
+        SDL_Rect bottomDestination = {
+            0, foregroundRect.y + foregroundRect.h,
+            outputWidth, outputHeight - foregroundRect.y - foregroundRect.h };
+        int topResult = 0;
+        int bottomResult = 0;
+        if (portrait)
+        {
+            SDL_Rect topSource = { kBlurredBackdropWidth - sampleWidth, 0,
+                sampleWidth, kBlurredBackdropHeight };
+            SDL_Rect bottomSource = { 0, 0, sampleWidth, kBlurredBackdropHeight };
+            topResult = renderPortraitBlurredBackdropRegion(topSource, topDestination);
+            bottomResult = renderPortraitBlurredBackdropRegion(bottomSource, bottomDestination);
+        }
+        else
+        {
+            SDL_Rect topSource = { 0, 0, kBlurredBackdropWidth, sampleHeight };
+            SDL_Rect bottomSource = { 0, kBlurredBackdropHeight - sampleHeight,
+                kBlurredBackdropWidth, sampleHeight };
+            topResult = SDL_RenderCopy(g_renderer, g_blurredBackdropTexture,
+                &topSource, &topDestination);
+            bottomResult = SDL_RenderCopy(g_renderer, g_blurredBackdropTexture,
+                &bottomSource, &bottomDestination);
+        }
+        if (topResult != 0 || bottomResult != 0)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool drawFrame(uint16_t* pixels, int displayedFps)
 {
     if (!g_renderer || !g_frameTexture || !pixels)
@@ -5061,15 +6121,13 @@ static bool drawFrame(uint16_t* pixels, int displayedFps)
     }
     if (g_frontendSettings &&
         g_frontendSettings->screenFill == SCREEN_FILL_BLURRED_EXTENSION &&
-        (gameDestination.w != outputWidth || gameDestination.h != outputHeight))
+        updateBlurredBackdropTexture(uploadPixels))
     {
-        SDL_SetTextureScaleMode(g_frameTexture, SDL_ScaleModeLinear);
-        SDL_SetTextureColorMod(g_frameTexture, 128, 128, 128);
-        SDL_RenderCopy(g_renderer, g_frameTexture, NULL, NULL);
-        SDL_SetTextureColorMod(g_frameTexture, 255, 255, 255);
-        SDL_SetTextureScaleMode(g_frameTexture,
-            textureLinearSamplingEnabled(*g_frontendSettings) ?
-                SDL_ScaleModeLinear : SDL_ScaleModeNearest);
+        if (!renderBlurredBackdropEdges(gameDestination, portrait))
+        {
+            printf("frontend: blurred backdrop render failed: %s\n", SDL_GetError());
+            return false;
+        }
     }
     int renderResult = 0;
     if (portrait)
@@ -5328,6 +6386,15 @@ void frontendShutdown(void)
     detachAutotestVirtualController();
     resetFpsOverlayTexture();
     resetIdleTextures();
+#ifdef _WIN32
+    resetVirtualTextTextures();
+#endif
+    if (g_blurredBackdropTexture)
+    {
+        SDL_DestroyTexture(g_blurredBackdropTexture);
+        g_blurredBackdropTexture = NULL;
+        g_blurredBackdropUpdateCounter = 0;
+    }
     if (g_frameTexture)
     {
         SDL_DestroyTexture(g_frameTexture);

@@ -89,6 +89,7 @@ static const uint64_t kNonAudioSliceInstructions = 5000u;
 static const double kAutoRuntimeSpeedScale = 0.65;
 static const uint64_t kReferenceCpuClockHz = 336000000u;
 static const uint64_t kReferenceInterpreterIps = 15000000u;
+static const uint64_t kInstructionPacingMaxLagMicros = 100000u;
 
 static std::atomic<bool> s_stopRequested(false);
 static std::atomic<bool> s_running(false);
@@ -130,6 +131,7 @@ struct CcRuntimeContext
         uint32_t stack;
         uint32_t priority;
         uint32_t delayTicks;
+        uint64_t hostDelayUntilMicros;
         bool started;
         bool finished;
         bool audioProducer;
@@ -181,6 +183,7 @@ struct CcRuntimeContext
     uint32_t heapCursor;
     uint32_t currentTaskIndex;
     uint32_t currentDelayTicks;
+    uint64_t currentHostDelayMicros;
     uint32_t dvcAudioHandle;
     uint32_t dvcAudioSampleRate;
     uint32_t dvcAudioVolume;
@@ -192,6 +195,7 @@ struct CcRuntimeContext
     uint32_t faultSize;
     bool faultWrite;
     bool faultFetch;
+    bool cheatCodeCacheFlushPending;
     bool yielded;
     bool dvcAudioStarted;
     Arm32Bus bus;
@@ -199,6 +203,8 @@ struct CcRuntimeContext
     std::string gamePath;
     std::string gameSha256;
     std::chrono::steady_clock::time_point startTime;
+    std::chrono::steady_clock::time_point instructionPacingStartTime;
+    uint64_t instructionPacingStartInstructions;
     uint64_t profileLastMillis;
     uint64_t profileLastInstructions;
 };
@@ -499,6 +505,8 @@ bool ccRuntimeRestoreState(const CcRuntimeState& state, std::string* error)
     runtime->startTime = std::chrono::steady_clock::now() -
         std::chrono::microseconds((uint64_t)(state.elapsedGuestMicros /
             (s_runtimeSpeedScale.load() > 0 ? s_runtimeSpeedScale.load() : 1.0)));
+    runtime->instructionPacingStartTime = std::chrono::steady_clock::now();
+    runtime->instructionPacingStartInstructions = runtime->stats->instructions;
     runtime->instructionCache.assign(
         runtime->instructionCache.size(), Arm32InstructionCacheEntry());
     runtime->bus.userData = runtime;
@@ -611,6 +619,18 @@ static uint8_t* resolveMemory(CcRuntimeContext* runtime, uint32_t address, size_
     return pointer && size <= available ? pointer : NULL;
 }
 
+static bool memoryRangesOverlap(uint32_t address, size_t size,
+    uint32_t rangeStart, uint32_t rangeSize)
+{
+    if (!size || !rangeSize)
+    {
+        return false;
+    }
+    uint64_t end = (uint64_t)address + size;
+    uint64_t rangeEnd = (uint64_t)rangeStart + rangeSize;
+    return address < rangeEnd && end > rangeStart;
+}
+
 static void noteFramebufferWrite(CcRuntimeContext* runtime, uint32_t address, size_t size)
 {
     if (address < kFramebufferAddress ||
@@ -687,8 +707,9 @@ static bool busWrite(void* userData, uint32_t address, const void* input, size_t
     uint64_t writeEnd = (uint64_t)address + size;
     uint64_t programStart = runtime->package->origin;
     uint64_t programEnd = programStart + runtime->package->prog_size;
-    if (!runtime->instructionCache.empty() && size &&
-        address < programEnd && writeEnd > programStart)
+    if (!runtime->instructionCache.empty() &&
+        memoryRangesOverlap(address, size, runtime->package->origin,
+            runtime->package->prog_size))
     {
         uint32_t firstAddress = std::max<uint32_t>(address,
             runtime->package->origin) & ~3u;
@@ -729,16 +750,49 @@ static bool cheatReadCallback(void* userData, uint32_t address, void* output, si
     return busRead(userData, address, output, size);
 }
 
+static bool cheatWriteTouchesExecutableMemory(const CcRuntimeContext* runtime,
+    uint32_t address, size_t size)
+{
+    return memoryRangesOverlap(address, size, runtime->package->origin,
+            runtime->package->prog_size) ||
+        memoryRangesOverlap(address, size, kDynamicThunkStart, 0x10000u);
+}
+
 static bool cheatWriteCallback(void* userData, uint32_t address, const void* input, size_t size)
 {
-    return busWrite(userData, address, input, size);
+    CcRuntimeContext* runtime = (CcRuntimeContext*)userData;
+    if (!busWrite(userData, address, input, size))
+    {
+        return false;
+    }
+    if (cheatWriteTouchesExecutableMemory(runtime, address, size))
+    {
+        runtime->cheatCodeCacheFlushPending = true;
+    }
+    return true;
 }
 
 static void cheatFlushCallback(void* userData)
 {
     CcRuntimeContext* runtime = (CcRuntimeContext*)userData;
+    if (!runtime->cheatCodeCacheFlushPending)
+    {
+        return;
+    }
     std::fill(runtime->instructionCache.begin(), runtime->instructionCache.end(),
         Arm32InstructionCacheEntry{});
+}
+
+static void processPendingCheatCodeCacheFlush(CcRuntimeContext* runtime)
+{
+    if (!runtime->cheatCodeCacheFlushPending)
+    {
+        return;
+    }
+#if defined(DINGOO_PIE_ARM32_DYNARMIC)
+    arm32DynarmicReset();
+#endif
+    runtime->cheatCodeCacheFlushPending = false;
 }
 
 static std::string sha256Hex(const uint8_t* data, uint32_t size)
@@ -1206,20 +1260,21 @@ static void handleMemoryImport(CcRuntimeContext* runtime, Arm32State* state,
 
 static uint32_t currentOsTick(const CcRuntimeContext* runtime);
 
-static uint64_t currentGuestMicros(const CcRuntimeContext* runtime)
+static uint64_t currentHostMicros(const CcRuntimeContext* runtime)
 {
-    uint64_t hostMicros = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+    return (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - runtime->startTime).count();
-    return ccScaleElapsedMicros(hostMicros, s_runtimeSpeedScale.load());
 }
 
-static uint32_t currentTaskSchedulerTick(const CcRuntimeContext* runtime,
-    bool audioProducer)
+static uint64_t currentGuestMicros(const CcRuntimeContext* runtime)
 {
-    uint64_t hostMicros = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now() - runtime->startTime).count();
-    return (uint32_t)(ccTaskSchedulerElapsedMicros(hostMicros,
-        s_runtimeSpeedScale.load(), audioProducer) / 10000u);
+    return ccScaleElapsedMicros(currentHostMicros(runtime),
+        s_runtimeSpeedScale.load());
+}
+
+static uint32_t currentTaskSchedulerTick(const CcRuntimeContext* runtime)
+{
+    return (uint32_t)(currentGuestMicros(runtime) / 10000u);
 }
 
 static void markCurrentTaskAsAudioProducer(CcRuntimeContext* runtime)
@@ -1233,6 +1288,13 @@ static void markCurrentTaskAsAudioProducer(CcRuntimeContext* runtime)
 static void scheduleCurrentTaskDelay(CcRuntimeContext* runtime, uint32_t ticks)
 {
     runtime->currentDelayTicks = std::max<uint32_t>(ticks, 1u);
+    runtime->yielded = true;
+}
+
+static void scheduleCurrentTaskHostDelayMicros(CcRuntimeContext* runtime,
+    uint64_t micros)
+{
+    runtime->currentHostDelayMicros = std::max<uint64_t>(micros, 1u);
     runtime->yielded = true;
 }
 
@@ -1849,7 +1911,8 @@ static bool handleSvc(void* userData, Arm32State* state, uint32_t immediate)
         if (!skipsAudioOutput && !waveout_can_write_nonblocking())
         {
             state->r[15] -= 4u;
-            scheduleCurrentTaskDelay(runtime, 1u);
+            scheduleCurrentTaskHostDelayMicros(runtime,
+                1000000ull / OS_TICKS_PER_SEC);
             return false;
         }
         char* data = (char*)resolveMemory(runtime, state->r[1], state->r[2]);
@@ -1902,6 +1965,7 @@ static Arm32RunResult runState(CcRuntimeContext* runtime, Arm32State* state,
     pauseGateWaitForResume();
     runtime->yielded = false;
     runtime->currentDelayTicks = 0;
+    runtime->currentHostDelayMicros = 0;
     runtime->faultAddress = 0;
     runtime->faultSize = 0;
     runtime->faultWrite = false;
@@ -1920,13 +1984,23 @@ static Arm32RunResult runState(CcRuntimeContext* runtime, Arm32State* state,
         result = arm32Run(state, &runtime->bus, kExitAddress,
             state->instructions + sliceInstructions);
     }
+    processPendingCheatCodeCacheFlush(runtime);
     runtime->stats->instructions += state->instructions - before;
     uint64_t targetIps = s_targetInstructionsPerSecond.load();
     if (targetIps)
     {
-        uint64_t expectedMicros = runtime->stats->instructions * 1000000u / targetIps;
+        uint64_t pacedInstructions = runtime->stats->instructions -
+            runtime->instructionPacingStartInstructions;
+        uint64_t expectedMicros = ccInstructionsToMicros(pacedInstructions, targetIps);
+        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
         uint64_t hostMicros = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now() - runtime->startTime).count();
+            now - runtime->instructionPacingStartTime).count();
+        if (hostMicros > expectedMicros + kInstructionPacingMaxLagMicros)
+        {
+            runtime->instructionPacingStartTime = now;
+            runtime->instructionPacingStartInstructions = runtime->stats->instructions;
+            return result;
+        }
         if (expectedMicros > hostMicros)
         {
             std::this_thread::sleep_for(
@@ -2340,12 +2414,15 @@ bool ccRuntimeRunFile(const char* path,
     cheatRuntimeBindMemory(&runtime, cheatReadCallback, cheatWriteCallback,
         cheatFlushCallback);
     uint32_t startupCheatApplyCount = cheatRuntimeApplyStartupBound();
+    runtime.cheatCodeCacheFlushPending = false;
     CheatRuntimeStatus cheatStatus = cheatRuntimeGetStatus();
     printf("cc-arm: game settings cheats_enabled=%u cheats_available=%u "
         "cheat_entries=%u cheat_startup_applied=%u app_sha256=%s\n",
         cheatStatus.enabled ? 1u : 0u, cheatStatus.available ? 1u : 0u,
         (unsigned int)cheatStatus.entries.size(), startupCheatApplyCount,
         gameSha256.c_str());
+    runtime.instructionPacingStartTime = std::chrono::steady_clock::now();
+    runtime.instructionPacingStartInstructions = runtime.stats->instructions;
 
     Arm32State boot = {};
     arm32Reset(&boot, runtime.package->bin_entry, kExitAddress - 16u, kExitAddress);
@@ -2393,10 +2470,18 @@ bool ccRuntimeRunFile(const char* path,
                     CcRuntimeContext::Task& task = runtime.tasks[i];
                     if (task.finished || task.audioProducer != audioPass) continue;
                     anyActive = true;
+                    if (task.hostDelayUntilMicros)
+                    {
+                        uint64_t now = currentHostMicros(&runtime);
+                        if (now < task.hostDelayUntilMicros)
+                        {
+                            continue;
+                        }
+                        task.hostDelayUntilMicros = 0;
+                    }
                     if (task.delayTicks)
                     {
-                        uint32_t now = currentTaskSchedulerTick(&runtime,
-                            task.audioProducer);
+                        uint32_t now = currentTaskSchedulerTick(&runtime);
                         if ((int32_t)(now - task.delayTicks) < 0)
                         {
                             continue;
@@ -2421,10 +2506,19 @@ bool ccRuntimeRunFile(const char* path,
                     if (result == ARM32_RUN_OK) task.finished = true;
                     else if (result == ARM32_RUN_STOPPED && runtime.yielded)
                     {
-                        uint32_t delayTicks = ccScaleDelayTicks(runtime.currentDelayTicks,
-                            s_hostDelayScale.load());
-                        task.delayTicks = currentTaskSchedulerTick(&runtime,
-                            task.audioProducer) + delayTicks;
+                        if (runtime.currentHostDelayMicros)
+                        {
+                            task.hostDelayUntilMicros = currentHostMicros(&runtime) +
+                                runtime.currentHostDelayMicros;
+                            task.delayTicks = 0;
+                        }
+                        else
+                        {
+                            uint32_t delayTicks = ccScaleDelayTicks(
+                                runtime.currentDelayTicks, s_hostDelayScale.load());
+                            task.delayTicks = currentTaskSchedulerTick(&runtime) + delayTicks;
+                            task.hostDelayUntilMicros = 0;
+                        }
                     }
                     else if (result != ARM32_RUN_LIMIT)
                     {
@@ -2545,6 +2639,14 @@ void ccRuntimeApplySettings(void)
     if (parsePositiveScaleEnv("DINGOO_PIE_RUNTIME_SPEED_SCALE", &envScale))
     {
         runtimeScale = envScale;
+    }
+    if (runtimeScale > 1.0)
+    {
+        runtimeScale = 1.0;
+    }
+    if (runtimeScale < 0.10)
+    {
+        runtimeScale = 0.10;
     }
     if (parsePositiveScaleEnv("DINGOO_PIE_OSTIMEDLY_SCALE", &envScale))
     {

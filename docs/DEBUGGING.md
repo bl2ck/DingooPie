@@ -13,18 +13,40 @@ system ANSI fallback, so manually edited Chinese app paths remain loadable.
 The executable is named `DingooPie.exe`; its Windows version resource reports
 `Dingoo Game Emulator`, file/product version `1.7`, product
 name `DingooPie`, and `Copyright (c) 2026 BL2CK`.
-Starting without command-line arguments does not show a file picker. Empty
+Starting without a game argument does not show a file picker. Empty
 `recent.last_app` opens the frontend only; an existing `recent.last_app` is
-auto-loaded; a command-line `.app` path takes priority.
+auto-loaded; a command-line `.app` or `.cc` path takes priority.
 Selecting a game from `File -> Open Game`, choosing `File -> Recent Games`,
-or dropping an `.app` file onto the window saves the chosen UTF-8 path to
+or dropping an `.app` or `.cc` file onto the window saves the chosen UTF-8 path to
 `recent.last_app` and promotes it into `recent.app1` through `recent.app10`.
 `File -> Recent Games -> Clear Recent Games` clears both `recent.last_app` and
 the ordered `recent.app1`...`recent.app10` list.
 Automatic `recent.last_app` startup clears the matching recent entry when the
-path is missing, does not end in `.app`, or fails during app open/parse.
+path is missing, does not end in `.app` or `.cc`, or fails during package open/parse.
 Command-line startup failures are diagnostic-only and do not modify
 `DingooPie.ini`.
+
+## Command-Line Options
+
+The supported syntax is:
+
+```text
+DingooPie.exe [options] [game.app|game.cc]
+```
+
+| Option | Behavior |
+| --- | --- |
+| `-g, --game <path>` | Start one APP or CC game. `--game=<path>` is also accepted. |
+| `-c, --config <path>` | Use the specified settings file. `--config=<path>` is also accepted. |
+| `--no-recent` | Skip recent-game auto-start without clearing the recent list. |
+| `-h, --help`, `/?` | Print usage. |
+| `-V, --version` | Print the product name and version. |
+| `--core-regression` | Run built-in core and command-line parser regression tests. |
+| `--` | Treat the following value as the game path. |
+
+Specify one game either directly or with `--game`, and quote paths containing
+spaces. Without `--config`, the default remains `DingooPie.ini` beside the
+executable. An explicit game takes priority over the recent-game list.
 The menu is ordered as File, Options, Settings, Debug, and Help. Options
 contains Video, Audio, and Input submenus. Video settings are scale, fullscreen,
 anti-aliasing, effect, brightness, contrast, gamma, saturation, minimized
@@ -211,7 +233,7 @@ some games compare that string directly.
 
 | Variable | Values | Purpose |
 | --- | --- | --- |
-| `DINGOO_PIE_BACKEND` | `ppsspp_irjit`, `irjit`, `interpreter` | Selects the main CPU backend. The default is `ppsspp_irjit`. |
+| `DINGOO_PIE_BACKEND` | `ppsspp_irjit`, `irjit`, `interpreter` | Overrides the main CPU backend for the current process. The default is `ppsspp_irjit`. |
 | `DINGOO_PIE_SUBTASK_BACKEND` | `interpreter`, `ppsspp_irjit` | Selects the backend for host pthread-backed Dingoo tasks. Keep the default `interpreter` until PPSSPP global state is made thread-local. |
 | `DINGOO_PIE_PROFILE` | `1` | Enables the Debug > Performance Log counters without changing `DingooPie.ini`. |
 | `DINGOO_PIE_PROFILE_EMPTY` | `1` | Prints empty profile windows; by default profile logs skip no-activity windows. |
@@ -225,15 +247,16 @@ some games compare that string directly.
 | `DINGOO_PIE_IRJIT_FASTMEM` | `0` | Disables direct fast-memory pages for diagnostics. |
 | `DINGOO_PIE_IRJIT_DISABLE_FLAGS` | `none`, `default`, numeric, or comma-separated flag names | Overrides PPSSPP IR JIT disable flags. The default enables block linking and disables only cache pointer and pointerify transforms. |
 | `DINGOO_PIE_IRJIT_THROTTLE` | `0`, `1` | Enables guest-clock throttling for the IR JIT. Disabled by default because SDK timers are HLE-driven and wall-clock throttling can stall software-rendered samples. |
-| `DINGOO_PIE_IRJIT_CLOCK_HZ` | `1000000..1000000000` | Overrides the guest CPU clock used by IR JIT throttling. The default is the Dingoo-style 336 MHz clock. |
+| `DINGOO_PIE_IRJIT_CLOCK_HZ` | `1000000..1000000000` | Overrides the guest CPU clock for the current process. The default is the Dingoo-style 336 MHz clock. |
 | `DINGOO_PIE_IRJIT_THROTTLE_AHEAD_MS` | `0..5000` | Allows the JIT to run ahead of wall time before sleeping when `DINGOO_PIE_IRJIT_THROTTLE=1`. The default is 1000 ms. |
 | `DINGOO_PIE_IRJIT_THROTTLE_MAX_LAG_MS` | `1..5000` | Resets the throttle baseline after long host stalls so delayed input or loading does not cause a catch-up burst. |
 | `DINGOO_PIE_DISPLAY_FPS` | `1..240` | Limits SDL texture uploads and presentations without blocking guest execution. The default is 60. |
 | `DINGOO_PIE_LCD_FRAME_PACING` | `0`, `1` | Enables adaptive pacing at Dingoo LCD frame submission boundaries. The default is enabled; set `0` to diagnose raw guest frame production. |
 | `DINGOO_PIE_AUDIO_QUEUE_DROP_MS` | `0..60000` | Drops guest PCM buffers after the audio queue stays full for this many milliseconds. The default `0` waits for playback so saturated queues preserve audio timing. |
 | `DINGOO_PIE_AUDIO_QUEUE_TRACE` | `1` | Logs audio queue backpressure waits when `DINGOO_PIE_AUDIO_QUEUE_DROP_MS=0`. This is noisy during games that stream audio near the queue limit. |
-| `DINGOO_PIE_RUNTIME_SPEED_SCALE` | `0.0..1.0` | Scales runtime pacing used by HLE and the PPSSPP shim. The menu `Auto` preset leaves it unset and maps to the global 65% runtime pace. Explicit Game Speed menu values apply immediately and persist to the INI. |
-| `DINGOO_PIE_OSTIMEDLY_SCALE` | `0.0..1.0` | Scales host sleep time for `OSTimeDly`, `delay_ms`, and `udelay` calls while preserving guest tick accounting. Auto uses the global 1.0 delay scale unless a content-hash compatibility entry overrides it. Use this to override sample-specific delay behavior. |
+| `DINGOO_PIE_RUNTIME_SPEED_SCALE` | `0.1..1.0` | Overrides runtime pacing for the current process. The menu supports `0.2..1.0`; `Auto` maps to the global 65% runtime pace. |
+| `DINGOO_PIE_OSTIMEDLY_SCALE` | `0.1..1.0` | Overrides host sleep scaling for `OSTimeDly`, `delay_ms`, and `udelay` for the current process while preserving guest tick accounting. Auto uses the global 1.0 delay scale unless a content-hash compatibility entry overrides it. |
+| `DINGOO_PIE_AUDIO_DISABLED` | `0`, `1` | Overrides audio output disabling for the current process without changing `DingooPie.ini`. |
 | `DINGOO_PIE_CHEATS` | `1` | Enables loaded cheat files without changing `DingooPie.ini`. Cheat files use `status|name|width|address|value` or `status|name|width|address|value|compare` pipe records; see "Cheat File Format" below. |
 | `DINGOO_PIE_CHEAT_DIR` | path | Overrides the directory used for `.cht` files. |
 | `DINGOO_PIE_CHEAT_TRACE` | `1` | Prints cheat loading and apply counters. |

@@ -9,10 +9,15 @@ $BuildDir = Join-Path $ProjectRoot 'build\win64'
 $ReleaseDir = Join-Path $ProjectRoot 'release'
 $W64Bin = Join-Path $ProjectRoot 'w64devkit\bin'
 $CMake = Join-Path $W64Bin 'cmake.exe'
+$Strip = Join-Path $W64Bin 'strip.exe'
 $CoreDependencyCheck = Join-Path $PSScriptRoot 'check_core_dependencies.ps1'
 
 if (!(Test-Path -LiteralPath $CMake)) {
     throw "CMake was not found at $CMake. Run scripts\bootstrap_windows.ps1 first."
+}
+
+if (!(Test-Path -LiteralPath $Strip)) {
+    throw "Strip was not found at $Strip. Run scripts\bootstrap_windows.ps1 first."
 }
 
 if (!(Test-Path -LiteralPath $CoreDependencyCheck)) {
@@ -144,8 +149,12 @@ function New-DingooPieRelease {
         ($null -ne (Get-ChildItem -LiteralPath $cheatSourceDir -Filter '*.cht' `
             -File -ErrorAction SilentlyContinue | Select-Object -First 1))
 
+    $releaseExecutable = Join-Path $ReleaseDir 'DingooPie.exe'
     if (Copy-ReleaseFile -Source (Join-Path $BuildDir 'DingooPie.exe') `
-        -Destination (Join-Path $ReleaseDir 'DingooPie.exe')) {
+        -Destination $releaseExecutable) {
+        if ($Configuration -eq 'Release') {
+            Invoke-NativeCommand $Strip --strip-unneeded $releaseExecutable
+        }
         $releaseFiles.Add('DingooPie.exe')
     }
     if (Copy-ReleaseFile -Source $runtimeDlls.SDL2 -Destination (Join-Path $ReleaseDir 'SDL2.dll')) {

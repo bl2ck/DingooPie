@@ -15,40 +15,34 @@
 static UINT g_timerPeriodMs = 0;
 #endif
 
-std::string platformCommandLineAppPath(int argc, char* argv[])
+std::vector<std::string> platformCommandLineArguments(int argc, char* argv[])
 {
+    std::vector<std::string> arguments;
 #ifdef _WIN32
     int wideArgc = 0;
     LPWSTR* wideArgv = CommandLineToArgvW(GetCommandLineW(), &wideArgc);
     if (wideArgv)
     {
-        std::string path;
-        if (wideArgc >= 2)
+        arguments.reserve(wideArgc > 1 ? (size_t)wideArgc - 1u : 0u);
+        for (int index = 1; index < wideArgc; ++index)
         {
-            path = platformWideToUtf8(wideArgv[1]);
-            for (int i = 2; i < wideArgc; ++i)
-            {
-                path += " ";
-                path += platformWideToUtf8(wideArgv[i]);
-            }
+            arguments.push_back(platformWideToUtf8(wideArgv[index]));
         }
         LocalFree(wideArgv);
-        return path;
+        return arguments;
     }
 #endif
 
-    if (argc < 2)
+    if (!argv || argc < 2)
     {
-        return "";
+        return arguments;
     }
-
-    std::string path = argv[1];
-    for (int i = 2; i < argc; ++i)
+    arguments.reserve((size_t)argc - 1u);
+    for (int index = 1; index < argc; ++index)
     {
-        path += " ";
-        path += argv[i];
+        arguments.push_back(argv[index] ? argv[index] : "");
     }
-    return path;
+    return arguments;
 }
 
 std::string platformWideToUtf8(const std::wstring& text)
@@ -60,8 +54,9 @@ std::string platformWideToUtf8(const std::wstring& text)
         return "";
     }
 
-    std::string out((size_t)size - 1, '\0');
+    std::string out((size_t)size, '\0');
     WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, &out[0], size, NULL, NULL);
+    out.resize((size_t)size - 1u);
     return out;
 #else
     return WString2String(text);
@@ -77,8 +72,9 @@ std::wstring platformUtf8ToWide(const std::string& text)
         return L"";
     }
 
-    std::wstring out((size_t)size - 1, L'\0');
+    std::wstring out((size_t)size, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, &out[0], size);
+    out.resize((size_t)size - 1u);
     return out;
 #else
     return String2WString(text);

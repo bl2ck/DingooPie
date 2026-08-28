@@ -377,13 +377,11 @@ static uint64_t scaledHostDelayMicros(uint64_t originalUs)
 
 static bool adaptiveHostDelayEnabled(void)
 {
-    static int enabled = -1;
-    if (enabled < 0)
-    {
+    static const bool enabled = []() {
         const char* value = getenv("DINGOO_PIE_ADAPTIVE_DELAY");
-        enabled = (!value || !value[0] || strcmp(value, "0") != 0) ? 1 : 0;
-    }
-    return enabled != 0;
+        return !value || !value[0] || strcmp(value, "0") != 0;
+    }();
+    return enabled;
 }
 
 static uint64_t hostNowMicros(void)
@@ -543,6 +541,7 @@ static void requestGuestExit(NativeRuntime* runtime, const char* reason)
     nativeRuntimeReadRegister(runtime, RUNTIME_REG_RA, &ra);
     printf("hle: guest exit requested by %s ra=0x%08x\n",
         reason ? reason : "<unknown>", ra);
+    nativeRuntimeRequestStop(runtime);
     taskSchedulerRequestShutdown(reason);
     uint32_t ret = 0;
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_V0, &ret);
@@ -2740,13 +2739,11 @@ static void storeGuestLe32(NativeRuntime* runtime, uint32_t address, uint32_t va
 
 static bool fastReturnPatchEnabled(void)
 {
-    static int enabled = -1;
-    if (enabled < 0)
-    {
+    static const bool enabled = []() {
         const char* value = getenv("DINGOO_PIE_PATCH_FAST_RETURNS");
-        enabled = (!value || !value[0] || strcmp(value, "0") != 0) ? 1 : 0;
-    }
-    return enabled != 0;
+        return !value || !value[0] || strcmp(value, "0") != 0;
+    }();
+    return enabled;
 }
 
 static bool installFastReturnStub(NativeRuntime* runtime, uint32_t address, uint32_t value)
@@ -3023,7 +3020,7 @@ static void hooks_init(NativeRuntime* runtime, GuestPackage* app)
         GuestImportEntry* entry = app->import_data[i];
         const char* name = entry->name;
         bool matched = false;
-        for (int j = 0; j < sizeof(s_hookCodeFunctions) / sizeof(s_hookCodeFunctions[0]); ++j)
+        for (int j = 0; j < kHookCodeFunctionCount; ++j)
         {
             if (strcmp(name, s_hookCodeFunctions[j].name) == 0)
             {
@@ -3071,6 +3068,7 @@ void bridge_release_game_resources(void)
     releaseDingooSemaphores();
     fsys_reset_guest_package(NULL);
     fsys_set_game_identity(NULL);
+    fsys_set_game_name(NULL);
     fsys_set_save_directory(NULL);
     pthread_mutex_lock(&s_runtimeContextsMutex);
     s_runtimeContexts.clear();

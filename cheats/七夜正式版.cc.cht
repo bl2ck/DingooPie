@@ -1,0 +1,51 @@
+# 7 Days / 七夜正式版.cc
+# SHA256:
+# 4A273DFB0494A9668AA2941AE948A242A3E793DA637B621FED9101B8E10DFA1D
+#
+# Notes:
+# - Sets sedatives to 99.
+# - Unlocks title-menu costume/weapon checks; save data unchanged.
+# - New Game Day Cycle starts at Day 2, then 3-7, 1.
+
+app_sha256=4A273DFB0494A9668AA2941AE948A242A3E793DA637B621FED9101B8E10DFA1D
+
+on|镇定剂 99 个/Sedative x99：物品记录 7|u32|0x215F8DC4|99
+on|镇定剂 99 个/Sedative x99：物品记录 8|u32|0x215F9008|99
+on|镇定剂 99 个/Sedative x99：物品记录 9|u32|0x215F924C|99
+once|解锁隐藏道具/Unlock Title Hidden Items：打开隐藏道具选择|u32|0x10134468|0xE3A01001|0xE7911000
+once|解锁隐藏道具/Unlock Title Hidden Items：显示隐藏服装选项|u32|0x10134610|0xE3A00001|0xE5900214
+once|解锁隐藏道具/Unlock Title Hidden Items：选择隐藏服装选项|u32|0x101346A4|0xE3A00001|0xE5900214
+once|解锁隐藏道具/Unlock Title Hidden Items：隐藏服装锁定检查|u32|0x101346FC|0xE3A00001|0xE5900214
+once|解锁隐藏道具/Unlock Title Hidden Items：下一项隐藏服装选择|u32|0x10134890|0xE3A00001|0xE5900214
+once|解锁隐藏道具/Unlock Title Hidden Items：上一项隐藏服装选择|u32|0x1013491C|0xE3A00001|0xE5900214
+once|解锁隐藏道具/Unlock Title Hidden Items：空隐藏服装选择检查|u32|0x10134960|0xE3A01001|0xE5901214
+once|解锁隐藏道具/Unlock Title Hidden Items：显示隐藏武器选项|u32|0x10134638|0xE3A00001|0xE5900218
+once|解锁隐藏道具/Unlock Title Hidden Items：选择隐藏武器选项|u32|0x101346D4|0xE3A00001|0xE5900218
+once|解锁隐藏道具/Unlock Title Hidden Items：隐藏武器锁定检查|u32|0x10134724|0xE3A00001|0xE5900218
+once|解锁隐藏道具/Unlock Title Hidden Items：下一项隐藏武器选择|u32|0x101348B4|0xE3A00001|0xE5900218
+once|解锁隐藏道具/Unlock Title Hidden Items：上一项隐藏武器选择|u32|0x10134940|0xE3A00001|0xE5900218
+once|解锁隐藏道具/Unlock Title Hidden Items：空隐藏武器选择检查|u32|0x10134968|0x03A00001|0x05900218
+once|新游戏 Day 轮换/New Game Day Cycle：stub 01|u32|0x1FF10F80|0xE59FC03C|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 02|u32|0x1FF10F84|0xE59C3000|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 03|u32|0x1FF10F88|0xE3530008|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 04|u32|0x1FF10F8C|0xA3A03001|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 05|u32|0x1FF10F90|0xE2832001|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 06|u32|0x1FF10F94|0xE58C2000|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 07|u32|0x1FF10F98|0xE92D4008|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 08|u32|0x1FF10F9C|0xE1A00004|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 09|u32|0x1FF10FA0|0xE1A01003|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 10|u32|0x1FF10FA4|0xE3A02001|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 11|u32|0x1FF10FA8|0xE1A0E00F|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 12|u32|0x1FF10FAC|0xE59FF014|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 13|u32|0x1FF10FB0|0xE8BD4002|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 14|u32|0x1FF10FB4|0xE59400A4|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 15|u32|0x1FF10FB8|0xE59FE010|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 16|u32|0x1FF10FBC|0xE59FF008|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：stub 17|u32|0x1FF10FC0|0xE1A00000|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：counter pointer|u32|0x1FF10FC4|0x1FF10FD4|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：original function|u32|0x1FF10FC8|0x10119F84|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：day initializer|u32|0x1FF10FCC|0x10142D5C|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：return address|u32|0x1FF10FD0|0x1011B0BC|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：next day|u32|0x1FF10FD4|0x00000002|0x00000000
+once|新游戏 Day 轮换/New Game Day Cycle：hook target|u32|0x1011B0AC|0x1FF10F80|0xEBFFFBB4
+once|新游戏 Day 轮换/New Game Day Cycle：hook|u32|0x1011B0A8|0xE51FF004|0xE1A00004

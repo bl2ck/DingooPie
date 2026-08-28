@@ -162,6 +162,8 @@ enum FrontendMenuCommand
     MENU_INPUT_VIRTUAL_SCALE_100,
     MENU_INPUT_VIRTUAL_SCALE_125,
     MENU_INPUT_VIRTUAL_SCALE_150,
+    MENU_INPUT_VIRTUAL_DPAD_JOYSTICK,
+    MENU_INPUT_VIRTUAL_DPAD_SEGMENTED_RING,
     MENU_INPUT_MAPPING_WINDOW,
     MENU_SETTINGS_EXECUTION_MODE_AUTO,
     MENU_SETTINGS_EXECUTION_MODE_COMPATIBILITY,
@@ -218,6 +220,8 @@ enum FrontendMenuCommand
     MENU_DEBUG_RESOURCE_MONITOR,
     MENU_DEBUG_MEMORY_SEARCHER,
     MENU_DEBUG_DEBUGGER,
+    MENU_HELP_AUTHOR_HOMEPAGE,
+    MENU_HELP_PROJECT_HOMEPAGE,
     MENU_HELP_ABOUT
 };
 
@@ -249,6 +253,9 @@ static_assert(MENU_INPUT_VIRTUAL_SCALE_150 == MENU_INPUT_VIRTUAL_SCALE_75 +
     sizeof(EMULATOR_VIRTUAL_CONTROL_SCALE_VALUES) /
         sizeof(EMULATOR_VIRTUAL_CONTROL_SCALE_VALUES[0]) - 1,
     "Virtual control scale commands must match menu order");
+static_assert(MENU_INPUT_VIRTUAL_DPAD_SEGMENTED_RING ==
+    MENU_INPUT_VIRTUAL_DPAD_JOYSTICK + VIRTUAL_DPAD_TYPE_COUNT - 1,
+    "Virtual D-pad commands must match menu order");
 static_assert(MENU_SETTINGS_EXECUTION_MODE_COMPATIBILITY ==
     MENU_SETTINGS_EXECUTION_MODE_AUTO + 1,
     "Execution mode commands must match menu order");
@@ -1163,6 +1170,7 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
     HMENU audioNoiseReductionMenu = CreatePopupMenu();
     HMENU inputMenu = CreatePopupMenu();
     HMENU virtualControlScaleMenu = CreatePopupMenu();
+    HMENU virtualDpadTypeMenu = CreatePopupMenu();
     HMENU settingsMenu = CreatePopupMenu();
     HMENU executionModeMenu = CreatePopupMenu();
     HMENU cpuClockMenu = CreatePopupMenu();
@@ -1323,6 +1331,12 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
     appendMenuItem(virtualControlScaleMenu, MENU_INPUT_VIRTUAL_SCALE_150, L"150%");
     AppendMenuW(inputMenu, MF_POPUP, (UINT_PTR)virtualControlScaleMenu,
         uiText(TXT_INPUT_VIRTUAL_CONTROL_SCALE));
+    appendMenuItem(virtualDpadTypeMenu, MENU_INPUT_VIRTUAL_DPAD_JOYSTICK,
+        uiText(TXT_INPUT_VIRTUAL_DPAD_JOYSTICK));
+    appendMenuItem(virtualDpadTypeMenu, MENU_INPUT_VIRTUAL_DPAD_SEGMENTED_RING,
+        uiText(TXT_INPUT_VIRTUAL_DPAD_SEGMENTED_RING));
+    AppendMenuW(inputMenu, MF_POPUP, (UINT_PTR)virtualDpadTypeMenu,
+        uiText(TXT_INPUT_VIRTUAL_DPAD_TYPE));
     appendMenuItem(inputMenu, MENU_INPUT_MAPPING_WINDOW, uiText(TXT_INPUT_MAPPING_WINDOW));
 
     AppendMenuW(optionsMenu, MF_POPUP, (UINT_PTR)videoMenu, uiText(TXT_ROOT_VIDEO));
@@ -1377,6 +1391,9 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
     appendMenuItem(debugMenu, MENU_DEBUG_MEMORY_SEARCHER, uiText(TXT_DEBUG_MEMORY_SEARCHER));
     appendMenuItem(debugMenu, MENU_DEBUG_DEBUGGER, uiText(TXT_DEBUG_DEBUGGER));
 
+    appendMenuItem(helpMenu, MENU_HELP_AUTHOR_HOMEPAGE, uiText(TXT_HELP_AUTHOR_HOMEPAGE));
+    appendMenuItem(helpMenu, MENU_HELP_PROJECT_HOMEPAGE, uiText(TXT_HELP_PROJECT_HOMEPAGE));
+    AppendMenuW(helpMenu, MF_SEPARATOR, 0, NULL);
     appendMenuItem(helpMenu, MENU_HELP_ABOUT, uiText(TXT_HELP_ABOUT));
 
     AppendMenuW(menuBar, MF_POPUP, (UINT_PTR)fileMenu, uiText(TXT_ROOT_FILE));
@@ -1536,6 +1553,10 @@ void frontendMenuRefresh(void)
     setMenuCheck(MENU_INPUT_VIRTUAL_SCALE_100, g_menuSettings->virtualControlScalePercent == 100);
     setMenuCheck(MENU_INPUT_VIRTUAL_SCALE_125, g_menuSettings->virtualControlScalePercent == 125);
     setMenuCheck(MENU_INPUT_VIRTUAL_SCALE_150, g_menuSettings->virtualControlScalePercent == 150);
+    setMenuCheck(MENU_INPUT_VIRTUAL_DPAD_JOYSTICK,
+        g_menuSettings->virtualDpadType == VIRTUAL_DPAD_JOYSTICK);
+    setMenuCheck(MENU_INPUT_VIRTUAL_DPAD_SEGMENTED_RING,
+        g_menuSettings->virtualDpadType == VIRTUAL_DPAD_SEGMENTED_RING);
     setMenuCheck(MENU_SETTINGS_EXECUTION_MODE_AUTO,
         g_menuSettings->executionMode == RUNTIME_EXECUTION_MODE_AUTOMATIC);
     setMenuCheck(MENU_SETTINGS_EXECUTION_MODE_COMPATIBILITY,
@@ -2839,6 +2860,16 @@ bool frontendMenuHandleCommand(unsigned int commandId)
         emulatorSaveSettings(*g_menuSettings);
         frontendMenuRefresh();
         return true;
+    case MENU_INPUT_VIRTUAL_DPAD_JOYSTICK:
+    case MENU_INPUT_VIRTUAL_DPAD_SEGMENTED_RING:
+        g_menuSettings->virtualDpadType =
+            commandId == MENU_INPUT_VIRTUAL_DPAD_SEGMENTED_RING ?
+                VIRTUAL_DPAD_SEGMENTED_RING : VIRTUAL_DPAD_JOYSTICK;
+        emulatorSaveSettings(*g_menuSettings);
+        printf("frontend: virtual D-pad type=%s\n",
+            emulatorVirtualDpadTypeName(g_menuSettings->virtualDpadType));
+        frontendMenuRefresh();
+        return true;
     case MENU_INPUT_MAPPING_WINDOW:
         frontendOpenInputMappingWindow();
         return true;
@@ -3076,6 +3107,16 @@ bool frontendMenuHandleCommand(unsigned int commandId)
         {
             frontendOpenDebuggerWindow();
         }
+#endif
+        return true;
+    case MENU_HELP_AUTHOR_HOMEPAGE:
+#ifdef _WIN32
+        ShellExecuteW(NULL, L"open", L"https://github.com/bl2ck", NULL, NULL, SW_SHOWNORMAL);
+#endif
+        return true;
+    case MENU_HELP_PROJECT_HOMEPAGE:
+#ifdef _WIN32
+        ShellExecuteW(NULL, L"open", L"https://github.com/bl2ck/DingooPie", NULL, NULL, SW_SHOWNORMAL);
 #endif
         return true;
     case MENU_HELP_ABOUT:

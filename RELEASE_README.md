@@ -15,12 +15,26 @@
 3. 已运行的游戏会显示在 `文件 > 最近游戏` 中；不传入游戏启动时，模拟器会自动继续最近一次运行的游戏。
 4. 未运行游戏时会显示随机动态背景；打开游戏后自动切换到游戏画面。
 
-也可以从命令行直接启动单个游戏：
+### 命令行参数
+
+| 参数 | 说明 |
+| --- | --- |
+| `-g, --game <路径>` | 启动一个 `.app` 或 `.cc` 游戏。 |
+| `-c, --config <路径>` | 本次运行使用指定配置文件。 |
+| `--no-recent` | 本次启动不自动加载最近游戏，不会清空最近游戏列表。 |
+| `-h, --help` | 显示帮助。 |
+| `-V, --version` | 显示版本。 |
+
+示例：
 
 ```bat
 DingooPie.exe "D:\Games\Dingoo\Your Game.app"
-DingooPie.exe "D:\Games\Dingoo\Your Game.cc"
+DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc"
+DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc" --config "D:\DingooPie\Portable.ini" --no-recent
 ```
+
+也可以直接在程序名后填写一个游戏路径。路径含空格时必须加引号；未指定
+`--config` 时使用程序目录中的 `DingooPie.ini`。
 
 默认建议使用 `CPU 执行模式 > 自动`。如果个别游戏运行异常，可切换为 `兼容模式` 后重试。
 
@@ -140,12 +154,26 @@ Game files are not included. Use legally obtained game samples.
 3. Previously launched games appear under `File > Recent Games`. Starting without a game automatically resumes the most recent game.
 4. A randomized animated background is shown while no game is running; opening a game switches to gameplay automatically.
 
-A single game can also be launched from the command line:
+### Command-Line Options
+
+| Option | Description |
+| --- | --- |
+| `-g, --game <path>` | Launch one `.app` or `.cc` game. |
+| `-c, --config <path>` | Use the specified settings file for this run. |
+| `--no-recent` | Skip recent-game auto-start without clearing the recent list. |
+| `-h, --help` | Show help. |
+| `-V, --version` | Show the version. |
+
+Examples:
 
 ```bat
 DingooPie.exe "D:\Games\Dingoo\Your Game.app"
-DingooPie.exe "D:\Games\Dingoo\Your Game.cc"
+DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc"
+DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc" --config "D:\DingooPie\Portable.ini" --no-recent
 ```
+
+You can also place one game path directly after the executable name. Quote paths
+containing spaces. Without `--config`, `DingooPie.ini` beside the executable is used.
 
 `CPU Execution Mode > Auto` is recommended. If a game does not run correctly, retry with `Compatibility Mode`.
 

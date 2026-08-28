@@ -423,6 +423,62 @@ bool cheatParseText(const std::string& text, const std::string& sourcePath, Chea
     return true;
 }
 
+bool cheatLoadStream(FILE* file, const std::string& sourcePath, CheatSet* out, std::string* error)
+{
+    if (!file)
+    {
+        if (error)
+        {
+            *error = "invalid file stream";
+        }
+        return false;
+    }
+
+    if (fseek(file, 0, SEEK_END) != 0)
+    {
+        if (error)
+        {
+            *error = "failed to seek file";
+        }
+        return false;
+    }
+    long size = ftell(file);
+    if (size < 0 || size > 1024 * 1024)
+    {
+        if (error)
+        {
+            *error = "file size is invalid";
+        }
+        return false;
+    }
+    if (fseek(file, 0, SEEK_SET) != 0)
+    {
+        if (error)
+        {
+            *error = "failed to rewind file";
+        }
+        return false;
+    }
+
+    std::string text;
+    text.assign((size_t)size, '\0');
+    if (size > 0 && fread(&text[0], 1, (size_t)size, file) != (size_t)size)
+    {
+        if (error)
+        {
+            *error = "failed to read file";
+        }
+        return false;
+    }
+    if (text.size() >= 3 &&
+        (uint8_t)text[0] == 0xef && (uint8_t)text[1] == 0xbb && (uint8_t)text[2] == 0xbf)
+    {
+        text.erase(0, 3);
+    }
+
+    return cheatParseText(text, sourcePath, out, error);
+}
+
 bool cheatLoadFile(const std::string& path, CheatSet* out, std::string* error)
 {
 #ifdef _WIN32
@@ -438,56 +494,9 @@ bool cheatLoadFile(const std::string& path, CheatSet* out, std::string* error)
         }
         return false;
     }
-
-    if (fseek(file, 0, SEEK_END) != 0)
-    {
-        fclose(file);
-        if (error)
-        {
-            *error = "failed to seek file";
-        }
-        return false;
-    }
-    long size = ftell(file);
-    if (size < 0 || size > 1024 * 1024)
-    {
-        fclose(file);
-        if (error)
-        {
-            *error = "file size is invalid";
-        }
-        return false;
-    }
-    if (fseek(file, 0, SEEK_SET) != 0)
-    {
-        fclose(file);
-        if (error)
-        {
-            *error = "failed to rewind file";
-        }
-        return false;
-    }
-
-    std::string text;
-    text.assign((size_t)size, '\0');
-    if (size > 0 && fread(&text[0], 1, (size_t)size, file) != (size_t)size)
-    {
-        fclose(file);
-        if (error)
-        {
-            *error = "failed to read file";
-        }
-        return false;
-    }
+    bool loaded = cheatLoadStream(file, path, out, error);
     fclose(file);
-
-    if (text.size() >= 3 &&
-        (uint8_t)text[0] == 0xef && (uint8_t)text[1] == 0xbb && (uint8_t)text[2] == 0xbf)
-    {
-        text.erase(0, 3);
-    }
-
-    return cheatParseText(text, path, out, error);
+    return loaded;
 }
 
 bool cheatSetMatchesApp(const CheatSet& set, const char* appSha256)

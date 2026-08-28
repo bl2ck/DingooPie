@@ -22,10 +22,9 @@ Technology; game files are external test inputs, not project assets.
 
 ## Runtime Flow
 
-1. `main.cpp` loads optional settings, applies them to environment variables,
-   initializes SDL, and starts the guest runtime thread only when an app path
-   was provided on the command line. Without a startup app, the frontend stays
-   open and waits for `File/Open Game`.
+1. `main.cpp` loads settings, initializes SDL, and starts the guest runtime when an
+   APP or CC game is selected. Without a startup game, the frontend waits for
+   `File/Open Game`.
 2. `app_runtime.cpp` parses the `.app`, computes its SHA256 identity, maps
    guest memory, initializes the HLE bridge and virtual file system, installs
    compatibility hooks, and jumps to the guest entry point.
@@ -45,6 +44,7 @@ Technology; game files are external test inputs, not project assets.
 The Windows frontend is a normal menu-driven SDL window. It does not show a
 file picker on process startup. Empty `recent.last_app` opens the frontend only;
 an existing `recent.last_app` is auto-loaded; command-line paths take priority.
+`--no-recent` suppresses automatic recent-game startup without changing the list.
 The no-game state presents an idle background in the SDL window. Menu tracking
 and modal dialogs pause that idle presentation, and gameplay startup releases
 idle resources before the runtime owns frame presentation.
@@ -144,7 +144,8 @@ Default settings live in `emulatorDefaultSettings()`. The frontend loads
 `DingooPie.ini` if it exists, but startup does not create it. Runtime-facing
 settings are mirrored into process environment variables and explicitly
 refreshed in HLE/JIT components when the frontend changes them. CPU backend
-selection remains startup-bound.
+selection remains startup-bound. `--config <path>` selects an alternate settings
+file for the current run.
 The INI reader accepts UTF-16LE with BOM, UTF-8 with or without BOM, and a
 system ANSI fallback so manually edited Chinese paths remain loadable.
 Saves rewrite `DingooPie.ini` in frontend order so existing files are normalized

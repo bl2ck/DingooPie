@@ -58,6 +58,7 @@ void runtimeResourceMonitorSetActive(bool active);
 bool runtimeResourceMonitorIsCapturing(void);
 bool runtimeResourceMonitorMatchesApp(const char* appPath, const char* appSha256);
 void runtimeResourceMonitorSetAppSha256(const char* appSha256);
+void runtimeResourceMonitorSetAppResources(GuestPackage* package);
 void runtimeResourceMonitorSetGuestResources(GuestPackage* package);
 void runtimeResourceMonitorRecordGuestOpen(
     const char* requestName, const GuestResourceEntry* entry, bool cached);

@@ -280,35 +280,6 @@ static void setResourceMonitorListText(HWND list, int row, int column, const wch
     SendMessageW(list, LVM_SETITEMW, 0, (LPARAM)&item);
 }
 
-static void clearResourceMonitorRowHighlights(void)
-{
-    bool changed = false;
-    for (int slot = 0; slot < RESOURCE_MONITOR_LIST_SLOT_COUNT; ++slot)
-    {
-        std::vector<ResourceMonitorDisplayRow>& rows = g_resourceMonitorRows[slot];
-        for (size_t i = 0; i < rows.size(); ++i)
-        {
-            if (rows[i].highlightKind != RESOURCE_MONITOR_HIGHLIGHT_NONE)
-            {
-                rows[i].highlightKind = RESOURCE_MONITOR_HIGHLIGHT_NONE;
-                changed = true;
-            }
-        }
-    }
-
-    if (changed)
-    {
-        for (int slot = 0; slot < RESOURCE_MONITOR_LIST_SLOT_COUNT; ++slot)
-        {
-            if (g_resourceMonitorLists[slot])
-            {
-                InvalidateRect(g_resourceMonitorLists[slot], NULL, TRUE);
-            }
-        }
-    }
-    g_resourceMonitorHighlightUntil = 0;
-}
-
 static void formatResourceMonitorHex32(uint32_t value, wchar_t* out, size_t outCount)
 {
     if (!out || outCount == 0)

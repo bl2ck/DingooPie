@@ -79,4 +79,34 @@ static inline uint64_t ccCpuClockToTargetIps(uint64_t cpuClockHz,
     return referenceIps * cpuClockHz / referenceClockHz;
 }
 
+static inline uint64_t ccScaleTargetIps(uint64_t targetIps,
+    double runtimeSpeedScale)
+{
+    if (!targetIps || runtimeSpeedScale <= 0.0)
+    {
+        return 0;
+    }
+    if (runtimeSpeedScale >= 1.0)
+    {
+        return targetIps;
+    }
+    return (uint64_t)((double)targetIps * runtimeSpeedScale);
+}
+
+static inline uint64_t ccInstructionsToMicros(uint64_t instructions,
+    uint64_t targetIps)
+{
+    if (!targetIps)
+    {
+        return 0;
+    }
+    uint64_t seconds = instructions / targetIps;
+    if (seconds > UINT64_MAX / 1000000u)
+    {
+        return UINT64_MAX;
+    }
+    uint64_t remainder = instructions % targetIps;
+    return seconds * 1000000u + remainder * 1000000u / targetIps;
+}
+
 #endif

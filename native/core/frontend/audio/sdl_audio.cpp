@@ -46,6 +46,7 @@ static uint64_t g_lastQueueBackpressureLogTicks = 0;
 static std::deque<std::vector<char> > g_pendingAudio;
 static uint32_t g_pendingAudioBytes = 0;
 static std::vector<char> g_guestAudioRemainder;
+static std::vector<int16_t> g_audioProcessingS16Scratch;
 static bool g_resampleLowPassEnabled = false;
 static double g_resampleLowPassB0 = 0.0;
 static double g_resampleLowPassB1 = 0.0;
@@ -935,15 +936,16 @@ static void applyAudioProcessingInPlaceLocked(char* buffer, int count)
 
     const int sampleCount = count / (int)sizeof(float);
     float* floatSamples = (float*)buffer;
-    std::vector<int16_t> s16Samples((size_t)sampleCount);
+    g_audioProcessingS16Scratch.resize((size_t)sampleCount);
+    int16_t* s16Samples = g_audioProcessingS16Scratch.data();
     for (int index = 0; index < sampleCount; ++index)
     {
-        s16Samples[(size_t)index] = floatSampleToS16(floatSamples[index]);
+        s16Samples[index] = floatSampleToS16(floatSamples[index]);
     }
 
     const SDL_AudioFormat outputFormat = g_audioSpec.format;
     g_audioSpec.format = AUDIO_S16LSB;
-    char* s16Buffer = (char*)s16Samples.data();
+    char* s16Buffer = (char*)s16Samples;
     const int s16Bytes = sampleCount * (int)sizeof(int16_t);
     applyResampleLowPassInPlaceLocked(s16Buffer, s16Bytes);
     applyAudioEffectInPlaceLocked(s16Buffer, s16Bytes);
@@ -953,7 +955,7 @@ static void applyAudioProcessingInPlaceLocked(char* buffer, int count)
 
     for (int index = 0; index < sampleCount; ++index)
     {
-        floatSamples[index] = (float)s16Samples[(size_t)index] / 32768.0f;
+        floatSamples[index] = (float)s16Samples[index] / 32768.0f;
     }
 }
 

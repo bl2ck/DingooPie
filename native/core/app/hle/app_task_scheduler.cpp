@@ -10,6 +10,7 @@
 #include "app/memory/app_framebuffer_mapping.h"
 #include "shared/diagnostics/runtime_log.h"
 #include "app/hle/app_hle.h"
+#include "app/runtime/app_runtime_debug.h"
 #include "shared/services/guest_package.h"
 #include "app/runtime/app_runtime_context.h"
 #include <cstdlib>
@@ -34,13 +35,11 @@ struct TaskStruct
 
 static bool taskProfileEnabled()
 {
-    static int enabled = -1;
-    if (enabled < 0)
-    {
+    static const bool enabled = []() {
         const char* value = getenv("DINGOO_PIE_TASK_PROFILE");
-        enabled = value && value[0] && strcmp(value, "0") != 0 ? 1 : 0;
-    }
-    return enabled != 0;
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled;
 }
 
 static ExecutionBackend subtaskBackendFromEnv()
@@ -82,8 +81,8 @@ void taskSchedulerRequestShutdown(const char* reason)
     }
 
     pthread_mutex_lock(&s_taskRuntimeMutex);
-    size_t runtimeCount = s_taskRuntimes.size();
-    for (size_t i = 0; i < s_taskRuntimes.size(); ++i)
+    const size_t runtimeCount = s_taskRuntimes.size();
+    for (size_t i = 0; i < runtimeCount; ++i)
     {
         nativeRuntimeRequestStop(s_taskRuntimes[i]);
     }
@@ -116,7 +115,7 @@ void taskSchedulerRegisterRuntime(NativeRuntime* runtime)
         }
     }
     s_taskRuntimes.push_back(runtime);
-    if (SDL_AtomicGet(&s_taskShutdownRequested) != 0)
+    if (taskSchedulerIsShutdownRequested())
     {
         nativeRuntimeRequestStop(runtime);
     }
@@ -152,7 +151,6 @@ void taskSchedulerSnapshotRuntimes(std::vector<NativeRuntime*>* out)
     {
         return;
     }
-    out->clear();
     pthread_mutex_lock(&s_taskRuntimeMutex);
     *out = s_taskRuntimes;
     pthread_mutex_unlock(&s_taskRuntimeMutex);
@@ -200,8 +198,6 @@ static bool hookInvalidMemory(NativeRuntime* runtime, RuntimeMemoryAccess type,
 
 void* subTaskRun(void* data)
 {
-    TaskStruct* taskStruct = (TaskStruct*)data;
-
     taskThreadLifecycleDetachCurrent();
 
     struct TaskCompletionGuard
@@ -211,23 +207,24 @@ void* subTaskRun(void* data)
             taskThreadLifecycleFinish();
         }
     } completionGuard;
+    TaskStruct* taskStruct = (TaskStruct*)data;
 
     NativeRuntime* runtime = NULL;
     struct TaskResourceGuard
     {
         TaskStruct* task;
-        NativeRuntime** runtime;
+        NativeRuntime* runtime;
 
         ~TaskResourceGuard()
         {
-            if (*runtime)
+            if (runtime)
             {
-                taskSchedulerUnregisterRuntime(*runtime);
-                nativeRuntimeDestroy(*runtime);
+                taskSchedulerUnregisterRuntime(runtime);
+                nativeRuntimeDestroy(runtime);
             }
             free(task);
         }
-    } resourceGuard = { taskStruct, &runtime };
+    } resourceGuard = { taskStruct, NULL };
 
     uint32_t entry = taskStruct->taskFuncAddr;
 
@@ -248,6 +245,7 @@ void* subTaskRun(void* data)
         printf("task: nativeRuntimeCreate failed: %u (%s)\n", err, nativeRuntimeErrorString(err));
         return NULL;
     }
+    resourceGuard.runtime = runtime;
     taskSchedulerRegisterRuntime(runtime);
 
     ExecutionBackend backend = subtaskBackendFromEnv();

@@ -83,16 +83,6 @@ static void initializeVmHeapAllocator(void* baseAddress, uint32_t len)
 	s_legacyHeapHighWaterOffset = 0;
 #endif
 }
-void printVmHeapInfo()
-{
-    printf("memory: heap statistics total=%u minimum_free=%u free=%u high_water=%u\n",
-        s_legacyHeapLength, s_legacyHeapMinimumFree, s_legacyHeapFreeBytes,
-        s_legacyHeapHighWaterOffset);
-    printf("memory: heap range base=%p end=%p original_base=%p original_length=%u\n",
-        s_legacyHeapBase, s_legacyHeapEnd, s_originalLegacyHeapBase,
-        s_originalLegacyHeapLength);
-}
-
 static void* allocateVmHeapBlock(uint32_t len)
 {
     std::lock_guard<std::recursive_mutex> lock(s_vmHeapMutex);
@@ -190,26 +180,6 @@ static void freeVmHeapBlock(void* p, uint32_t len) {
         free->len += n->len;
     }
     s_legacyHeapFreeBytes += len;
-}
-
-void* my_realloc(void* p, uint32_t oldlen, uint32_t len) {
-    std::lock_guard<std::recursive_mutex> lock(s_vmHeapMutex);
-    unsigned long minsize = (oldlen > len) ? len : oldlen;
-    void* newblock;
-    if (p == NULL) {
-        return allocateVmHeapBlock(len);
-    }
-    if (len == 0) {
-        freeVmHeapBlock(p, oldlen);
-        return NULL;
-    }
-    newblock = allocateVmHeapBlock(len);
-    if (newblock == NULL) {
-        return newblock;
-    }
-    memmove(newblock, p, minsize);
-    freeVmHeapBlock(p, oldlen);
-    return newblock;
 }
 
 int appMemoryInitialize(NativeRuntime* runtime, GuestPackage* app)
@@ -401,6 +371,15 @@ static bool trackedAllocationLengthLocked(void* p, uint32_t* outLength)
     return true;
 }
 
+static bool traceAllocEnabled(void)
+{
+    static const bool enabled = []() {
+        const char* value = getenv("DINGOO_PIE_TRACE_ALLOC");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
 void freeTrackedVmHeapBlock(void* p)
 {
     if (!p)
@@ -452,13 +431,7 @@ uint32_t vm_malloc(uint32_t len)
         return 0;
     }
     uint32_t ret =  (uint32_t)(((size_t)p - (size_t)s_heapMemory) + s_heapBeginAddress);
-    static int traceAllocEnabled = -1;
-    if (traceAllocEnabled < 0)
-    {
-        const char* traceAlloc = getenv("DINGOO_PIE_TRACE_ALLOC");
-        traceAllocEnabled = (traceAlloc && traceAlloc[0] && strcmp(traceAlloc, "0") != 0) ? 1 : 0;
-    }
-    if (traceAllocEnabled != 0)
+    if (traceAllocEnabled())
     {
         printf("trace-alloc: malloc len=%u -> 0x%08x\n", len, ret);
     }
@@ -498,13 +471,7 @@ uint32_t vm_realloc(uint32_t addr, uint32_t len)
         return 0;
     }
     uint32_t ret = (uint32_t)(((size_t)retPtr - (size_t)s_heapMemory) + s_heapBeginAddress);
-    static int traceAllocEnabled = -1;
-    if (traceAllocEnabled < 0)
-    {
-        const char* traceAlloc = getenv("DINGOO_PIE_TRACE_ALLOC");
-        traceAllocEnabled = (traceAlloc && traceAlloc[0] && strcmp(traceAlloc, "0") != 0) ? 1 : 0;
-    }
-    if (traceAllocEnabled != 0)
+    if (traceAllocEnabled())
     {
         printf("trace-alloc: realloc addr=0x%08x len=%u -> 0x%08x\n", addr, len, ret);
     }

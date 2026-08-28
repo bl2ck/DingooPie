@@ -48,12 +48,12 @@ function Wait-ForProcessExit($ProcessId, $TimeoutMilliseconds) {
     return [bool](!(Get-Process -Id $ProcessId -ErrorAction SilentlyContinue))
 }
 
-function First-LogValue($Lines, $Pattern, $Replacement) {
+function First-LogValue($Lines, $Pattern, $Replacement, $Value = "") {
     $match = $Lines | Select-String -Pattern $Pattern | Select-Object -First 1
     if (!$match) {
         return ""
     }
-    return ($match.Line -replace $Replacement, "")
+    return ($match.Line -replace $Replacement, $Value)
 }
 
 function Parse-TaskStops($Lines) {
@@ -180,10 +180,12 @@ do {
     }
 } while (!$lockStream)
 
-Get-Process DingooPie,dingoo-pie -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process DingooPie,dingoo-pie -ErrorAction SilentlyContinue |
+    Stop-Process -Force -PassThru |
+    Wait-Process -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 250
 Get-ChildItem -LiteralPath $BuildDir -Filter "DingooPie-debug-*.log" -File -ErrorAction SilentlyContinue |
-    Remove-Item -Force
+    Remove-Item -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $savedLog, $resultJson -ErrorAction SilentlyContinue
 
 $hadConfig = Test-Path -LiteralPath $ini
@@ -280,6 +282,7 @@ try {
     }
 
     $rawLog = Get-ChildItem -LiteralPath $BuildDir -Filter "DingooPie-debug-*.log" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -ge $startedAt.AddSeconds(-1) } |
         Sort-Object LastWriteTime -Descending |
         Select-Object -First 1
     if ($rawLog) {
@@ -308,6 +311,14 @@ try {
     $residualProcesses = @(Get-Process DingooPie,dingoo-pie -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
 
     $sawShutdownComplete = [bool]($lines | Select-String -Pattern '^frontend: shutdown complete' -Quiet)
+    $appHash = First-LogValue $lines '^(DingooPie|app-runtime): app sha256: ' '^.*sha256: '
+    if ([string]::IsNullOrWhiteSpace($appHash)) {
+        $appHash = First-LogValue $lines '^cc-arm: game settings .*app_sha256=' '^.*app_sha256=([0-9A-F]+).*$' '$1'
+    }
+    $effectiveBackend = First-LogValue $lines '^(DingooPie|app-runtime): execution backend effective: ' '^.*effective: '
+    if ([string]::IsNullOrWhiteSpace($effectiveBackend)) {
+        $effectiveBackend = First-LogValue $lines '^cc-arm: settings .*effective_backend=' '^.*effective_backend=([^ ]+).*$' '$1'
+    }
 
     $result = [pscustomobject]@{
         name = $Name
@@ -334,17 +345,17 @@ try {
         process_alive_after_timeout = !$naturalExit
         residual_process_ids = $residualProcesses
         no_residual_process = [bool]($residualProcesses.Count -eq 0)
-        app_hash = First-LogValue $lines '^DingooPie: app sha256: ' '^.*sha256: '
-        compat_profile = First-LogValue $lines '^DingooPie: compat profile: ' '^.*profile: '
-        effective_backend = First-LogValue $lines '^DingooPie: execution backend effective: ' '^.*effective: '
-        saw_app_start = [bool]($lines | Select-String -Pattern '^DingooPie: start app: ' -Quiet)
-        saw_runtime_start = [bool]($lines | Select-String -Pattern '^DingooPie: native runtime start ' -Quiet)
-        failed_to_open_app = [bool]($lines | Select-String -Pattern '^DingooPie: failed to open app: ' -Quiet)
+        app_hash = $appHash
+        compat_profile = First-LogValue $lines '^(DingooPie|app-runtime): compat profile: ' '^.*profile: '
+        effective_backend = $effectiveBackend
+        saw_app_start = [bool]($lines | Select-String -Pattern '^(DingooPie: start app: |app-runtime: start APP: |game-runtime: starting CC game: )' -Quiet)
+        saw_runtime_start = [bool]($lines | Select-String -Pattern '^(DingooPie|app-runtime): native runtime start |^game-runtime: starting CC game: ' -Quiet)
+        failed_to_open_app = [bool]($lines | Select-String -Pattern '^(DingooPie|app-runtime): failed to open app: |^game-runtime: (unsupported game path|failed to create CC runtime thread): ' -Quiet)
         saw_frontend_quit = [bool]($lines | Select-String -Pattern '^frontend: quit requested' -Quiet)
         saw_shutdown_complete = $sawShutdownComplete
-        saw_runtime_return = [bool]($lines | Select-String -Pattern '^DingooPie: native runtime returned err=' -Quiet)
-        saw_runtime_destroyed = [bool]($lines | Select-String -Pattern '^DingooPie: native runtime destroyed' -Quiet)
-        saw_stop_requested = [bool]($lines | Select-String -Pattern '^DingooPie: stop requested runtime=' -Quiet)
+        saw_runtime_return = [bool]($lines | Select-String -Pattern '^(DingooPie|app-runtime): native runtime returned err=|^cc-arm: stopped ' -Quiet)
+        saw_runtime_destroyed = [bool]($lines | Select-String -Pattern '^(DingooPie|app-runtime): native runtime destroyed|^cc-runtime: execution stopped ' -Quiet)
+        saw_stop_requested = [bool]($lines | Select-String -Pattern '^(DingooPie|app-runtime): stop requested runtime=' -Quiet)
         saw_guest_exit = [bool]($guestExits.Count -gt 0)
         guest_exit_reasons = $guestExits
         saw_task_stop = [bool]($taskStops.Count -gt 0)

@@ -2,10 +2,11 @@
 #define DINGOO_PIE_PLATFORM_WIN32_H
 
 #include <string>
+#include <vector>
 #include <stdio.h>
 #include <stdint.h>
 
-std::string platformCommandLineAppPath(int argc, char* argv[]);
+std::vector<std::string> platformCommandLineArguments(int argc, char* argv[]);
 std::string platformSelectAppPath(void);
 std::string platformSelectAppPathLocalized(const wchar_t* title, const wchar_t* filter);
 bool platformFileExists(const std::string& path);

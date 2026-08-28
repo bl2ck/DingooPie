@@ -88,7 +88,6 @@ static bool fsysProfileEnabled(void)
 
 void fsys_set_profile_enabled(bool enabled)
 {
-    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     s_profileEnabled.store(enabled);
 }
 
@@ -245,13 +244,11 @@ void fsys_set_save_directory(const char* directory)
 
 bool fsys_saw_suspicious_open_failure(void)
 {
-    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     return s_suspiciousOpenFailure.load();
 }
 
 bool fsys_saw_successful_save_write(void)
 {
-    std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     return s_successfulSaveWrite.load();
 }
 
@@ -598,6 +595,7 @@ static bool shouldCacheHostFile(const char* name, const char* mode)
     }
 
     return _stricmp(dot, ".app") == 0 ||
+        _stricmp(dot, ".wad") == 0 ||
         _stricmp(dot, ".war") == 0 ||
         _stricmp(dot, ".dat") == 0 ||
         _stricmp(dot, ".bin") == 0;

@@ -1,7 +1,7 @@
 #include "app_runtime.h"
 #include "app/hle/app_hle.h"
 #include "app/save/app_save_state.h"
-#include "shared/game/game_paths.h"
+#include "cc/runtime/cc_timing.h"
 #include "config/cheats/cheat_runtime.h"
 #include "debug_console.h"
 #include "config/settings/emulator_options.h"
@@ -10,13 +10,15 @@
 #include "shared/diagnostics/runtime_log.h"
 #include "sdl_frontend.h"
 #include "platform_win32.h"
+#include "startup_command_line.h"
+#include "startup_game_selection.h"
+#include "app_metadata.h"
 #include "shared/game/game_runtime.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <chrono>
 #include <string>
-#include <string.h>
 #include <thread>
 
 #ifdef _WIN32
@@ -26,25 +28,6 @@
 #include <windows.h>
 #include <shellapi.h>
 #endif
-
-enum StartupAppSource
-{
-    STARTUP_APP_NONE,
-    STARTUP_APP_COMMAND_LINE,
-    STARTUP_APP_RECENT
-};
-
-static void clearRecentApp(EmulatorSettings* settings, const char* reason)
-{
-    if (!settings || settings->lastAppPath.empty())
-    {
-        return;
-    }
-
-    printf("main: clearing recent app after %s: %s\n", reason, settings->lastAppPath.c_str());
-    emulatorRemoveRecentApp(settings, settings->lastAppPath);
-    emulatorSaveSettings(*settings);
-}
 
 static bool launchDetachedSelf(const std::string& appPath)
 {
@@ -103,39 +86,74 @@ static void applyStartupDebugSettings(EmulatorSettings* settings, bool externalD
     }
 }
 
-static bool coreRegressionRequested(int argc, char* argv[])
-{
-    return argc == 2 && argv && argv[1] &&
-        strcmp(argv[1], "--core-regression") == 0;
-}
-
 static bool runCoreRegressionTests(void)
 {
     bool semaphorePassed = bridge_run_semaphore_regression();
     bool saveStatePassed = saveStateRunRegressionTests();
-    printf("core-regression: semaphore=%s save_state=%s result=%s\n",
+    bool ccTimingPassed =
+        ccCpuClockToTargetIps(336000000u, 336000000u, 15000000u) == 15000000u &&
+        ccScaleTargetIps(15000000u, 0.65) == 9750000u &&
+        ccScaleTargetIps(15000000u, 1.0) == 15000000u &&
+        ccInstructionsToMicros(9750000u, 9750000u) == 1000000u;
+    bool commandLinePassed = startupCommandLineRunRegressionTests();
+    printf("core-regression: semaphore=%s save_state=%s cc_timing=%s command_line=%s result=%s\n",
         semaphorePassed ? "pass" : "fail",
         saveStatePassed ? "pass" : "fail",
-        semaphorePassed && saveStatePassed ? "pass" : "fail");
-    return semaphorePassed && saveStatePassed;
+        ccTimingPassed ? "pass" : "fail",
+        commandLinePassed ? "pass" : "fail",
+        semaphorePassed && saveStatePassed && ccTimingPassed && commandLinePassed ? "pass" : "fail");
+    return semaphorePassed && saveStatePassed && ccTimingPassed && commandLinePassed;
 }
 
 int main(int argc, char* argv[])
 {
-    platformBeginHighResolutionTiming();
-    bool externalDebugLog = emulatorEnvEnabled("DINGOO_PIE_LOG_FILE");
-    if (externalDebugLog)
-    {
-        debugLogOpen();
-    }
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
-    if (coreRegressionRequested(argc, argv))
+    StartupCommandLineOptions commandLine = startupCommandLineParse(
+        platformCommandLineArguments(argc, argv));
+    if (commandLine.action == STARTUP_COMMAND_ERROR)
+    {
+        fprintf(stderr, "DingooPie: %s\n\n", commandLine.error.c_str());
+        startupCommandLinePrintUsage(stderr);
+        return 2;
+    }
+    if (commandLine.action == STARTUP_COMMAND_SHOW_HELP)
+    {
+        startupCommandLinePrintUsage(stdout);
+        return 0;
+    }
+    if (commandLine.action == STARTUP_COMMAND_SHOW_VERSION)
+    {
+        printf("%s %s\n", DINGOO_PIE_PRODUCT_NAME, DINGOO_PIE_VERSION_TEXT);
+        return 0;
+    }
+
+    platformBeginHighResolutionTiming();
+    if (commandLine.action == STARTUP_COMMAND_CORE_REGRESSION)
     {
         bool passed = runCoreRegressionTests();
         platformEndHighResolutionTiming();
         return passed ? 0 : 1;
+    }
+
+    std::string commandLineGameError;
+    if (!startupGameValidateCommandLinePath(commandLine.gamePath, &commandLineGameError))
+    {
+        fprintf(stderr, "DingooPie: %s\n", commandLineGameError.c_str());
+        platformEndHighResolutionTiming();
+        return 2;
+    }
+
+    if (!commandLine.settingsPath.empty())
+    {
+        emulatorSetSettingsPathOverride(commandLine.settingsPath);
+        printf("main: command-line settings path=%s\n", emulatorSettingsPath().c_str());
+    }
+    bool externalDebugLog = emulatorEnvEnabled("DINGOO_PIE_LOG_FILE");
+    if (externalDebugLog)
+    {
+        debugLogOpen();
     }
 
     EmulatorSettings settings = emulatorLoadSettings();
@@ -154,34 +172,8 @@ int main(int argc, char* argv[])
     cheatRuntimeSetEnabled(settings.cheatsEnabled || emulatorEnvEnabled("DINGOO_PIE_CHEATS"));
     EmulatorOptions options = loadEmulatorOptions();
 
-    std::string selectedAppPath;
-    StartupAppSource selectedAppSource = STARTUP_APP_NONE;
-    selectedAppPath = platformCommandLineAppPath(argc, argv);
-    if (!selectedAppPath.empty())
-    {
-        selectedAppSource = STARTUP_APP_COMMAND_LINE;
-    }
-    if (selectedAppPath.empty() && !settings.lastAppPath.empty())
-    {
-        if (!gamePathHasSupportedExtension(settings.lastAppPath))
-        {
-            clearRecentApp(&settings, "non-app recent path");
-        }
-        else if (!platformFileExists(settings.lastAppPath))
-        {
-            clearRecentApp(&settings, "missing recent app");
-        }
-        else if (!platformProbeAppHeader(settings.lastAppPath))
-        {
-            clearRecentApp(&settings, "invalid recent app");
-        }
-        else
-        {
-            selectedAppPath = settings.lastAppPath;
-            selectedAppSource = STARTUP_APP_RECENT;
-            printf("main: auto-loading recent app: %s\n", selectedAppPath.c_str());
-        }
-    }
+    StartupGameSelection startupGame = startupGameSelect(commandLine, &settings);
+    const std::string& selectedAppPath = startupGame.path;
 
     if (!selectedAppPath.empty())
     {
@@ -213,7 +205,7 @@ int main(int argc, char* argv[])
         bool gameStarted = gameRuntimeStart(
             selectedAppPath.c_str(),
             options,
-            selectedAppSource == STARTUP_APP_RECENT,
+            startupGame.source == STARTUP_GAME_RECENT,
             settings.resourceMonitorAutoOpen,
             emulatorCheatFeatureKeysForGame(settings, selectedAppPath));
         frontendMenuSetGameRunning(gameStarted);

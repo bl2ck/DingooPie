@@ -25,6 +25,7 @@
 #endif
 
 static std::string trimIniText(const std::string& text);
+static std::string g_settingsPathOverride;
 
 static int clampInt(int value, int minValue, int maxValue)
 {
@@ -57,6 +58,21 @@ static int normalizeIntPreset(int value, const int (&presets)[Count], int fallba
         }
     }
     return presets[0];
+}
+
+template <size_t Count>
+static std::string normalizeStringPreset(
+    const std::string& value, const char* const (&presets)[Count],
+    const std::string& fallback)
+{
+    for (size_t index = 0; index < Count; ++index)
+    {
+        if (value == presets[index])
+        {
+            return value;
+        }
+    }
+    return fallback;
 }
 
 static bool parseBoolText(const char* text, bool fallback)
@@ -153,28 +169,7 @@ static RuntimeExecutionMode normalizeExecutionMode(
 
 static std::string normalizeCpuClockHz(const std::string& value, const std::string& fallback)
 {
-    if (value.empty())
-    {
-        return "";
-    }
-
-    int parsed = 0;
-    if (!parseIntText(value, &parsed))
-    {
-        return fallback;
-    }
-
-    switch (parsed)
-    {
-    case 200000000:
-    case 336000000:
-    case 360000000:
-    case 400000000:
-    case 430000000:
-        return std::to_string(parsed);
-    default:
-        return fallback;
-    }
+    return normalizeStringPreset(value, EMULATOR_CPU_CLOCK_VALUES, fallback);
 }
 
 static std::string normalizeScaleValue(const std::string& value, const std::string& fallback)
@@ -202,14 +197,16 @@ static std::string normalizeScaleValue(const std::string& value, const std::stri
         return fallback;
     }
 
+    char normalized[8] = {};
     if (percent == 100)
     {
-        return "1.0";
+        snprintf(normalized, sizeof(normalized), "1.0");
     }
-
-    char normalized[8] = {};
-    snprintf(normalized, sizeof(normalized), "0.%02d", percent);
-    return normalized;
+    else
+    {
+        snprintf(normalized, sizeof(normalized), "0.%02d", percent);
+    }
+    return normalizeStringPreset(normalized, EMULATOR_SCALE_VALUES, fallback);
 }
 
 static AntiAliasingMode parseAntiAliasingMode(const std::string& value, AntiAliasingMode fallback)
@@ -339,15 +336,14 @@ static AudioEffectMode parseAudioEffectMode(const std::string& value, AudioEffec
 static DigitalNoiseReductionLevel normalizeDigitalNoiseReductionLevel(
     DigitalNoiseReductionLevel level, DigitalNoiseReductionLevel fallback)
 {
-    switch (level)
+    if (level >= DIGITAL_NOISE_REDUCTION_HIGH &&
+        level < DIGITAL_NOISE_REDUCTION_LEVEL_COUNT)
     {
-    case DIGITAL_NOISE_REDUCTION_HIGH:
-    case DIGITAL_NOISE_REDUCTION_MEDIUM:
-    case DIGITAL_NOISE_REDUCTION_LOW:
         return level;
-    default:
-        return fallback;
     }
+    return fallback >= DIGITAL_NOISE_REDUCTION_HIGH &&
+        fallback < DIGITAL_NOISE_REDUCTION_LEVEL_COUNT ?
+        fallback : DIGITAL_NOISE_REDUCTION_HIGH;
 }
 
 static DigitalNoiseReductionLevel parseDigitalNoiseReductionLevel(
@@ -355,15 +351,15 @@ static DigitalNoiseReductionLevel parseDigitalNoiseReductionLevel(
 {
     fallback = normalizeDigitalNoiseReductionLevel(
         fallback, DIGITAL_NOISE_REDUCTION_HIGH);
-    if (stringEqualsIgnoreCase(value, "high"))
+    if (_stricmp(value.c_str(), "high") == 0)
     {
         return DIGITAL_NOISE_REDUCTION_HIGH;
     }
-    if (stringEqualsIgnoreCase(value, "medium"))
+    if (_stricmp(value.c_str(), "medium") == 0)
     {
         return DIGITAL_NOISE_REDUCTION_MEDIUM;
     }
-    if (stringEqualsIgnoreCase(value, "low"))
+    if (_stricmp(value.c_str(), "low") == 0)
     {
         return DIGITAL_NOISE_REDUCTION_LOW;
     }
@@ -372,6 +368,10 @@ static DigitalNoiseReductionLevel parseDigitalNoiseReductionLevel(
 
 static MinimizedBehavior parseMinimizedBehavior(const std::string& value, MinimizedBehavior fallback)
 {
+    if (fallback < MINIMIZED_BEHAVIOR_NORMAL || fallback >= MINIMIZED_BEHAVIOR_COUNT)
+    {
+        fallback = MINIMIZED_BEHAVIOR_PAUSE;
+    }
     if (value.empty())
     {
         return fallback;
@@ -398,21 +398,62 @@ static ScreenOrientationMode parseScreenOrientationMode(
     {
         fallback = SCREEN_ORIENTATION_LANDSCAPE;
     }
-    if (_stricmp(value.c_str(), "auto") == 0) return SCREEN_ORIENTATION_AUTO;
-    if (_stricmp(value.c_str(), "landscape") == 0) return SCREEN_ORIENTATION_LANDSCAPE;
-    if (_stricmp(value.c_str(), "portrait") == 0) return SCREEN_ORIENTATION_PORTRAIT;
+    if (value.empty())
+    {
+        return fallback;
+    }
+    if (_stricmp(value.c_str(), "auto") == 0)
+    {
+        return SCREEN_ORIENTATION_AUTO;
+    }
+    if (_stricmp(value.c_str(), "landscape") == 0)
+    {
+        return SCREEN_ORIENTATION_LANDSCAPE;
+    }
+    if (_stricmp(value.c_str(), "portrait") == 0)
+    {
+        return SCREEN_ORIENTATION_PORTRAIT;
+    }
     return fallback;
 }
 
-static ScreenFillMode parseScreenFill(const std::string& value, ScreenFillMode fallback)
+static ScreenFillMode parseScreenFill(
+    const std::string& value, ScreenFillMode fallback)
 {
     if (fallback < SCREEN_FILL_ASPECT || fallback >= SCREEN_FILL_COUNT)
     {
         fallback = SCREEN_FILL_ASPECT;
     }
-    if (_stricmp(value.c_str(), "blurred") == 0) return SCREEN_FILL_BLURRED_EXTENSION;
-    if (_stricmp(value.c_str(), "stretch") == 0) return SCREEN_FILL_STRETCH;
-    if (_stricmp(value.c_str(), "aspect") == 0) return SCREEN_FILL_ASPECT;
+    if (_stricmp(value.c_str(), "blurred") == 0)
+    {
+        return SCREEN_FILL_BLURRED_EXTENSION;
+    }
+    if (_stricmp(value.c_str(), "stretch") == 0)
+    {
+        return SCREEN_FILL_STRETCH;
+    }
+    if (_stricmp(value.c_str(), "aspect") == 0)
+    {
+        return SCREEN_FILL_ASPECT;
+    }
+    return fallback;
+}
+
+static VirtualDpadType parseVirtualDpadType(
+    const std::string& value, VirtualDpadType fallback)
+{
+    if (fallback < VIRTUAL_DPAD_JOYSTICK || fallback >= VIRTUAL_DPAD_TYPE_COUNT)
+    {
+        fallback = VIRTUAL_DPAD_JOYSTICK;
+    }
+    if (strcasecmp(value.c_str(), "segmented_ring") == 0)
+    {
+        return VIRTUAL_DPAD_SEGMENTED_RING;
+    }
+    if (strcasecmp(value.c_str(), "joystick") == 0)
+    {
+        return VIRTUAL_DPAD_JOYSTICK;
+    }
     return fallback;
 }
 
@@ -482,6 +523,10 @@ static bool recentAppPathsMatch(const std::string& a, const std::string& b)
 
 static UiLanguage parseUiLanguage(const std::string& value, UiLanguage fallback)
 {
+    if (fallback < UI_LANGUAGE_CHINESE || fallback >= UI_LANGUAGE_COUNT)
+    {
+        fallback = UI_LANGUAGE_CHINESE;
+    }
     if (value.empty())
     {
         return fallback;
@@ -772,10 +817,14 @@ static bool writeOrderedSettingsFile(const EmulatorSettings& settings, const std
     appendIniValue(&text, L"fullscreen", settings.fullscreen);
     appendIniValue(&text, L"anti_aliasing", emulatorAntiAliasingName(settings.antiAliasing));
     appendIniValue(&text, L"effect", emulatorColorEffectName(settings.colorEffect));
-    appendIniValue(&text, L"brightness", clampInt(settings.brightnessPercent, 50, 150));
-    appendIniValue(&text, L"contrast", clampInt(settings.contrastPercent, 50, 150));
-    appendIniValue(&text, L"gamma", clampInt(settings.gammaPercent, 50, 150));
-    appendIniValue(&text, L"saturation", clampInt(settings.saturationPercent, 0, 200));
+    appendIniValue(&text, L"brightness", normalizeIntPreset(
+        settings.brightnessPercent, EMULATOR_VIDEO_PERCENT_VALUES, 100));
+    appendIniValue(&text, L"contrast", normalizeIntPreset(
+        settings.contrastPercent, EMULATOR_VIDEO_PERCENT_VALUES, 100));
+    appendIniValue(&text, L"gamma", normalizeIntPreset(
+        settings.gammaPercent, EMULATOR_VIDEO_PERCENT_VALUES, 100));
+    appendIniValue(&text, L"saturation", normalizeIntPreset(
+        settings.saturationPercent, EMULATOR_VIDEO_PERCENT_VALUES, 100));
     appendIniValue(&text, L"minimized_behavior", emulatorMinimizedBehaviorName(settings.minimizedBehavior));
     appendIniValue(&text, L"screen_orientation",
         emulatorScreenOrientationName(settings.screenOrientationMode));
@@ -788,7 +837,8 @@ static bool writeOrderedSettingsFile(const EmulatorSettings& settings, const std
     const DigitalNoiseReductionLevel digitalNoiseReduction =
         normalizeDigitalNoiseReductionLevel(
             settings.digitalNoiseReduction, DIGITAL_NOISE_REDUCTION_HIGH);
-    appendIniValue(&text, L"volume_percent", clampInt(settings.audioVolumePercent, 0, 150));
+    appendIniValue(&text, L"volume_percent", normalizeIntPreset(
+        settings.audioVolumePercent, EMULATOR_AUDIO_VOLUME_VALUES, 100));
     appendIniValue(&text, L"buffer_samples", normalizeAudioBufferSamples(settings.audioBufferSamples, 2048));
     appendIniValue(&text, L"buffer_latency", emulatorAudioBufferLatencyName(
         normalizeAudioBufferLatencyMode(settings.audioBufferLatency, AUDIO_BUFFER_LATENCY_AUTO)));
@@ -802,15 +852,17 @@ static bool writeOrderedSettingsFile(const EmulatorSettings& settings, const std
     appendIniValue(&text, L"show_virtual_controls", settings.showVirtualControls);
     appendIniValue(&text, L"virtual_control_scale", normalizeIntPreset(
         settings.virtualControlScalePercent, EMULATOR_VIRTUAL_CONTROL_SCALE_VALUES, 100));
+    appendIniValue(&text, L"virtual_dpad_type",
+        emulatorVirtualDpadTypeName(settings.virtualDpadType));
     appendIniValue(&text, L"keyboard_mapping", settings.keyboardMapping);
     appendIniValue(&text, L"controller_mapping", settings.controllerMapping);
     appendIniValue(&text, L"controller_calibration", settings.controllerCalibration);
 
     appendIniSection(&text, L"runtime");
     appendIniValue(&text, L"backend", runtimeExecutionModeConfigValue(settings.executionMode));
-    appendIniValue(&text, L"cpu_hz", settings.cpuClockHz);
-    appendIniValue(&text, L"speed_scale", settings.runtimeSpeedScale);
-    appendIniValue(&text, L"ostimedly_scale", settings.osTimeDelayScale);
+    appendIniValue(&text, L"cpu_hz", normalizeCpuClockHz(settings.cpuClockHz, ""));
+    appendIniValue(&text, L"speed_scale", normalizeScaleValue(settings.runtimeSpeedScale, ""));
+    appendIniValue(&text, L"ostimedly_scale", normalizeScaleValue(settings.osTimeDelayScale, ""));
     appendIniValue(&text, L"cheats_enabled", settings.cheatsEnabled);
 
     if (hasWritableCheatSelection(settings.cheatSelections))
@@ -1215,6 +1267,31 @@ static void setEnvValue(const char* name, const std::string& value)
 #endif
 }
 
+struct StartupEnvironmentOverride
+{
+    bool present;
+    std::string value;
+};
+
+static StartupEnvironmentOverride captureStartupEnvironmentOverride(const char* name)
+{
+    const char* value = name ? getenv(name) : NULL;
+    StartupEnvironmentOverride result = {};
+    result.present = value != NULL;
+    if (value)
+    {
+        result.value = value;
+    }
+    return result;
+}
+
+static void setConfiguredEnvironmentValue(const char* name,
+    const std::string& configuredValue,
+    const StartupEnvironmentOverride& startupOverride)
+{
+    setEnvValue(name, startupOverride.present ? startupOverride.value : configuredValue);
+}
+
 EmulatorSettings emulatorDefaultSettings(void)
 {
     EmulatorSettings settings;
@@ -1244,6 +1321,7 @@ EmulatorSettings emulatorDefaultSettings(void)
     settings.systemImeDisabled = true;
     settings.showVirtualControls = false;
     settings.virtualControlScalePercent = 100;
+    settings.virtualDpadType = VIRTUAL_DPAD_JOYSTICK;
     settings.keyboardMapping = "";
     settings.controllerMapping = "";
     settings.controllerCalibration = "";
@@ -1266,6 +1344,10 @@ EmulatorSettings emulatorDefaultSettings(void)
 
 std::string emulatorSettingsPath(void)
 {
+    if (!g_settingsPathOverride.empty())
+    {
+        return g_settingsPathOverride;
+    }
 #ifdef _WIN32
     wchar_t modulePath[MAX_PATH] = {};
     GetModuleFileNameW(NULL, modulePath, MAX_PATH);
@@ -1280,6 +1362,31 @@ std::string emulatorSettingsPath(void)
 #else
     return "DingooPie.ini";
 #endif
+}
+
+void emulatorSetSettingsPathOverride(const std::string& path)
+{
+    if (path.empty())
+    {
+        g_settingsPathOverride.clear();
+        return;
+    }
+#ifdef _WIN32
+    std::wstring pathW = platformUtf8ToWide(path);
+    DWORD size = GetFullPathNameW(pathW.c_str(), 0, NULL, NULL);
+    if (size > 0)
+    {
+        std::wstring absolutePath((size_t)size, L'\0');
+        DWORD written = GetFullPathNameW(pathW.c_str(), size, &absolutePath[0], NULL);
+        if (written > 0 && written < size)
+        {
+            absolutePath.resize(written);
+            g_settingsPathOverride = platformWideToUtf8(absolutePath);
+            return;
+        }
+    }
+#endif
+    g_settingsPathOverride = path;
 }
 
 EmulatorSettings emulatorLoadSettings(void)
@@ -1310,35 +1417,32 @@ EmulatorSettings emulatorLoadSettings(void)
     settings.antiAliasing = parseAntiAliasingMode(antiAliasing, defaults.antiAliasing);
     std::string effect = readIniString("video", "effect", emulatorColorEffectName(defaults.colorEffect), path);
     settings.colorEffect = parseColorEffectMode(effect, defaults.colorEffect);
-    settings.brightnessPercent = clampInt(readIniInt("video", "brightness", defaults.brightnessPercent, path), 50, 150);
-    settings.contrastPercent = clampInt(readIniInt("video", "contrast", defaults.contrastPercent, path), 50, 150);
-    settings.gammaPercent = clampInt(readIniInt("video", "gamma", defaults.gammaPercent, path), 50, 150);
-    settings.saturationPercent = clampInt(readIniInt("video", "saturation", defaults.saturationPercent, path), 0, 200);
+    settings.brightnessPercent = normalizeIntPreset(
+        readIniInt("video", "brightness", defaults.brightnessPercent, path),
+        EMULATOR_VIDEO_PERCENT_VALUES, defaults.brightnessPercent);
+    settings.contrastPercent = normalizeIntPreset(
+        readIniInt("video", "contrast", defaults.contrastPercent, path),
+        EMULATOR_VIDEO_PERCENT_VALUES, defaults.contrastPercent);
+    settings.gammaPercent = normalizeIntPreset(
+        readIniInt("video", "gamma", defaults.gammaPercent, path),
+        EMULATOR_VIDEO_PERCENT_VALUES, defaults.gammaPercent);
+    settings.saturationPercent = normalizeIntPreset(
+        readIniInt("video", "saturation", defaults.saturationPercent, path),
+        EMULATOR_VIDEO_PERCENT_VALUES, defaults.saturationPercent);
     std::string minimizedBehavior = readIniString("video", "minimized_behavior", emulatorMinimizedBehaviorName(defaults.minimizedBehavior), path);
     settings.minimizedBehavior = parseMinimizedBehavior(minimizedBehavior, defaults.minimizedBehavior);
-    std::string screenOrientation = readIniString("video", "screen_orientation", "", path);
-    if (screenOrientation.empty())
-    {
-        bool legacyPortrait = parseBoolText(readIniString(
-            "video", "portrait", defaults.portraitMode ? "1" : "0", path).c_str(),
-            defaults.portraitMode);
-        settings.screenOrientationMode = legacyPortrait ?
-            SCREEN_ORIENTATION_PORTRAIT : SCREEN_ORIENTATION_LANDSCAPE;
-    }
-    else
-    {
-        settings.screenOrientationMode = parseScreenOrientationMode(
-            screenOrientation, defaults.screenOrientationMode);
-    }
+    settings.screenOrientationMode = parseScreenOrientationMode(
+        readIniString("video", "screen_orientation",
+            emulatorScreenOrientationName(defaults.screenOrientationMode), path),
+        defaults.screenOrientationMode);
     settings.screenFill = parseScreenFill(readIniString(
         "video", "screen_fill", emulatorScreenFillName(defaults.screenFill), path),
         defaults.screenFill);
     settings.showFps = parseBoolText(readIniString("video", "show_fps", defaults.showFps ? "1" : "0", path).c_str(), defaults.showFps);
 
-    settings.audioVolumePercent = clampInt(
+    settings.audioVolumePercent = normalizeIntPreset(
         readIniInt("audio", "volume_percent", defaults.audioVolumePercent, path),
-        0,
-        150);
+        EMULATOR_AUDIO_VOLUME_VALUES, defaults.audioVolumePercent);
     settings.audioBufferSamples = normalizeAudioBufferSamples(
         readIniInt("audio", "buffer_samples", defaults.audioBufferSamples, path),
         defaults.audioBufferSamples);
@@ -1371,6 +1475,10 @@ EmulatorSettings emulatorLoadSettings(void)
     settings.virtualControlScalePercent = normalizeIntPreset(
         readIniInt("input", "virtual_control_scale", defaults.virtualControlScalePercent, path),
         EMULATOR_VIRTUAL_CONTROL_SCALE_VALUES, defaults.virtualControlScalePercent);
+    settings.virtualDpadType = parseVirtualDpadType(readIniString(
+        "input", "virtual_dpad_type",
+        emulatorVirtualDpadTypeName(defaults.virtualDpadType), path),
+        defaults.virtualDpadType);
     settings.keyboardMapping = readIniString("input", "keyboard_mapping", defaults.keyboardMapping.c_str(), path);
     settings.controllerMapping = readIniString("input", "controller_mapping", defaults.controllerMapping.c_str(), path);
     settings.controllerCalibration = readIniString(
@@ -1438,10 +1546,14 @@ bool emulatorSaveSettings(const EmulatorSettings& settings)
     ok = writeIniString("video", "fullscreen", settings.fullscreen ? "1" : "0", path) && ok;
     ok = writeIniString("video", "anti_aliasing", emulatorAntiAliasingName(settings.antiAliasing), path) && ok;
     ok = writeIniString("video", "effect", emulatorColorEffectName(settings.colorEffect), path) && ok;
-    ok = writeIniString("video", "brightness", std::to_string(clampInt(settings.brightnessPercent, 50, 150)), path) && ok;
-    ok = writeIniString("video", "contrast", std::to_string(clampInt(settings.contrastPercent, 50, 150)), path) && ok;
-    ok = writeIniString("video", "gamma", std::to_string(clampInt(settings.gammaPercent, 50, 150)), path) && ok;
-    ok = writeIniString("video", "saturation", std::to_string(clampInt(settings.saturationPercent, 0, 200)), path) && ok;
+    ok = writeIniInt("video", "brightness", normalizeIntPreset(
+        settings.brightnessPercent, EMULATOR_VIDEO_PERCENT_VALUES, 100), path) && ok;
+    ok = writeIniInt("video", "contrast", normalizeIntPreset(
+        settings.contrastPercent, EMULATOR_VIDEO_PERCENT_VALUES, 100), path) && ok;
+    ok = writeIniInt("video", "gamma", normalizeIntPreset(
+        settings.gammaPercent, EMULATOR_VIDEO_PERCENT_VALUES, 100), path) && ok;
+    ok = writeIniInt("video", "saturation", normalizeIntPreset(
+        settings.saturationPercent, EMULATOR_VIDEO_PERCENT_VALUES, 100), path) && ok;
     ok = writeIniString("video", "minimized_behavior", emulatorMinimizedBehaviorName(settings.minimizedBehavior), path) && ok;
     ok = writeIniString("video", "screen_orientation",
         emulatorScreenOrientationName(settings.screenOrientationMode), path) && ok;
@@ -1453,11 +1565,8 @@ bool emulatorSaveSettings(const EmulatorSettings& settings)
     const DigitalNoiseReductionLevel digitalNoiseReduction =
         normalizeDigitalNoiseReductionLevel(
             settings.digitalNoiseReduction, DIGITAL_NOISE_REDUCTION_HIGH);
-    ok = writeIniString(
-        "audio",
-        "volume_percent",
-        std::to_string(clampInt(settings.audioVolumePercent, 0, 150)),
-        path) && ok;
+    ok = writeIniInt("audio", "volume_percent", normalizeIntPreset(
+        settings.audioVolumePercent, EMULATOR_AUDIO_VOLUME_VALUES, 100), path) && ok;
     ok = writeIniString(
         "audio",
         "buffer_samples",
@@ -1474,13 +1583,18 @@ bool emulatorSaveSettings(const EmulatorSettings& settings)
     ok = writeIniString("input", "show_virtual_controls", settings.showVirtualControls ? "1" : "0", path) && ok;
     ok = writeIniInt("input", "virtual_control_scale", normalizeIntPreset(
         settings.virtualControlScalePercent, EMULATOR_VIRTUAL_CONTROL_SCALE_VALUES, 100), path) && ok;
+    ok = writeIniString("input", "virtual_dpad_type",
+        emulatorVirtualDpadTypeName(settings.virtualDpadType), path) && ok;
     ok = writeIniString("input", "keyboard_mapping", settings.keyboardMapping, path) && ok;
     ok = writeIniString("input", "controller_mapping", settings.controllerMapping, path) && ok;
     ok = writeIniString("input", "controller_calibration", settings.controllerCalibration, path) && ok;
     ok = writeIniString("runtime", "backend", runtimeExecutionModeConfigValue(settings.executionMode), path) && ok;
-    ok = writeIniString("runtime", "cpu_hz", settings.cpuClockHz, path) && ok;
-    ok = writeIniString("runtime", "speed_scale", settings.runtimeSpeedScale, path) && ok;
-    ok = writeIniString("runtime", "ostimedly_scale", settings.osTimeDelayScale, path) && ok;
+    ok = writeIniString("runtime", "cpu_hz",
+        normalizeCpuClockHz(settings.cpuClockHz, ""), path) && ok;
+    ok = writeIniString("runtime", "speed_scale",
+        normalizeScaleValue(settings.runtimeSpeedScale, ""), path) && ok;
+    ok = writeIniString("runtime", "ostimedly_scale",
+        normalizeScaleValue(settings.osTimeDelayScale, ""), path) && ok;
     ok = writeIniString("runtime", "cheats_enabled", settings.cheatsEnabled ? "1" : "0", path) && ok;
     for (size_t i = 0; i < settings.cheatSelections.size(); ++i)
     {
@@ -1647,6 +1761,11 @@ void emulatorTraceSettings(const char* reason, const EmulatorSettings& settings)
     const char* label = (reason && reason[0]) ? reason : "snapshot";
     const AudioEffectMode audioEffect =
         normalizeAudioEffectMode(settings.audioEffect, AUDIO_EFFECT_OFF);
+    const std::string cpuClockHz = normalizeCpuClockHz(settings.cpuClockHz, "");
+    const std::string runtimeSpeedScale =
+        normalizeScaleValue(settings.runtimeSpeedScale, "");
+    const std::string osTimeDelayScale =
+        normalizeScaleValue(settings.osTimeDelayScale, "");
     printf("settings-trace:%s recent.last_app=\"%s\"\n",
         label,
         settings.lastAppPath.empty() ? "(empty)" : settings.lastAppPath.c_str());
@@ -1665,10 +1784,10 @@ void emulatorTraceSettings(const char* reason, const EmulatorSettings& settings)
         settings.fullscreen ? 1u : 0u,
         emulatorAntiAliasingName(settings.antiAliasing),
         emulatorColorEffectName(settings.colorEffect),
-        clampInt(settings.brightnessPercent, 50, 150),
-        clampInt(settings.contrastPercent, 50, 150),
-        clampInt(settings.gammaPercent, 50, 150),
-        clampInt(settings.saturationPercent, 0, 200),
+        normalizeIntPreset(settings.brightnessPercent, EMULATOR_VIDEO_PERCENT_VALUES, 100),
+        normalizeIntPreset(settings.contrastPercent, EMULATOR_VIDEO_PERCENT_VALUES, 100),
+        normalizeIntPreset(settings.gammaPercent, EMULATOR_VIDEO_PERCENT_VALUES, 100),
+        normalizeIntPreset(settings.saturationPercent, EMULATOR_VIDEO_PERCENT_VALUES, 100),
         emulatorMinimizedBehaviorName(settings.minimizedBehavior),
         emulatorScreenOrientationName(settings.screenOrientationMode),
         emulatorScreenFillName(settings.screenFill),
@@ -1678,28 +1797,29 @@ void emulatorTraceSettings(const char* reason, const EmulatorSettings& settings)
             settings.digitalNoiseReduction, DIGITAL_NOISE_REDUCTION_HIGH);
     printf("settings-trace:%s audio.volume_percent=%d audio.buffer_samples=%d audio.buffer_latency=%s audio.effect=%s audio.digital_noise_reduction=%s audio.audio_disabled=%u\n",
         label,
-        clampInt(settings.audioVolumePercent, 0, 150),
+        normalizeIntPreset(settings.audioVolumePercent, EMULATOR_AUDIO_VOLUME_VALUES, 100),
         normalizeAudioBufferSamples(settings.audioBufferSamples, 2048),
         emulatorAudioBufferLatencyName(normalizeAudioBufferLatencyMode(
             settings.audioBufferLatency, AUDIO_BUFFER_LATENCY_AUTO)),
         emulatorAudioEffectName(audioEffect),
         emulatorDigitalNoiseReductionName(digitalNoiseReduction),
         settings.audioDisabled ? 1u : 0u);
-    printf("settings-trace:%s input.system_ime_disabled=%u input.show_virtual_controls=%u input.virtual_control_scale=%d input.keyboard_mapping=\"%s\" input.controller_mapping=\"%s\" input.controller_calibration=\"%s\"\n",
+    printf("settings-trace:%s input.system_ime_disabled=%u input.show_virtual_controls=%u input.virtual_control_scale=%d input.virtual_dpad_type=%s input.keyboard_mapping=\"%s\" input.controller_mapping=\"%s\" input.controller_calibration=\"%s\"\n",
         label,
         settings.systemImeDisabled ? 1u : 0u,
         settings.showVirtualControls ? 1u : 0u,
         normalizeIntPreset(settings.virtualControlScalePercent,
             EMULATOR_VIRTUAL_CONTROL_SCALE_VALUES, 100),
+        emulatorVirtualDpadTypeName(settings.virtualDpadType),
         settings.keyboardMapping.empty() ? "(default)" : settings.keyboardMapping.c_str(),
         settings.controllerMapping.empty() ? "(default)" : settings.controllerMapping.c_str(),
         settings.controllerCalibration.empty() ? "(default)" : settings.controllerCalibration.c_str());
     printf("settings-trace:%s runtime.backend=%s runtime.cpu_hz=%s runtime.speed_scale=%s runtime.ostimedly_scale=%s runtime.cheats_enabled=%u\n",
         label,
         runtimeExecutionModeName(settings.executionMode),
-        settings.cpuClockHz.empty() ? "auto" : settings.cpuClockHz.c_str(),
-        settings.runtimeSpeedScale.empty() ? "auto" : settings.runtimeSpeedScale.c_str(),
-        settings.osTimeDelayScale.empty() ? "auto" : settings.osTimeDelayScale.c_str(),
+        cpuClockHz.empty() ? "auto" : cpuClockHz.c_str(),
+        runtimeSpeedScale.empty() ? "auto" : runtimeSpeedScale.c_str(),
+        osTimeDelayScale.empty() ? "auto" : osTimeDelayScale.c_str(),
         settings.cheatsEnabled ? 1u : 0u);
     for (size_t i = 0; i < settings.cheatSelections.size(); ++i)
     {
@@ -1730,13 +1850,26 @@ bool emulatorResetSettings(void)
 
 void emulatorApplySettingsToEnvironment(const EmulatorSettings& settings)
 {
-    setEnvValue("DINGOO_PIE_BACKEND", runtimeExecutionModeConfigValue(settings.executionMode));
-    setEnvValue("DINGOO_PIE_IRJIT_CLOCK_HZ", settings.cpuClockHz);
+    static const StartupEnvironmentOverride backendOverride =
+        captureStartupEnvironmentOverride("DINGOO_PIE_BACKEND");
+    static const StartupEnvironmentOverride cpuClockOverride =
+        captureStartupEnvironmentOverride("DINGOO_PIE_IRJIT_CLOCK_HZ");
+    static const StartupEnvironmentOverride runtimeSpeedOverride =
+        captureStartupEnvironmentOverride("DINGOO_PIE_RUNTIME_SPEED_SCALE");
+    static const StartupEnvironmentOverride delayScaleOverride =
+        captureStartupEnvironmentOverride("DINGOO_PIE_OSTIMEDLY_SCALE");
+
+    setConfiguredEnvironmentValue("DINGOO_PIE_BACKEND",
+        runtimeExecutionModeConfigValue(settings.executionMode), backendOverride);
+    setConfiguredEnvironmentValue("DINGOO_PIE_IRJIT_CLOCK_HZ",
+        normalizeCpuClockHz(settings.cpuClockHz, ""), cpuClockOverride);
 
     // Empty runtimeSpeedScale is the menu/INI "Auto" preset. Runtime code maps
     // Auto to the chosen global pace while keeping the UI checked on Auto.
-    setEnvValue("DINGOO_PIE_RUNTIME_SPEED_SCALE", settings.runtimeSpeedScale);
-    setEnvValue("DINGOO_PIE_OSTIMEDLY_SCALE", settings.osTimeDelayScale);
+    setConfiguredEnvironmentValue("DINGOO_PIE_RUNTIME_SPEED_SCALE",
+        normalizeScaleValue(settings.runtimeSpeedScale, ""), runtimeSpeedOverride);
+    setConfiguredEnvironmentValue("DINGOO_PIE_OSTIMEDLY_SCALE",
+        normalizeScaleValue(settings.osTimeDelayScale, ""), delayScaleOverride);
     setEnvValue("DINGOO_PIE_AUDIO_DISABLED", settings.audioDisabled ? "1" : "");
     setEnvValue("DINGOO_PIE_PROFILE", settings.debugProfile || runtimeLogExternalProfileEnabled() ? "1" : "");
     runtimeLogSetProfileEnabled(settings.debugProfile);
@@ -1898,5 +2031,17 @@ const char* emulatorScreenFillName(ScreenFillMode fill)
     case SCREEN_FILL_ASPECT:
     default:
         return "aspect";
+    }
+}
+
+const char* emulatorVirtualDpadTypeName(VirtualDpadType type)
+{
+    switch (type)
+    {
+    case VIRTUAL_DPAD_SEGMENTED_RING:
+        return "segmented_ring";
+    case VIRTUAL_DPAD_JOYSTICK:
+    default:
+        return "joystick";
     }
 }

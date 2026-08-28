@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <vector>
 #include "shared/services/guest_package.h"
 #include "app/cpu/mips_runtime.h"

@@ -13,6 +13,10 @@ static const int EMULATOR_VIRTUAL_CONTROL_SCALE_VALUES[] = { 75, 100, 125, 150 }
 static const char* const EMULATOR_CPU_CLOCK_VALUES[] = {
     "", "200000000", "336000000", "360000000", "400000000", "430000000"
 };
+static const char* const EMULATOR_SCALE_VALUES[] = {
+    "", "1.0", "0.95", "0.90", "0.85", "0.80", "0.75", "0.70", "0.65",
+    "0.60", "0.55", "0.50", "0.45", "0.40", "0.35", "0.30", "0.25", "0.20"
+};
 
 enum
 {
@@ -64,6 +68,13 @@ enum ScreenFillMode
     SCREEN_FILL_BLURRED_EXTENSION,
     SCREEN_FILL_STRETCH,
     SCREEN_FILL_COUNT
+};
+
+enum VirtualDpadType
+{
+    VIRTUAL_DPAD_JOYSTICK = 0,
+    VIRTUAL_DPAD_SEGMENTED_RING,
+    VIRTUAL_DPAD_TYPE_COUNT
 };
 
 enum AudioBufferLatencyMode
@@ -186,6 +197,7 @@ struct EmulatorSettings
     bool systemImeDisabled;
     bool showVirtualControls;
     int virtualControlScalePercent;
+    VirtualDpadType virtualDpadType;
     std::string keyboardMapping;
     std::string controllerMapping;
     std::string controllerCalibration;
@@ -210,6 +222,7 @@ struct EmulatorSettings
 
 EmulatorSettings emulatorDefaultSettings(void);
 std::string emulatorSettingsPath(void);
+void emulatorSetSettingsPathOverride(const std::string& path);
 EmulatorSettings emulatorLoadSettings(void);
 bool emulatorSaveSettings(const EmulatorSettings& settings);
 bool emulatorRememberRecentApp(EmulatorSettings* settings, const std::string& appPath);
@@ -236,5 +249,6 @@ const char* emulatorUiLanguageName(UiLanguage language);
 const char* emulatorMinimizedBehaviorName(MinimizedBehavior behavior);
 const char* emulatorScreenOrientationName(ScreenOrientationMode mode);
 const char* emulatorScreenFillName(ScreenFillMode fill);
+const char* emulatorVirtualDpadTypeName(VirtualDpadType type);
 
 #endif

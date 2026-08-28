@@ -15,13 +15,11 @@
 
 static bool traceIrJitBackend(void)
 {
-    static int enabled = -1;
-    if (enabled < 0)
-    {
+    static const bool enabled = []() {
         const char* value = getenv("DINGOO_PIE_IRJIT_TRACE");
-        enabled = value && value[0] && strcmp(value, "0") != 0 ? 1 : 0;
-    }
-    return enabled != 0;
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled;
 }
 
 #ifdef DINGOO_PIE_ENABLE_PPSSPP_IRJIT
@@ -190,7 +188,10 @@ RuntimeError ppssppIrJitStart(NativeRuntime* runtime, uint64_t begin, uint64_t u
         {
             printf("ppsspp-irjit: compiling block at 0x%08x\n", (uint32_t)begin);
         }
-        jit.Compile((uint32_t)begin);
+        {
+            std::lock_guard<std::recursive_mutex> guard(MIPSComp::jitLock);
+            jit.Compile((uint32_t)begin);
+        }
         if (traceIrJitBackend())
         {
             printf("ppsspp-irjit: entering dispatcher at 0x%08x\n", state.pc);

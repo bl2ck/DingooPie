@@ -22,6 +22,7 @@ struct InputState
 
 static InputState g_inputState = { 0 };
 static uint32_t g_syntheticStatus = 0;
+static uint32_t g_deferredRelease = 0;
 static SDL_mutex* g_inputMutex = NULL;
 
 static SDL_mutex* inputMutex(void)
@@ -57,13 +58,11 @@ static void unlockInput(void)
 
 static bool inputTraceEnabled(void)
 {
-    static int enabled = -1;
-    if (enabled < 0)
-    {
+    static const bool enabled = []() {
         const char* value = getenv("DINGOO_PIE_INPUT_TRACE");
-        enabled = (value && value[0] && value[0] != '0') ? 1 : 0;
-    }
-    return enabled != 0;
+        return value && value[0] && value[0] != '0';
+    }();
+    return enabled;
 }
 
 void inputApplyKeyboardMapping(const std::string& mapping)
@@ -104,12 +103,20 @@ void _kbd_get_status(GuestKeyStatus* ks)
     ks->status = g_inputState.status;
     g_inputState.pressed = 0;
     g_inputState.released = 0;
+    if (g_deferredRelease)
+    {
+        g_inputState.released |= g_deferredRelease;
+        g_inputState.status &= ~g_deferredRelease;
+        g_inputState.systemEventPending = 1;
+        g_deferredRelease = 0;
+    }
     unlockInput();
 
     if (inputTraceEnabled() && (ks->pressed || ks->released || ks->status))
     {
         printf("input: _kbd_get_status pressed=0x%08lX released=0x%08lX status=0x%08lX\n",
-            ks->pressed, ks->released, ks->status);
+            (unsigned long)ks->pressed, (unsigned long)ks->released,
+            (unsigned long)ks->status);
     }
 }
 
@@ -117,6 +124,13 @@ uint32_t _kbd_get_key(void)
 {
     lockInput();
     uint32_t ret = g_inputState.status;
+    if (g_deferredRelease)
+    {
+        g_inputState.released |= g_deferredRelease;
+        g_inputState.status &= ~g_deferredRelease;
+        g_inputState.systemEventPending = 1;
+        g_deferredRelease = 0;
+    }
     unlockInput();
 
     if (inputTraceEnabled() && ret)
@@ -148,6 +162,7 @@ static void updateKeyLocked(int pressed, uint32_t key)
     uint32_t mask = (1u << key);
     if (pressed)
     {
+        g_deferredRelease &= ~mask;
         if ((g_inputState.status & mask) == 0)
         {
             g_inputState.pressed |= mask;
@@ -160,10 +175,17 @@ static void updateKeyLocked(int pressed, uint32_t key)
     {
         if (g_inputState.status & mask)
         {
-            g_inputState.released |= mask;
-            g_inputState.systemEventPending = 1;
+            if (g_inputState.pressed & mask)
+            {
+                g_deferredRelease |= mask;
+            }
+            else
+            {
+                g_inputState.released |= mask;
+                g_inputState.status &= ~mask;
+                g_inputState.systemEventPending = 1;
+            }
         }
-        g_inputState.status &= ~mask;
     }
 }
 
@@ -256,6 +278,7 @@ static bool updateBindingFromVirtualKey(bool pressed, int virtualKey)
 void inputClearControls(void)
 {
     lockInput();
+    g_deferredRelease = 0;
     uint32_t released = g_inputState.status;
     if (released)
     {
@@ -300,6 +323,7 @@ void inputResetTransientControls(void)
     InputState before = g_inputState;
     uint32_t syntheticBefore = g_syntheticStatus;
     g_syntheticStatus = 0;
+    g_deferredRelease = 0;
     memset(&g_inputState, 0, sizeof(g_inputState));
     unlockInput();
 

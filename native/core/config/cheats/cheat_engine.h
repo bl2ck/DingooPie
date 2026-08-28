@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include <string>
 #include <vector>
@@ -58,6 +59,7 @@ typedef bool (*CheatWriteCallback)(void* userData, uint32_t address, const void*
 
 void cheatClearSet(CheatSet* set);
 bool cheatParseText(const std::string& text, const std::string& sourcePath, CheatSet* out, std::string* error);
+bool cheatLoadStream(FILE* file, const std::string& sourcePath, CheatSet* out, std::string* error);
 bool cheatLoadFile(const std::string& path, CheatSet* out, std::string* error);
 bool cheatSetMatchesApp(const CheatSet& set, const char* appSha256);
 CheatApplyStats cheatApply(CheatSet* set, CheatReadCallback readCallback, CheatWriteCallback writeCallback,

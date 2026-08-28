@@ -638,7 +638,7 @@ void inputMappingUiOpenWindow(
     int height = 100 + kInputMappingRowCount * 34 + 112;
     g_inputMappingWindow = CreateWindowExW(WS_EX_CONTROLPARENT,
         L"DingooPieInputMappingWindow",
-        zh ? L"\u6309\u952e\u624b\u67c4\u6620\u5c04" : L"Input Mapping",
+        zh ? L"\u952e\u76d8\u4e0e\u624b\u67c4\u6620\u5c04" : L"Input Mapping",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, width, height,
         NULL, NULL, GetModuleHandleW(NULL), NULL);
@@ -686,9 +686,9 @@ void inputMappingUiOpenWindow(
     bottomY += 36;
     createInputMappingChild(g_inputMappingWindow, L"STATIC", L"",
         0, SS_ENDELLIPSIS | SS_NOPREFIX, 18, bottomY, 620, 24, kInputMappingIdStatus);
-    createInputMappingChild(g_inputMappingWindow, L"BUTTON", zh ? L"\u6062\u590d\u952e\u76d8\u9ed8\u8ba4" : L"Reset Keyboard",
+    createInputMappingChild(g_inputMappingWindow, L"BUTTON", zh ? L"\u6062\u590d\u9ed8\u8ba4\u952e\u76d8" : L"Reset Keyboard",
         0, 0, 18, bottomY + 30, 136, 28, kInputMappingIdResetKeyboard);
-    createInputMappingChild(g_inputMappingWindow, L"BUTTON", zh ? L"\u6062\u590d\u9ed8\u8ba4\u6620\u5c04" : L"Reset Mapping",
+    createInputMappingChild(g_inputMappingWindow, L"BUTTON", zh ? L"\u6062\u590d\u9ed8\u8ba4\u624b\u67c4" : L"Reset Controller",
         0, 0, 162, bottomY + 30, 140, 28, kInputMappingIdResetController);
     createInputMappingChild(g_inputMappingWindow, L"BUTTON",
         zh ? L"\u6062\u590d\u9ed8\u8ba4\u6821\u51c6" : L"Reset Calibration",

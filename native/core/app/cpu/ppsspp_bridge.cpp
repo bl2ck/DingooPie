@@ -56,7 +56,6 @@ static NativeRuntime* g_ppssppRuntime = NULL;
 static uint64_t g_runtimeBeginTicks = 0;
 static uint64_t g_runtimeMaxTicks = 0;
 static bool g_logEnabled = true;
-static int g_irjitTraceEnabled = -1;
 static std::atomic<bool> g_ppssppProfileEnabled(false);
 static bool g_fastPageDirectEnabled = true;
 static int g_fastPageDirectOverride = -1;
@@ -209,6 +208,7 @@ std::recursive_mutex jitLock;
 
 void JitAt()
 {
+    std::lock_guard<std::recursive_mutex> guard(jitLock);
     if (jit && currentMIPS)
     {
         jit->Compile(currentMIPS->pc);
@@ -293,23 +293,20 @@ static uint32_t canonicalGuestAddress(uint32_t address)
 
 static bool irjitTraceEnabled()
 {
-    if (g_irjitTraceEnabled < 0)
-    {
+    static const bool enabled = []() {
         const char* value = getenv("DINGOO_PIE_IRJIT_TRACE");
-        g_irjitTraceEnabled = value && value[0] && strcmp(value, "0") != 0 ? 1 : 0;
-    }
-    return g_irjitTraceEnabled != 0;
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled;
 }
 
 static bool ppssppShimLogEnabled()
 {
-    static int enabled = -1;
-    if (enabled < 0)
-    {
+    static const bool enabled = []() {
         const char* value = getenv("DINGOO_PIE_IRJIT_LOG");
-        enabled = value && value[0] && strcmp(value, "0") != 0 ? 1 : 0;
-    }
-    return enabled != 0 || irjitTraceEnabled();
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled || irjitTraceEnabled();
 }
 
 static const char* describeCop0Fallback(uint32_t op)
@@ -1502,13 +1499,11 @@ static bool addressMatchesAny(uint32_t address, std::initializer_list<uint32_t> 
 
 static bool traceKbdCallersEnabled()
 {
-    static int enabled = -1;
-    if (enabled < 0)
-    {
+    static const bool enabled = []() {
         const char* value = getenv("DINGOO_PIE_TRACE_KBD_CALLERS");
-        enabled = (value && value[0] && value[0] != '0') ? 1 : 0;
-    }
-    return enabled != 0;
+        return value && value[0] && value[0] != '0';
+    }();
+    return enabled;
 }
 
 static bool writeFastKeyStatus(uint32_t address)

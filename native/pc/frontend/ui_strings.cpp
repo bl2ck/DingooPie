@@ -213,8 +213,14 @@ const wchar_t* uiText(UiLanguage language, UiTextId id)
         return zh ? L"\u663e\u793a\u865a\u62df\u6309\u952e(&V)" : L"Show Virtual Controls(&V)";
     case TXT_INPUT_VIRTUAL_CONTROL_SCALE:
         return zh ? L"\u865a\u62df\u6309\u952e\u5927\u5c0f(&S)" : L"Virtual Control Size(&S)";
+    case TXT_INPUT_VIRTUAL_DPAD_TYPE:
+        return zh ? L"\u65b9\u5411\u952e\u7c7b\u578b(&D)" : L"D-pad Type(&D)";
+    case TXT_INPUT_VIRTUAL_DPAD_JOYSTICK:
+        return zh ? L"\u6447\u6746(&J)" : L"Joystick(&J)";
+    case TXT_INPUT_VIRTUAL_DPAD_SEGMENTED_RING:
+        return zh ? L"\u5206\u533a\u73af(&R)" : L"Segmented Ring(&R)";
     case TXT_INPUT_MAPPING_WINDOW:
-        return zh ? L"\u6309\u952e\u624b\u67c4\u6620\u5c04(&K)..." : L"Input Mapping(&K)...";
+        return zh ? L"\u952e\u76d8\u4e0e\u624b\u67c4\u6620\u5c04(&K)..." : L"Input Mapping(&K)...";
     case TXT_ROOT_SETTINGS:
         return zh ? L"\u8bbe\u7f6e(&S)" : L"Settings(&S)";
     case TXT_SETTINGS_EXECUTION_MODE:
@@ -258,7 +264,7 @@ const wchar_t* uiText(UiLanguage language, UiTextId id)
         return zh ? L"\u8bbe\u7f6e\u5df2\u6062\u590d\uff0c\u4f46\u65e0\u6cd5\u4fdd\u5b58\u3002" :
             L"Settings restored, but could not be saved.";
     case TXT_ROOT_DEBUG:
-        return zh ? L"\u8c03\u8bd5\u5668(&D)" : L"Debugger(&D)";
+        return zh ? L"\u8c03\u8bd5(&D)" : L"Debug(&D)";
     case TXT_DEBUG_CONSOLE:
         return zh ? L"\u663e\u793a\u8c03\u8bd5\u63a7\u5236\u53f0(&C)" : L"Show Debug Console(&C)";
     case TXT_DEBUG_PROFILE:
@@ -278,8 +284,12 @@ const wchar_t* uiText(UiLanguage language, UiTextId id)
         return zh ? L"\u8c03\u8bd5\u5668(&G)..." : L"Debugger(&G)...";
     case TXT_ROOT_HELP:
         return zh ? L"\u5e2e\u52a9(&H)" : L"Help(&H)";
+    case TXT_HELP_AUTHOR_HOMEPAGE:
+        return zh ? L"\u4f5c\u8005\u4e3b\u9875(&G)" : L"Author Homepage(&G)";
+    case TXT_HELP_PROJECT_HOMEPAGE:
+        return zh ? L"\u9879\u76ee\u4e3b\u9875(&P)" : L"Project Homepage(&P)";
     case TXT_HELP_ABOUT:
-        return zh ? L"\u5173\u4e8e(&A)" : L"About(&A)";
+        return zh ? L"\u5173\u4e8e\u4e01\u679c\u6d3e(&A)" : L"About DingooPie(&A)";
     case TXT_ABOUT_TITLE:
         return zh ? L"\u5173\u4e8e \u4e01\u679c\u6d3e DingooPie" : L"About DingooPie";
     case TXT_ABOUT_BODY:

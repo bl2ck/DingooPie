@@ -1,4 +1,5 @@
 #include "runtime_resource_monitor.h"
+#include "app_package_resource_index.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -11,14 +12,9 @@ static RuntimeResourceMonitorSnapshot g_resourceMonitorSnapshot;
 static std::atomic<bool> g_resourceMonitorActive(false);
 static const uint32_t kResourceMonitorPreviewBytes = 32;
 
-struct RuntimePackageResourceLookup
-{
-    std::string name;
-    uint32_t offset;
-    uint32_t size;
-};
-
 static std::vector<RuntimePackageResourceLookup> g_packageResourceLookup;
+static GuestPackage* g_appPackage = NULL;
+static bool g_appPackageLookupBuilt = false;
 
 static bool resourceMonitorAutotestEnabled(void)
 {
@@ -343,6 +339,8 @@ void runtimeResourceMonitorReset(const char* appPath, const char* appSha256)
     g_resourceMonitorSnapshot.appSha256 = appSha256 ? appSha256 : "";
     g_resourceMonitorSnapshot.entries.clear();
     g_packageResourceLookup.clear();
+    g_appPackage = NULL;
+    g_appPackageLookupBuilt = false;
     g_resourceMonitorSnapshot.revision++;
     pthread_mutex_unlock(&g_resourceMonitorMutex);
 }
@@ -358,6 +356,8 @@ void runtimeResourceMonitorSetActive(bool active)
     pthread_mutex_lock(&g_resourceMonitorMutex);
     g_resourceMonitorSnapshot.entries.clear();
     g_packageResourceLookup.clear();
+    g_appPackage = NULL;
+    g_appPackageLookupBuilt = false;
     g_resourceMonitorSnapshot.revision++;
     pthread_mutex_unlock(&g_resourceMonitorMutex);
 }
@@ -391,6 +391,8 @@ void runtimeResourceMonitorSetGuestResources(GuestPackage* package)
     pthread_mutex_lock(&g_resourceMonitorMutex);
     uint32_t resourceCount = package ? package->resource_count : 0;
     g_packageResourceLookup.clear();
+    g_appPackage = NULL;
+    g_appPackageLookupBuilt = false;
     if (package)
     {
         for (uint32_t i = 0; i < package->resource_count; ++i)
@@ -402,6 +404,31 @@ void runtimeResourceMonitorSetGuestResources(GuestPackage* package)
     if (resourceMonitorAutotestEnabled())
     {
         printf("resource-monitor-autotest: seeded guest resources=%u snapshot=%u revision=%llu\n",
+            resourceCount,
+            (unsigned)g_resourceMonitorSnapshot.entries.size(),
+            (unsigned long long)g_resourceMonitorSnapshot.revision);
+    }
+    pthread_mutex_unlock(&g_resourceMonitorMutex);
+}
+
+void runtimeResourceMonitorSetAppResources(GuestPackage* package)
+{
+    pthread_mutex_lock(&g_resourceMonitorMutex);
+    uint32_t resourceCount = package ? package->resource_count : 0;
+    g_packageResourceLookup.clear();
+    g_appPackage = package;
+    g_appPackageLookupBuilt = false;
+    if (package)
+    {
+        for (uint32_t index = 0; index < package->resource_count; ++index)
+        {
+            ensureGuestMonitorEntryLocked(&package->resource_data[index]);
+        }
+    }
+    g_resourceMonitorSnapshot.revision++;
+    if (resourceMonitorAutotestEnabled())
+    {
+        printf("resource-monitor-autotest: seeded app resources=%u package_resources=deferred snapshot=%u revision=%llu\n",
             resourceCount,
             (unsigned)g_resourceMonitorSnapshot.entries.size(),
             (unsigned long long)g_resourceMonitorSnapshot.revision);
@@ -565,6 +592,16 @@ void runtimeResourceMonitorRecordPackageLoadContent(
     }
 
     pthread_mutex_lock(&g_resourceMonitorMutex);
+    if (!g_appPackageLookupBuilt && g_appPackage)
+    {
+        buildAppPackageResourceLookup(g_appPackage, &g_packageResourceLookup);
+        g_appPackageLookupBuilt = true;
+        if (resourceMonitorAutotestEnabled())
+        {
+            printf("resource-monitor-autotest: indexed app package resources=%u\n",
+                (unsigned)g_packageResourceLookup.size());
+        }
+    }
     RuntimeResourceMonitorEntry* item =
         ensurePackageMonitorEntryLocked(packageOffset, bytesRead);
     if (item)

@@ -129,24 +129,20 @@ static std::list<RuntimeDebugHookEntry> g_debugWriteHits;
 
 static bool debuggerAutotestEnabled(void)
 {
-    static int enabled = -1;
-    if (enabled < 0)
-    {
+    static const bool enabled = []() {
         const char* value = getenv("DINGOO_PIE_DEBUGGER_AUTOTEST");
-        enabled = value && value[0] && strcmp(value, "0") != 0 ? 1 : 0;
-    }
-    return enabled != 0;
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled;
 }
 
 static bool memorySearcherAutotestEnabled(void)
 {
-    static int enabled = -1;
-    if (enabled < 0)
-    {
+    static const bool enabled = []() {
         const char* value = getenv("DINGOO_PIE_MEMORY_SEARCHER_AUTOTEST");
-        enabled = value && value[0] && strcmp(value, "0") != 0 ? 1 : 0;
-    }
-    return enabled != 0;
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled;
 }
 
 static bool rangesOverlap(uint32_t aStart, uint32_t aSize, uint32_t bStart, uint32_t bSize)
@@ -415,6 +411,7 @@ static void destroyMainPackage(void)
     s_appDataSize = 0;
     s_appDataBuffer = NULL;
     pthread_mutex_unlock(&g_runtimeThreadMutex);
+    runtimeResourceMonitorSetAppResources(NULL);
     guestPackageDestroy(loadedApp);
 }
 
@@ -814,7 +811,7 @@ static void seedResourceMonitorForAppLocked(GuestPackage* loadedApp, bool preser
     {
         runtimeResourceMonitorReset(g_appLoadPath.c_str(), g_currentAppSha256.c_str());
     }
-    runtimeResourceMonitorSetGuestResources(loadedApp);
+    runtimeResourceMonitorSetAppResources(loadedApp);
 }
 
 static void seedResourceMonitorForAppIfCapturing(GuestPackage* loadedApp)
@@ -1064,6 +1061,7 @@ static NativeRuntime* initDingooPie(void)
     pthread_mutex_unlock(&g_runtimeThreadMutex);
     bridge_set_game_identity(appSha256.c_str());
     fsys_set_game_identity(appSha256.c_str());
+    fsys_set_game_name(g_appMainPath.c_str());
     std::string saveDirectory = platformGetAppSaveDirectory(
         g_appLoadPath, appSha256);
     fsys_set_save_directory(saveDirectory.c_str());

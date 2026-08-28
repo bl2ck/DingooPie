@@ -125,18 +125,12 @@ static void readRegisterHeader(const SaveStateRegisterHeader& in,
     out->fpcond = in.fpcond;
 }
 
-static std::string sha256Hex(const uint8_t* data, size_t size)
+static std::string digestHex(const uint8_t* digest, size_t size)
 {
     static const char kHex[] = "0123456789ABCDEF";
-    uint8_t digest[32] = {};
-    sha256_context context;
-    sha256_starts(&context);
-    sha256_update(&context, data, (uint32_t)size);
-    sha256_finish(&context, digest);
-
     std::string out;
-    out.resize(64);
-    for (size_t i = 0; i < sizeof(digest); ++i)
+    out.resize(size * 2);
+    for (size_t i = 0; i < size; ++i)
     {
         out[i * 2] = kHex[digest[i] >> 4];
         out[i * 2 + 1] = kHex[digest[i] & 0x0f];
@@ -144,10 +138,54 @@ static std::string sha256Hex(const uint8_t* data, size_t size)
     return out;
 }
 
+static std::string sha256Hex(const uint8_t* data, size_t size)
+{
+    uint8_t digest[32] = {};
+    sha256_context context;
+    sha256_starts(&context);
+    sha256_update(&context, data, (uint32_t)size);
+    sha256_finish(&context, digest);
+    return digestHex(digest, sizeof(digest));
+}
+
 static std::string fallbackAppId(const std::string& appPath)
 {
     std::string normalized = gamePathNormalize(appPath.c_str());
     return sha256Hex((const uint8_t*)normalized.data(), normalized.size());
+}
+
+static bool hashGameFile(const std::string& path, std::string* out)
+{
+    if (!out)
+    {
+        return false;
+    }
+
+    FILE* file = platformOpenGameFile(path);
+    if (!file)
+    {
+        return false;
+    }
+
+    sha256_context context;
+    sha256_starts(&context);
+    uint8_t buffer[64 * 1024];
+    size_t readSize = 0;
+    while ((readSize = fread(buffer, 1, sizeof(buffer), file)) != 0)
+    {
+        sha256_update(&context, buffer, (uint32_t)readSize);
+    }
+    const bool readOk = ferror(file) == 0;
+    fclose(file);
+    if (!readOk)
+    {
+        return false;
+    }
+
+    uint8_t digest[32] = {};
+    sha256_finish(&context, digest);
+    *out = digestHex(digest, sizeof(digest));
+    return true;
 }
 
 static bool readWholeFile(const std::string& path, std::vector<uint8_t>* out)
@@ -862,13 +900,8 @@ std::string saveStateAppIdForPath(const std::string& appPath)
         return g_cachedAppId;
     }
 
-    std::vector<uint8_t> data;
     std::string appId;
-    if (!normalized.empty() && readWholeFile(normalized, &data) && !data.empty())
-    {
-        appId = sha256Hex(data.data(), data.size());
-    }
-    else
+    if (normalized.empty() || !hashGameFile(normalized, &appId))
     {
         appId = fallbackAppId(normalized);
     }
@@ -919,7 +952,9 @@ std::string saveStatePathForSlot(const std::string& appPath,
 
 SaveStateGameFormat saveStateFormatForPath(const std::string& appPath)
 {
-    return gamePathHasCcExtension(appPath) ? SAVE_STATE_FORMAT_CC : SAVE_STATE_FORMAT_APP;
+    std::string normalized = gamePathNormalize(appPath.c_str());
+    return gamePathHasCcExtension(normalized) ?
+        SAVE_STATE_FORMAT_CC : SAVE_STATE_FORMAT_APP;
 }
 
 std::string saveStateThumbnailPathForSlot(const std::string& appPath,

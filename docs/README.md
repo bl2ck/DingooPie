@@ -17,15 +17,23 @@ Windows 版本信息：
 
 ### 快速使用
 
-可通过 `文件 > 打开游戏` 打开游戏，也可以把 `.app` 文件拖到模拟器窗口。
+可通过 `文件 > 打开游戏` 打开游戏，也可以把 `.app` 或 `.cc` 文件拖到模拟器窗口。
 最近游戏会显示在 `文件 > 最近游戏`，可在该子菜单中清空。未运行游戏时窗口会
 显示 DingooPie 待机背景；打开游戏后会自动切换到游戏画面。
 
-也可以在命令行传入 `.app` 路径：
+命令行示例：
 
 ```powershell
 .\DingooPie.exe "D:\Games\Dingoo\Your Game.app"
+.\DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc"
+.\DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc" --config "D:\DingooPie\Portable.ini" --no-recent
 ```
+
+命令行格式为 `DingooPie.exe [选项] [game.app|game.cc]`。支持
+`-g/--game <路径>`、`-c/--config <路径>`、`--no-recent`、`-h/--help`、
+`-V/--version` 和 `--`。游戏路径只能指定一次，含空格时必须加引号。
+`--config` 指定本次运行使用的配置文件；`--no-recent` 只跳过本次最近游戏
+自动启动，不会清空列表。
 
 ### 默认设置
 
@@ -207,16 +215,24 @@ Windows version information:
 
 ### Quick Start
 
-Open games from `File > Open Game`, or drop an `.app` file onto the emulator
+Open games from `File > Open Game`, or drop an `.app` or `.cc` file onto the emulator
 window. Recent games appear under `File > Recent Games` and can be cleared from
 that submenu. When no game is running, the window shows the DingooPie idle
 background; opening a game switches to gameplay automatically.
 
-A `.app` path can also be passed on the command line:
+Command-line examples:
 
 ```powershell
 .\DingooPie.exe "D:\Games\Dingoo\Your Game.app"
+.\DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc"
+.\DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc" --config "D:\DingooPie\Portable.ini" --no-recent
 ```
+
+The syntax is `DingooPie.exe [options] [game.app|game.cc]`. Supported options are
+`-g/--game <path>`, `-c/--config <path>`, `--no-recent`, `-h/--help`,
+`-V/--version`, and `--`. Specify one game and quote paths containing spaces.
+`--config` selects the settings file for this run. `--no-recent` skips recent-game
+auto-start without clearing the list.
 
 ### Default Settings
 
