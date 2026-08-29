@@ -1272,9 +1272,11 @@ static uint64_t currentGuestMicros(const CcRuntimeContext* runtime)
         s_runtimeSpeedScale.load());
 }
 
-static uint32_t currentTaskSchedulerTick(const CcRuntimeContext* runtime)
+static uint32_t currentTaskSchedulerTick(const CcRuntimeContext* runtime,
+    bool audioProducer)
 {
-    return (uint32_t)(currentGuestMicros(runtime) / 10000u);
+    return (uint32_t)(ccTaskSchedulerElapsedMicros(currentHostMicros(runtime),
+        s_runtimeSpeedScale.load(), audioProducer) / 10000u);
 }
 
 static void markCurrentTaskAsAudioProducer(CcRuntimeContext* runtime)
@@ -2481,7 +2483,8 @@ bool ccRuntimeRunFile(const char* path,
                     }
                     if (task.delayTicks)
                     {
-                        uint32_t now = currentTaskSchedulerTick(&runtime);
+                        uint32_t now = currentTaskSchedulerTick(&runtime,
+                            task.audioProducer);
                         if ((int32_t)(now - task.delayTicks) < 0)
                         {
                             continue;
@@ -2516,7 +2519,8 @@ bool ccRuntimeRunFile(const char* path,
                         {
                             uint32_t delayTicks = ccScaleDelayTicks(
                                 runtime.currentDelayTicks, s_hostDelayScale.load());
-                            task.delayTicks = currentTaskSchedulerTick(&runtime) + delayTicks;
+                            task.delayTicks = currentTaskSchedulerTick(&runtime,
+                                task.audioProducer) + delayTicks;
                             task.hostDelayUntilMicros = 0;
                         }
                     }
