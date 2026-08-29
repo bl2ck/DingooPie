@@ -1610,7 +1610,13 @@ static bool handleSvc(void* userData, Arm32State* state, uint32_t immediate)
     }
     if (!strcmp(name, "OSTimeDly") || !strcmp(name, "delay"))
     {
-        scheduleCurrentTaskDelay(runtime, state->r[0]);
+        const bool audioTickDelay = runtime->currentTaskIndex < runtime->tasks.size() &&
+            runtime->tasks[runtime->currentTaskIndex].audioProducer &&
+            state->r[0] == 1u;
+        if (audioTickDelay)
+            scheduleCurrentTaskHostDelayMicros(runtime, 8000u);
+        else
+            scheduleCurrentTaskDelay(runtime, state->r[0]);
         return false;
     }
     if (!strcmp(name, "OSTimeGet") || !strcmp(name, "GetTickCount") || !strcmp(name, "OSTimerGetTickTimeus"))
