@@ -135,8 +135,6 @@ struct CcRuntimeContext
         bool started;
         bool finished;
         bool audioProducer;
-        bool audioWritePending;
-        uint64_t audioWriteDelayMicros;
     };
 
     struct ResourceHandle
@@ -189,9 +187,6 @@ struct CcRuntimeContext
     uint32_t dvcAudioHandle;
     uint32_t dvcAudioSampleRate;
     uint32_t dvcAudioVolume;
-    uint32_t waveoutSampleRate;
-    uint16_t waveoutFormat;
-    uint8_t waveoutChannels;
     uint32_t framebufferAddress;
     uint32_t framebufferBits;
     uint32_t framebufferWriteHighWater[kCcFramebufferCount];
@@ -1282,53 +1277,12 @@ static uint32_t currentTaskSchedulerTick(const CcRuntimeContext* runtime)
     return (uint32_t)(currentGuestMicros(runtime) / 10000u);
 }
 
-static CcRuntimeContext::Task* currentTask(CcRuntimeContext* runtime)
-{
-    return runtime->currentTaskIndex < runtime->tasks.size() ?
-        &runtime->tasks[runtime->currentTaskIndex] : NULL;
-}
-
 static void markCurrentTaskAsAudioProducer(CcRuntimeContext* runtime)
 {
-    CcRuntimeContext::Task* task = currentTask(runtime);
-    if (task)
+    if (runtime->currentTaskIndex < runtime->tasks.size())
     {
-        task->audioProducer = true;
+        runtime->tasks[runtime->currentTaskIndex].audioProducer = true;
     }
-}
-
-static void markCurrentTaskAudioWrite(CcRuntimeContext* runtime,
-    uint32_t bytes, uint32_t sampleRate, uint16_t format, uint8_t channels)
-{
-    CcRuntimeContext::Task* task = currentTask(runtime);
-    if (!task || !bytes || !sampleRate || !channels)
-    {
-        return;
-    }
-    const uint32_t bytesPerSample = format == AFMT_U8 ? 1u : 2u;
-    const uint64_t bytesPerSecond = (uint64_t)sampleRate * channels * bytesPerSample;
-    const uint64_t durationMicros = bytesPerSecond ?
-        ((uint64_t)bytes * 1000000ull + bytesPerSecond - 1u) / bytesPerSecond : 0;
-    task->audioWritePending = true;
-    task->audioWriteDelayMicros = durationMicros > 2000u ?
-        durationMicros - 2000u : 1000u;
-}
-
-static bool consumeCurrentTaskAudioWrite(CcRuntimeContext* runtime,
-    uint32_t ticks, uint64_t* delayMicros)
-{
-    CcRuntimeContext::Task* task = currentTask(runtime);
-    if (!task)
-    {
-        return false;
-    }
-    const bool useAudioDelay = task->audioWritePending && ticks == 1u;
-    if (delayMicros)
-    {
-        *delayMicros = task->audioWriteDelayMicros;
-    }
-    task->audioWritePending = false;
-    return useAudioDelay;
 }
 
 static void scheduleCurrentTaskDelay(CcRuntimeContext* runtime, uint32_t ticks)
@@ -1366,9 +1320,6 @@ static bool handleLegacyAudioImport(CcRuntimeContext* runtime, Arm32State* state
         runtime->dvcAudioHandle = kDvcAudioHandle;
         runtime->dvcAudioSampleRate = kDvcAudioDefaultSampleRate;
         runtime->dvcAudioVolume = kDvcAudioMaxVolume;
-        runtime->waveoutSampleRate = 16000u;
-        runtime->waveoutFormat = AFMT_S16_LE;
-        runtime->waveoutChannels = 1u;
         runtime->dvcAudioStarted = false;
         markCurrentTaskAsAudioProducer(runtime);
         state->r[0] = runtime->dvcAudioHandle;
@@ -1434,9 +1385,6 @@ static bool handleLegacyAudioImport(CcRuntimeContext* runtime, Arm32State* state
             waveout_write(runtime->dvcAudioHandle, copy, (int)state->r[1]) :
             waveout_try_write(runtime->dvcAudioHandle, copy, (int)state->r[1]);
         state->r[0] = written ? state->r[1] : UINT32_MAX;
-        if (written && !skipsAudioOutput)
-            markCurrentTaskAudioWrite(runtime, state->r[1],
-                runtime->dvcAudioSampleRate, AFMT_S16_LE, 2u);
         return true;
     }
     if (!strcmp(name, "DVCCloseDevice"))
@@ -1533,14 +1481,6 @@ static bool handleSvc(void* userData, Arm32State* state, uint32_t immediate)
         name ? name : "(invalid)");
     runtime->stats->lastImportPc = svcAddress;
     runtime->stats->lastImportReturnAddress = state->r[14];
-    if (name && strcmp(name, "OSTimeDly") && strcmp(name, "delay"))
-    {
-        CcRuntimeContext::Task* task = currentTask(runtime);
-        if (task)
-        {
-            task->audioWritePending = false;
-        }
-    }
     if (!name)
     {
         recordUnknownImport(runtime, NULL);
@@ -1670,11 +1610,11 @@ static bool handleSvc(void* userData, Arm32State* state, uint32_t immediate)
     }
     if (!strcmp(name, "OSTimeDly") || !strcmp(name, "delay"))
     {
-        uint64_t audioDelayMicros = 0;
-        const bool audioWriteDelay = consumeCurrentTaskAudioWrite(runtime,
-            state->r[0], &audioDelayMicros);
-        if (audioWriteDelay)
-            scheduleCurrentTaskHostDelayMicros(runtime, audioDelayMicros);
+        const bool audioTickDelay = runtime->currentTaskIndex < runtime->tasks.size() &&
+            runtime->tasks[runtime->currentTaskIndex].audioProducer &&
+            state->r[0] == 1u;
+        if (audioTickDelay)
+            scheduleCurrentTaskHostDelayMicros(runtime, 8000u);
         else
             scheduleCurrentTaskDelay(runtime, state->r[0]);
         return false;
@@ -1968,15 +1908,7 @@ static bool handleSvc(void* userData, Arm32State* state, uint32_t immediate)
         if (!guest) { state->r[0] = 0; return true; }
         waveout_args* copy = (waveout_args*)malloc(sizeof(*copy));
         if (!copy) { state->r[0] = 0; return true; }
-        *copy = *guest;
-        state->r[0] = waveout_open(copy);
-        if (state->r[0])
-        {
-            runtime->waveoutSampleRate = copy->sample_rate;
-            runtime->waveoutFormat = copy->format;
-            runtime->waveoutChannels = copy->channel ? copy->channel : 2u;
-        }
-        return true;
+        *copy = *guest; state->r[0] = waveout_open(copy); return true;
     }
     if (!strcmp(name, "waveout_write"))
     {
@@ -2004,10 +1936,6 @@ static bool handleSvc(void* userData, Arm32State* state, uint32_t immediate)
         {
             state->r[0] = waveout_try_write(state->r[0], copy, (int)state->r[2]);
         }
-        if (state->r[0] && !skipsAudioOutput)
-            markCurrentTaskAudioWrite(runtime, state->r[2],
-                runtime->waveoutSampleRate, runtime->waveoutFormat,
-                runtime->waveoutChannels);
         return true;
     }
     if (!strcmp(name, "waveout_close")) { state->r[0] = waveout_close(state->r[0]); return true; }

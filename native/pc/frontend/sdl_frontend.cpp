@@ -6631,7 +6631,7 @@ void frontendRunLoop(const EmulatorOptions& options)
                 {
                     std::string appPath(ev.drop.file);
                     printf("frontend: dropped file path=%s\n", appPath.c_str());
-                    frontendMenuRequestOpenGame(appPath);
+                    frontendMenuRequestOpenApp(appPath);
                     SDL_free(ev.drop.file);
                 }
                 break;

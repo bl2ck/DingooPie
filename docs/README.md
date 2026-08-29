@@ -6,10 +6,9 @@
 歌美 X760+、歌美 A330 的 `.app` 与 `.cc` 游戏。游戏文件格式归原厂商所有，
 本项目不附带游戏样本，用户需自行提供合法取得的文件。
 
-Windows 版本信息：
+Windows 文件信息：
 
 - 文件说明：Dingoo Game Emulator
-- 文件版本：1.7
 - 产品名称：丁果派 DingooPie
 - Powered by：BL2CK Software
 - 版权：Copyright (c) 2026 BL2CK
@@ -32,7 +31,7 @@ Windows 版本信息：
 
 命令行格式为 `DingooPie.exe [选项] [game.app|game.cc]`。支持
 `-g/--game <路径>`、`-c/--config <路径>`、`--no-recent`、`-h/--help`、
-`-V/--version` 和 `--`。游戏路径只能指定一次，含空格时必须加引号。
+`-V/--version`、`--core-regression` 和 `--`。游戏路径只能指定一次，含空格时必须加引号。
 `--config` 指定本次运行使用的配置文件；`--no-recent` 只跳过本次最近游戏
 自动启动，不会清空列表。
 
@@ -217,10 +216,9 @@ DingooPie is a Windows emulator for Dingoo A320, Gemei X760+, and Gemei A330
 `.app` and `.cc` games. The game file formats belong to their original vendors.
 This project does not ship game samples; users must provide legally obtained files.
 
-Windows version information:
+Windows file information:
 
 - File description: Dingoo Game Emulator
-- File version: 1.7
 - Product name: DingooPie
 - Powered by: BL2CK Software
 - Copyright: Copyright (c) 2026 BL2CK
@@ -244,7 +242,7 @@ Command-line examples:
 
 The syntax is `DingooPie.exe [options] [game.app|game.cc]`. Supported options are
 `-g/--game <path>`, `-c/--config <path>`, `--no-recent`, `-h/--help`,
-`-V/--version`, and `--`. Specify one game and quote paths containing spaces.
+`-V/--version`, `--core-regression`, and `--`. Specify one game and quote paths containing spaces.
 `--config` selects the settings file for this run. `--no-recent` skips recent-game
 auto-start without clearing the list.
 

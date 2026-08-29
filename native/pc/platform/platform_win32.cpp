@@ -267,7 +267,7 @@ FILE* platformOpenHostFile(const std::string& path, const char* mode)
 #endif
 }
 
-bool platformProbeGameHeader(const std::string& path)
+bool platformProbeAppHeader(const std::string& path)
 {
     if (path.empty())
     {

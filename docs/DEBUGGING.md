@@ -11,8 +11,8 @@ The Windows frontend also writes `DingooPie.ini` next to `DingooPie.exe`.
 The INI reader accepts UTF-16LE with BOM, UTF-8 with or without BOM, and a
 system ANSI fallback, so manually edited Chinese app paths remain loadable.
 The executable is named `DingooPie.exe`; its Windows version resource reports
-`Dingoo Game Emulator`, file/product version `1.7`, product
-name `DingooPie`, and `Copyright (c) 2026 BL2CK`.
+`Dingoo Game Emulator`, product name `DingooPie`, and
+`Copyright (c) 2026 BL2CK`.
 Starting without a game argument does not show a file picker. Empty
 `recent.last_app` opens the frontend only; an existing `recent.last_app` is
 auto-loaded; a command-line `.app` or `.cc` path takes priority.
