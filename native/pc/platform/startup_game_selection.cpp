@@ -48,7 +48,7 @@ bool startupGameValidateCommandLinePath(const std::string& path, std::string* er
         *error = "game file does not exist: " + path;
         return false;
     }
-    if (!platformProbeAppHeader(path))
+    if (!platformProbeGameHeader(path))
     {
         *error = "game file has an invalid or unsupported package header: " + path;
         return false;
@@ -88,7 +88,7 @@ StartupGameSelection startupGameSelect(const StartupCommandLineOptions& commandL
         clearInvalidRecentGame(settings, "missing recent game");
         return selection;
     }
-    if (!platformProbeAppHeader(settings->lastAppPath))
+    if (!platformProbeGameHeader(settings->lastAppPath))
     {
         clearInvalidRecentGame(settings, "invalid recent game");
         return selection;

@@ -918,7 +918,7 @@ static void requestRelaunchAfterExit(const std::string& appPath)
     frontendRequestQuit();
 }
 
-static bool validateAppPathForOpen(const std::string& appPath, const char* source)
+static bool validateGamePathForOpen(const std::string& appPath, const char* source)
 {
     if (appPath.empty())
     {
@@ -936,7 +936,7 @@ static bool validateAppPathForOpen(const std::string& appPath, const char* sourc
             source ? source : "selected", appPath.c_str());
         return false;
     }
-    if (!platformProbeAppHeader(appPath))
+    if (!platformProbeGameHeader(appPath))
     {
         printf("frontend: rejected invalid %s app header: %s\n",
             source ? source : "selected", appPath.c_str());
@@ -945,9 +945,9 @@ static bool validateAppPathForOpen(const std::string& appPath, const char* sourc
     return true;
 }
 
-bool frontendMenuRequestOpenApp(const std::string& appPath)
+bool frontendMenuRequestOpenGame(const std::string& appPath)
 {
-    if (!validateAppPathForOpen(appPath, "open-request"))
+    if (!validateGamePathForOpen(appPath, "open-request"))
     {
         return false;
     }
@@ -1678,7 +1678,7 @@ static bool handleRecentAppCommand(unsigned int commandId)
     }
 
     std::string appPath = g_menuSettings->recentAppPaths[index];
-    if (!validateAppPathForOpen(appPath, "recent"))
+    if (!validateGamePathForOpen(appPath, "recent"))
     {
         if (emulatorRemoveRecentApp(g_menuSettings, appPath))
         {
@@ -1688,7 +1688,7 @@ static bool handleRecentAppCommand(unsigned int commandId)
         return true;
     }
 
-    frontendMenuRequestOpenApp(appPath);
+    frontendMenuRequestOpenGame(appPath);
     return true;
 }
 
@@ -2495,7 +2495,7 @@ bool frontendMenuHandleCommand(unsigned int commandId)
         if (!appPath.empty())
         {
             printf("frontend: selected app queued as recent app after normal exit: %s\n", appPath.c_str());
-            if (frontendMenuRequestOpenApp(appPath))
+            if (frontendMenuRequestOpenGame(appPath))
             {
                 pauseWhileChoosing.dismiss();
             }
