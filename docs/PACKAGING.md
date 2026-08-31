@@ -13,8 +13,9 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 .\scripts\build_release.ps1
 ```
 
-`build_release.ps1` builds `Release` into `build\win64` and writes the runnable
-package to `release\`. The release contains:
+`build_release.ps1` builds `Release` into `build\win64`, strips unneeded symbols
+from the release executable, verifies that stripping did not increase its size,
+and writes the runnable package to `release\`. The release contains:
 
 - `DingooPie.exe`
 - `SDL2.dll`

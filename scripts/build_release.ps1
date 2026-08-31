@@ -149,11 +149,18 @@ function New-DingooPieRelease {
         ($null -ne (Get-ChildItem -LiteralPath $cheatSourceDir -Filter '*.cht' `
             -File -ErrorAction SilentlyContinue | Select-Object -First 1))
 
+    $buildExecutable = Join-Path $BuildDir 'DingooPie.exe'
     $releaseExecutable = Join-Path $ReleaseDir 'DingooPie.exe'
-    if (Copy-ReleaseFile -Source (Join-Path $BuildDir 'DingooPie.exe') `
+    if (Copy-ReleaseFile -Source $buildExecutable `
         -Destination $releaseExecutable) {
         if ($Configuration -eq 'Release') {
+            $buildSize = (Get-Item -LiteralPath $buildExecutable).Length
             Invoke-NativeCommand $Strip --strip-unneeded $releaseExecutable
+            $releaseSize = (Get-Item -LiteralPath $releaseExecutable).Length
+            if ($releaseSize -gt $buildSize) {
+                throw "Release executable grew after symbol stripping: build=$buildSize release=$releaseSize"
+            }
+            Write-Host "Release executable size: build=$buildSize bytes, stripped=$releaseSize bytes"
         }
         $releaseFiles.Add('DingooPie.exe')
     }
