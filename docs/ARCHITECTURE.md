@@ -211,8 +211,9 @@ selected guest CPU clock reference to the INI and
 `DINGOO_PIE_IRJIT_CLOCK_HZ`. The environment-variable name is retained, but
 both APP and CC runtimes consume the value.
 `runtime.backend=` means `Auto`: APP resolves to PPSSPP IR JIT and CC resolves
-to Dynarmic when their optimized backends are compiled. Compatibility Mode uses
-the matching in-tree interpreter. `runtime.ostimedly_scale=` means `Auto` and
+to Dynarmic when their optimized backends are compiled. The `Compatibility`
+menu value uses the matching in-tree interpreter. `runtime.ostimedly_scale=`
+means `Auto` and
 uses the global delay scale of 1.0 unless a compatibility profile supplies a
 narrower APP override.
 `runtime.cheats_enabled=0` is the default. The frontend persists this global

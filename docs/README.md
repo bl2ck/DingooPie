@@ -129,7 +129,8 @@ Windows 文件信息：
 界面语言可以在 `设置 > 语言` 中切换 English / 中文。截图可以保存为 PNG、JPG
 或 BMP；按 `F12` 自动截图时，文件名会自动带时间戳。
 
-`调试 > 打开调试日志` 会打开当前实例的调试日志。运行时崩溃会额外生成诊断日志。
+`调试 > 打开调试日志` 会打开当前实例的调试日志。日志优先记录关键状态变化、
+警告和错误；运行时崩溃会在对应游戏目录额外生成诊断日志。
 
 ### 调试工具
 
@@ -197,7 +198,9 @@ MinGW winpthread runtime、PPSSPP、Dynarmic 和 Boost，然后把
 ### 运行时诊断
 
 常规诊断优先使用 `调试` 菜单中的调试控制台、性能日志、调试日志、资源监视器、
-内存搜索器和调试器。开发诊断细节见 `docs\DEBUGGING.md`。
+内存搜索器和调试器。判断运行是否正常时应核对结构化启动信息、状态变化、警告、
+错误和崩溃报告完整性，不依赖重复输出未变化的默认值。开发诊断细节见
+`docs\DEBUGGING.md`。
 
 ### 打包
 
@@ -353,8 +356,9 @@ The UI language can be switched between English and Chinese from
 `Settings > Language`. Screenshots can be saved as PNG, JPG, or BMP. Automatic
 screenshots use `F12` and include a timestamped file name.
 
-`Debug > Open Debug Log` opens the current debug log. Runtime crashes also write
-an additional diagnostic log.
+`Debug > Open Debug Log` opens the current debug log. Logs prioritize key state
+changes, warnings, and errors. Runtime crashes also write an additional
+diagnostic log beside the corresponding game.
 
 ### Debug Tools
 
@@ -424,7 +428,9 @@ the script reuses it before attempting network downloads.
 
 For normal diagnostics, use the Debug menu: Debug Console, Performance Log,
 Open Debug Log, Resource Monitor, Memory Searcher, and Debugger. See
-`docs\DEBUGGING.md` for development diagnostics.
+`docs\DEBUGGING.md` for development diagnostics. Validate structured startup
+information, state transitions, warnings, errors, and crash-report completeness;
+do not depend on repeated unchanged default values.
 
 ### Packaging
 

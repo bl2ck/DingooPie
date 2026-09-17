@@ -102,8 +102,8 @@ Auto pace.
 `DINGOO_PIE_IRJIT_CLOCK_HZ`. Despite the legacy environment-variable name,
 the value is the guest CPU clock reference used by both APP and CC runtimes.
 `runtime.backend=` means `Auto`: APP maps to PPSSPP IR JIT and CC maps to
-Dynarmic when the optimized backends are compiled. Compatibility Mode selects
-the matching in-tree interpreter.
+Dynarmic when the optimized backends are compiled. The `Compatibility` menu
+value selects the matching in-tree interpreter.
 `runtime.ostimedly_scale=` means `Auto`, which maps host SDK delay waits to
 the global 1.0 SDK delay default while explicit values preserve manual
 accuracy/performance choices.
@@ -159,11 +159,11 @@ next to `DingooPie.exe`.
 Debug logs are named `DingooPie-debug-<timestamp>-<pid>.log`; the menu opens
 the current instance's file.
 Guest runtime failures also write a separate `DingooPie-crash-<timestamp>-<pid>.log`
-next to the executable. The regular debug log keeps only the failure summary and
-the crash-log file name.
+beside the corresponding game. The regular debug log keeps only the failure
+summary and the crash-log file name.
 Structured log lines use compact prefixes and fields, such as
 `profile:frontend loops=60/s` and
-`debug-log:opened file=DingooPie-debug-20260717-120000-1234.log`.
+`debug-log:opened file=DingooPie-debug-<timestamp>-<pid>.log`.
 `Debug -> Resource Monitor` opens the live resource list. It is enabled while a
 game is running, or can be checked before launch to auto-open once the next game
 starts. The persisted setting is `debug.resource_monitor_auto_open`.
@@ -344,7 +344,10 @@ Use `scripts\debug_output_regression.ps1` after changing Debug Console, logging,
 SDL startup, or stdout/stderr handling. It launches isolated no-game runs and
 checks Open Debug Log file creation through `DINGOO_PIE_LOG_FILE`, INI
 Performance Log, Debug Console plus Open Debug Log, Debug Console-only startup,
-stdout redirection, and empty stderr.
+stdout redirection, and empty stderr. The regression requires structured startup
+and settings fields while allowing unchanged defaults to stay silent. New
+diagnostics should report meaningful state transitions and use warning or error
+severity for actionable failure paths.
 
 ```powershell
 .\scripts\debug_output_regression.ps1 `
@@ -455,8 +458,10 @@ per-run artifact directories, and writes CSV/JSON/Markdown summaries:
   -Backend both
 ```
 
-See `docs\A320_X760_PLUS_3D_BASELINES.md` for the current local 14-sample
-baseline, known failures, and the manual verification checklist.
+See `docs\A320_X760_PLUS_3D_BASELINES.md` for the recorded historical 14-sample
+baseline, known failures from that run, and the manual verification checklist.
+Re-run the harness before using those measurements as a current performance
+comparison.
 
 For optimized-backend rebuild checks, verify that bootstrap installs Dynarmic
 and Boost and that the extracted PPSSPP source contains the Dingoo shim
@@ -514,9 +519,10 @@ as a broken build environment even if CMake can still compile the emulator.
 - `DINGOO_PIE_INTERPRETER_PC_PROFILE=1` adds a low-frequency hot-PC histogram
   for diagnosing remaining interpreter-only bottlenecks.
 
-## Current Sample Baselines
+## Recorded Sample Baselines
 
-The latest known smoke results are:
+The retained smoke observations below are diagnostic references. Re-run the
+relevant scripts before treating them as current acceptance results:
 
 - `Dicke Snake.app` (`22531CCED426F19232613C8235B44A3DD4CDECDA18CD6A517044DC05160C5D39`): the title screen is sensitive to short `OSTimeDly` jitter. Microsecond-level HLE delay pacing keeps framebuffer submissions near the display cadence without a content-hash rule. The interpreter backend also reaches stable frame pacing after exact-pattern RGB565/indexed-blit loop promotion in `mips_compat.cpp`; use the interpreter profile threshold above to guard this fallback path.
 - `Snake.app`: frontend and HLE frame submission are aligned around 19-21 FPS after framebuffer snapshotting on the default Auto backend.

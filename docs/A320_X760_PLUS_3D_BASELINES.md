@@ -1,9 +1,10 @@
 # Dingoo A320 / Gemei X760+ 3D Sample Baselines
 
-This document records repeatable startup, timing, and visual smoke baselines for
-the local Dingoo A320 handheld and Gemei X760+ handheld `.app` sample set. Game
-files are not stored in this repository. The `.app` container format belongs to
-Dingoo Technology; samples must be legally obtained by the user.
+This document records a historical startup, timing, and visual smoke baseline
+for the local Dingoo A320 handheld and Gemei X760+ handheld `.app` sample set.
+It is a comparison point rather than a claim about the current build. Game files
+are not stored in this repository. The `.app` container format belongs to Dingoo
+Technology; samples must be legally obtained by the user.
 
 ## Test Command
 
@@ -20,11 +21,11 @@ Dingoo Technology; samples must be legally obtained by the user.
   -Backend both
 ```
 
-Artifacts from the run:
+Artifacts recorded for that run (the local files may no longer be present):
 
-- CSV: `D:\Project\C++\dingoo-emu\test_artifacts\a320-x760plus-3d-baseline2\20260614-135403-summary.csv`
-- JSON: `D:\Project\C++\dingoo-emu\test_artifacts\a320-x760plus-3d-baseline2\20260614-135403-summary.json`
-- Markdown: `D:\Project\C++\dingoo-emu\test_artifacts\a320-x760plus-3d-baseline2\20260614-135403-summary.md`
+- CSV: `D:\Project\C++\dingoo-emu\test_artifacts\a320-x760plus-3d-baseline2\<timestamp>-summary.csv`
+- JSON: `D:\Project\C++\dingoo-emu\test_artifacts\a320-x760plus-3d-baseline2\<timestamp>-summary.json`
+- Markdown: `D:\Project\C++\dingoo-emu\test_artifacts\a320-x760plus-3d-baseline2\<timestamp>-summary.md`
 
 ## Result Summary
 

@@ -146,7 +146,7 @@ DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc" --config "D:\DingooPie\Porta
 
 PC 版保留以下用户可操作的调试功能：
 
-- 调试控制台和调试日志：查看模拟器运行信息及错误提示。
+- 调试控制台和调试日志：查看关键状态变化、警告、错误和运行时诊断信息。
 - 性能日志：记录当前游戏的运行统计。
 - 资源监视器：查看游戏已加载的内部资源和外部文件。
 - 内存搜索器：搜索并修改运行中的数值，也可复制为 `.cht` 金手指代码。
@@ -156,7 +156,7 @@ PC 版保留以下用户可操作的调试功能：
 
 ### 常见问题
 
-- 游戏无法正常启动：尝试将 `CPU 执行模式` 切换为 `兼容模式`。
+- 游戏无法正常启动：尝试将 `CPU 执行模式` 切换为 `兼容`。
 - 没有声音：确认未启用 `禁用音频`，并检查主音量和系统音量。
 - 键盘输入异常：尝试启用 `禁用系统输入法`，或重新设置按键手柄映射。
 - 即时存档无法读取：确认存档属于当前游戏，并进入保存时的相同游戏阶段。
@@ -311,7 +311,7 @@ If no matching file exists or the file does not match the current game, gameplay
 
 The PC version retains the following user-accessible debugging features:
 
-- Debug Console and Debug Log: view emulator status and error messages.
+- Debug Console and Debug Log: view key state changes, warnings, errors, and runtime diagnostics.
 - Performance Log: record runtime statistics for the current game.
 - Resource Monitor: inspect loaded internal resources and external files.
 - Memory Searcher: search and modify runtime values or copy them as `.cht` cheat codes.
