@@ -3,7 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include "shared/config/runtime_constants.h"
+#include "shared/config/guest_runtime_constants.h"
 
 // 320x240 RGB565 framebuffer, rounded up to a 4 KB page boundary.
 #define VM_LCD_FB_SIZE  0x00026000

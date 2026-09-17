@@ -26,15 +26,15 @@ Technology; game files are external test inputs, not project assets.
 1. `main.cpp` loads settings, initializes SDL, and starts the guest runtime when an
    APP or CC game is selected. Without a startup game, the frontend waits for
    `File/Open Game`.
-2. `game_runtime.cpp` dispatches `.app` games to `app_runtime.cpp` and `.cc`
-   games to `cc_runtime.cpp`. Both paths compute a SHA256 identity before
+2. `game_runtime.cpp` dispatches `.app` games to `app_runtime.cpp` and `.cc`,
+   `.c2m`, `.c2s`, and `.c3s` games to `cc_runtime.cpp`. Both paths compute a SHA256 identity before
    loading format-specific runtime state.
 3. APP maps MIPS guest memory, initializes the HLE bridge and virtual file
    system, then selects PPSSPP IR JIT or the in-tree MIPS interpreter. CC maps
    ARM32 runtime state and selects Dynarmic or the in-tree ARM32 interpreter.
 4. `app_hle.cpp` implements Dingoo SDK calls such as framebuffer submission,
    timers, input, task APIs, resources, audio, and formatted output.
-5. `sdl_frontend.cpp`, `framebuffer.cpp`, and `sdl_audio.cpp` present video,
+5. `frontend_shell.cpp`, `framebuffer.cpp`, and `sdl_audio.cpp` present video,
    input, overlays, virtual controls, filters, screenshots, and audio on the
    host.
 6. `guest_filesystem.cpp` exposes app resources and host files through
@@ -104,7 +104,7 @@ About.
 - `app_task_scheduler.*`: Dingoo task APIs backed by host threads.
 - `input_controls.*`, `input_state.h`: host keyboard/mouse/virtual controls to
   Dingoo A320 and Gemei X760+ button state.
-- `framebuffer.*`, `sdl_frontend.*`: framebuffer storage and snapshots, SDL presentation,
+- `framebuffer.*`, `frontend_shell.*`: framebuffer storage and snapshots, SDL presentation,
   menus, overlays, filters, and screenshots.
 - `app_package_resource_index.*`: read-only APP package resource-name index used
   when runtime resource events expose offsets without names.

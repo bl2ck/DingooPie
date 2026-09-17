@@ -40,7 +40,7 @@ bool startupGameValidateCommandLinePath(const std::string& path, std::string* er
     }
     if (!gamePathHasSupportedExtension(path))
     {
-        *error = "game path must end in .app or .cc";
+        *error = "game path must end in .app, .cc, .c2m, .c2s, or .c3s";
         return false;
     }
     if (!platformFileExists(path))

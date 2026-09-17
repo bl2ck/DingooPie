@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include "shared/services/guest_package.h"
 #include "app/cpu/mips_runtime.h"
-#include "app/memory/app_heap_snapshot.h"
+#include "app/memory/vm_heap_snapshot.h"
 
 int appMemoryInitialize(NativeRuntime* runtime, GuestPackage* app);
 int appMemoryMapTaskRuntime(NativeRuntime* runtime);

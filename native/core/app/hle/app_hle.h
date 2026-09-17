@@ -8,8 +8,8 @@
 #include <string.h>
 
 #include "app/runtime/app_runtime_debug.h"
+#include "shared/config/guest_runtime_constants.h"
 #include "shared/services/guest_package.h"
-#include "shared/config/runtime_constants.h"
 
 // Wires Dingoo SDK imports to host-side HLE implementations.
 void bridge_set_game_identity(const char* sha256Hex);

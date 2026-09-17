@@ -34,7 +34,7 @@ struct AppSaveStateFileHeader
     uint32_t taskRegisterCount;
     uint32_t semaphoreCount;
     uint32_t osTicks;
-    char appId[64];
+    char gameId[64];
 };
 
 struct CcSaveStateFileHeader

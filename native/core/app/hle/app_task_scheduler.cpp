@@ -1,22 +1,23 @@
 #include "app/hle/app_task_scheduler.h"
-#include <assert.h>
-#include "app/hle/app_task_lifecycle.h"
-#include "app/memory/app_memory.h"
-#include <pthread.h>
+
 #include <SDL2/SDL.h>
-#include "app/cpu/mips_runtime.h"
-#include "shared/execution/execution_backend.h"
-#include "frontend/video/framebuffer.h"
-#include "app/memory/app_framebuffer_mapping.h"
-#include "shared/diagnostics/runtime_log.h"
-#include "app/hle/app_hle.h"
-#include "app/runtime/app_runtime_debug.h"
-#include "shared/services/guest_package.h"
-#include "app/runtime/app_runtime_context.h"
+#include <assert.h>
 #include <cstdlib>
 #include <cstring>
+#include <pthread.h>
 #include <vector>
 
+#include "app/cpu/mips_runtime.h"
+#include "app/hle/app_hle.h"
+#include "app/hle/app_task_lifecycle.h"
+#include "app/memory/app_framebuffer_mapping.h"
+#include "app/memory/app_memory.h"
+#include "app/runtime/app_runtime_context.h"
+#include "app/runtime/app_runtime_debug.h"
+#include "frontend/video/framebuffer.h"
+#include "shared/diagnostics/runtime_log.h"
+#include "shared/execution/execution_backend.h"
+#include "shared/services/guest_package.h"
 
 static SDL_atomic_t s_taskShutdownRequested;
 static pthread_mutex_t s_taskRuntimeMutex = PTHREAD_MUTEX_INITIALIZER;

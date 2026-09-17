@@ -1,7 +1,7 @@
 #ifndef DINGOO_PIE_APP_RUNTIME_APP_RUNTIME_STATE_H
 #define DINGOO_PIE_APP_RUNTIME_APP_RUNTIME_STATE_H
 
-#include "app/memory/app_heap_snapshot.h"
+#include "app/memory/vm_heap_snapshot.h"
 #include "shared/game/game_runtime_types.h"
 
 #include <stdint.h>

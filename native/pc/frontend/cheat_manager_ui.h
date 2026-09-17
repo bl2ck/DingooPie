@@ -1,5 +1,5 @@
-#ifndef DINGOO_PIE_CHEAT_MANAGER_H
-#define DINGOO_PIE_CHEAT_MANAGER_H
+#ifndef DINGOO_PIE_CHEAT_MANAGER_UI_H
+#define DINGOO_PIE_CHEAT_MANAGER_UI_H
 
 #include "emulator_settings.h"
 

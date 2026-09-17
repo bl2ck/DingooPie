@@ -3,7 +3,7 @@
 ## 中文
 
 丁果派 DingooPie 是 Windows 平台的丁果游戏模拟器，用于运行丁果 A320、
-歌美 X760+、歌美 A330 的 `.app` 与 `.cc` 游戏。游戏文件格式归原厂商所有，
+歌美 X760+、歌美 A330 的 `.app`、`.cc`、`.c2m`、`.c2s` 与 `.c3s` 游戏。游戏文件格式归原厂商所有，
 本项目不附带游戏样本，用户需自行提供合法取得的文件。
 
 Windows 文件信息：
@@ -17,7 +17,7 @@ Windows 文件信息：
 
 ### 快速使用
 
-可通过 `文件 > 打开游戏` 打开游戏，也可以把 `.app` 或 `.cc` 文件拖到模拟器窗口。
+可通过 `文件 > 打开游戏` 打开游戏，也可以把受支持的游戏文件拖到模拟器窗口。
 最近游戏会显示在 `文件 > 最近游戏`，可在该子菜单中清空。未运行游戏时窗口会
 显示 DingooPie 待机背景；打开游戏后会自动切换到游戏画面。
 
@@ -29,7 +29,7 @@ Windows 文件信息：
 .\DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc" --config "D:\DingooPie\Portable.ini" --no-recent
 ```
 
-命令行格式为 `DingooPie.exe [选项] [game.app|game.cc]`。支持
+命令行格式为 `DingooPie.exe [选项] [game.app|game.cc|game.c2m|game.c2s|game.c3s]`。支持
 `-g/--game <路径>`、`-c/--config <路径>`、`--no-recent`、`-h/--help`、
 `-V/--version`、`--core-regression` 和 `--`。游戏路径只能指定一次，含空格时必须加引号。
 `--config` 指定本次运行使用的配置文件；`--no-recent` 只跳过本次最近游戏
@@ -57,6 +57,7 @@ Windows 文件信息：
 | 禁用系统输入法 | 开启 |
 | 显示虚拟按键 | 关闭 |
 | 虚拟按键大小 | 100% |
+| 虚拟按键透明度 | 100% |
 | 方向键类型 | 摇杆 |
 | CPU 执行模式 | 自动；APP 使用 PPSSPP IR JIT，CC 使用 Dynarmic |
 | CPU 时钟 | 自动，使用 336 MHz 参考时钟 |
@@ -75,10 +76,10 @@ Windows 文件信息：
 - `文件`：打开游戏、最近游戏/清除最近游戏、重启游戏、暂停/恢复游戏、保存截图、保存即时存档/读取即时存档、存档管理器、退出模拟器。
 - `选项 > 视频`：1x、2x、3x、全屏、抗锯齿、正常、黑白、反色、柔化、锐化、色彩增强、怀旧褐色、像素网格、LCD 扫描线、轻量 CRT、亮度、对比度、伽马、饱和度、最小化时、屏幕方向、画面填充和显示 FPS。
 - `选项 > 音频`：主音量、音频缓冲、音频缓冲延迟、音频效果、数字降噪和禁用音频。
-- `选项 > 输入`：禁用系统输入法、显示虚拟按键、虚拟按键大小、方向键类型、键盘与手柄映射和手柄摇杆校准。
+- `选项 > 输入`：禁用系统输入法、显示虚拟按键、虚拟按键大小、虚拟按键透明度、方向键类型、键盘与手柄映射和手柄摇杆校准。
 - `设置`：CPU 执行模式、CPU 时钟、游戏速度、系统延迟比例、金手指、金手指管理器、语言和恢复默认设置。
 - `调试`：调试控制台、性能日志、打开调试日志、资源监视器、内存搜索器和调试器。
-- `帮助`：作者主页、项目主页和关于丁果派。
+- `帮助`：作者主页、项目主页和关于丁果派；关于页显示版本、适用机型、游戏文件格式归属和软件信息。
 
 设置会自动保存。视频、音频、输入、CPU 时钟、游戏速度、系统延迟比例、金手指、
 语言和调试选项会立即生效。修改 CPU 执行模式会自动重启当前游戏。
@@ -156,7 +157,7 @@ Windows 文件信息：
 - `app_memory.*`：模拟堆、栈、寄存器、地址别名和指针映射。
 - `guest_filesystem.*`：虚拟文件和资源文件访问。
 - `app_task_scheduler.*`：使用宿主线程模拟丁果 SDK 任务创建。
-- `sdl_frontend.*`：SDL2 窗口、输入轮询和帧缓冲显示。
+- `frontend_shell.*`：SDL2 窗口、输入轮询和帧缓冲显示。
 - `frontend_menu.*`：Windows 原生菜单创建和命令分发。
 - `app_package_resource_index.*`、`resource_monitor_ui.*` 与 `runtime_resource_monitor.*`：APP 资源名索引、资源监视器窗口、运行时资源加载快照和高亮状态。
 - `ui_strings.*`：英文/中文菜单与对话框文本。
@@ -213,7 +214,7 @@ MinGW winpthread runtime、PPSSPP、Dynarmic 和 Boost，然后把
 ## English
 
 DingooPie is a Windows emulator for Dingoo A320, Gemei X760+, and Gemei A330
-`.app` and `.cc` games. The game file formats belong to their original vendors.
+`.app`, `.cc`, `.c2m`, `.c2s`, and `.c3s` games. The game file formats belong to their original vendors.
 This project does not ship game samples; users must provide legally obtained files.
 
 Windows file information:
@@ -227,7 +228,7 @@ Windows file information:
 
 ### Quick Start
 
-Open games from `File > Open Game`, or drop an `.app` or `.cc` file onto the emulator
+Open games from `File > Open Game`, or drop a supported game file onto the emulator
 window. Recent games appear under `File > Recent Games` and can be cleared from
 that submenu. When no game is running, the window shows the DingooPie idle
 background; opening a game switches to gameplay automatically.
@@ -240,7 +241,7 @@ Command-line examples:
 .\DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc" --config "D:\DingooPie\Portable.ini" --no-recent
 ```
 
-The syntax is `DingooPie.exe [options] [game.app|game.cc]`. Supported options are
+The syntax is `DingooPie.exe [options] [game.app|game.cc|game.c2m|game.c2s|game.c3s]`. Supported options are
 `-g/--game <path>`, `-c/--config <path>`, `--no-recent`, `-h/--help`,
 `-V/--version`, `--core-regression`, and `--`. Specify one game and quote paths containing spaces.
 `--config` selects the settings file for this run. `--no-recent` skips recent-game
@@ -268,6 +269,7 @@ auto-start without clearing the list.
 | Disable System IME | On |
 | Show Virtual Controls | Off |
 | Virtual control size | 100% |
+| Virtual control opacity | 100% |
 | D-pad type | Joystick |
 | CPU Execution Mode | Auto; APP uses PPSSPP IR JIT and CC uses Dynarmic |
 | CPU Clock | Auto, using the 336 MHz reference clock |
@@ -288,10 +290,10 @@ The frontend menu is ordered as `File`, `Options`, `Settings`, `Debug`, and
 - `File`: Open Game, Recent Games/Clear Recent Games, Restart Game, Pause/Resume Game, Save Screenshot, Save State/Load State, Save Manager, and Exit Emulator.
 - `Options > Video`: 1x, 2x, 3x, fullscreen, anti-aliasing, normal, black and white, invert, soft blur, sharpen, vivid, sepia, pixel grid, LCD scanline, light CRT, brightness, contrast, gamma, saturation, minimized behavior, screen orientation, screen fill, and Show FPS.
 - `Options > Audio`: master volume, audio buffer, audio buffer latency, audio effect, digital noise reduction, and disable audio.
-- `Options > Input`: Disable System IME, Show Virtual Controls, Virtual Control Size, D-pad Type, Input Mapping, and Joystick Calibration.
+- `Options > Input`: Disable System IME, Show Virtual Controls, Virtual Control Size, Virtual Control Opacity, D-pad Type, Input Mapping, and Joystick Calibration.
 - `Settings`: CPU Execution Mode, CPU Clock, Game Speed, System Delay Scale, Cheats, Cheat Manager, Language, and Restore Default Settings.
 - `Debug`: Debug Console, Performance Log, Open Debug Log, Resource Monitor, Memory Searcher, and Debugger.
-- `Help`: Author Homepage, Project Homepage, and About DingooPie.
+- `Help`: Author Homepage, Project Homepage, and About DingooPie. About displays the version, supported devices, supported formats, game file format ownership, and software information.
 
 Settings are saved automatically. Video, audio, input, CPU clock, game speed,
 system delay scale, cheats, language, and debug options apply immediately. Changing the
@@ -380,7 +382,7 @@ Shared emulation code lives in `native/core/`; PC frontend, platform, and debug 
 - `app_memory.*`: guest heap, stack, register, alias, and pointer mapping.
 - `guest_filesystem.*`: virtual file and resource-backed file access.
 - `app_task_scheduler.*`: Dingoo SDK task creation backed by host pthreads.
-- `sdl_frontend.*`: SDL2 window, input polling, and framebuffer presentation.
+- `frontend_shell.*`: SDL2 window, input polling, and framebuffer presentation.
 - `frontend_menu.*`: native Windows menu construction and command dispatch.
 - `app_package_resource_index.*`, `resource_monitor_ui.*`, and `runtime_resource_monitor.*`: APP resource-name index, Resource Monitor window, runtime resource-load snapshots, and highlight state.
 - `ui_strings.*`: English/Chinese frontend menu and dialog text.

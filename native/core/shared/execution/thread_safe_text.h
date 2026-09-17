@@ -1,15 +1,15 @@
-#ifndef DINGOO_PIE_SHARED_DIAGNOSTICS_RUNTIME_SHARED_TEXT_H
-#define DINGOO_PIE_SHARED_DIAGNOSTICS_RUNTIME_SHARED_TEXT_H
+#ifndef DINGOO_PIE_SHARED_EXECUTION_THREAD_SAFE_TEXT_H
+#define DINGOO_PIE_SHARED_EXECUTION_THREAD_SAFE_TEXT_H
 
 #include <mutex>
 #include <stddef.h>
 #include <stdio.h>
 
 template <size_t Capacity>
-class RuntimeSharedText
+class ThreadSafeText
 {
 public:
-    RuntimeSharedText()
+    ThreadSafeText()
     {
         value_[0] = 0;
     }

@@ -11,6 +11,7 @@ struct CrashLogContext
     const char* appPath;
     const char* appMainPath;
     const char* appSha256;
+    const char* saveDirectory;
     const char* compatProfile;
     ExecutionBackend backend;
     uint32_t appEntry;

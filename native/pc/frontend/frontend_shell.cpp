@@ -1,6 +1,6 @@
-#include "sdl_frontend.h"
+#include "frontend_shell.h"
 
-#include "shared/config/runtime_constants.h"
+#include "shared/config/guest_runtime_constants.h"
 #include "input_mapping_ui.h"
 #include "memory_searcher_ui.h"
 #include "debugger_ui.h"
@@ -433,6 +433,31 @@ static int virtualControlScalePercent(void)
         }
     }
     return 100;
+}
+
+static int virtualControlOpacityPercent(void)
+{
+    if (!g_frontendSettings)
+    {
+        return 100;
+    }
+    for (size_t index = 0;
+        index < sizeof(EMULATOR_VIRTUAL_CONTROL_OPACITY_VALUES) /
+            sizeof(EMULATOR_VIRTUAL_CONTROL_OPACITY_VALUES[0]);
+        ++index)
+    {
+        if (g_frontendSettings->virtualControlOpacityPercent ==
+            EMULATOR_VIRTUAL_CONTROL_OPACITY_VALUES[index])
+        {
+            return g_frontendSettings->virtualControlOpacityPercent;
+        }
+    }
+    return 100;
+}
+
+static Uint8 virtualControlAlpha(int alpha)
+{
+    return (Uint8)((alpha * virtualControlOpacityPercent() + 50) / 100);
 }
 
 static VirtualDpadType virtualDpadType(void)
@@ -1296,18 +1321,18 @@ static IdleBackgroundGradient idleBackgroundGradient(void)
 {
     static const IdleBackgroundGradient kGradients[] =
     {
-        { { 152, 87, 87, 255 }, { 76, 39, 53, 255 } },
-        { { 152, 101, 71, 255 }, { 76, 51, 53, 255 } },
-        { { 145, 124, 67, 255 }, { 71, 62, 48, 255 } },
-        { { 115, 133, 71, 255 }, { 55, 71, 51, 255 } },
-        { { 62, 133, 87, 255 }, { 28, 74, 62, 255 } },
-        { { 48, 143, 122, 255 }, { 21, 76, 81, 255 } },
-        { { 48, 133, 152, 255 }, { 21, 69, 94, 255 } },
-        { { 64, 127, 184, 255 }, { 25, 67, 106, 255 } },
-        { { 87, 106, 182, 255 }, { 35, 48, 106, 255 } },
-        { { 115, 94, 168, 255 }, { 48, 44, 101, 255 } },
-        { { 131, 90, 150, 255 }, { 55, 39, 90, 255 } },
-        { { 147, 90, 122, 255 }, { 67, 41, 76, 255 } }
+        { { 212, 122, 122, 255 }, { 106, 55, 74, 255 } },
+        { { 213, 141, 99, 255 }, { 106, 71, 74, 255 } },
+        { { 203, 174, 94, 255 }, { 99, 87, 67, 255 } },
+        { { 161, 186, 99, 255 }, { 77, 99, 71, 255 } },
+        { { 87, 186, 122, 255 }, { 39, 104, 87, 255 } },
+        { { 67, 200, 171, 255 }, { 29, 106, 113, 255 } },
+        { { 67, 186, 213, 255 }, { 29, 97, 132, 255 } },
+        { { 90, 178, 255, 255 }, { 35, 94, 148, 255 } },
+        { { 122, 148, 255, 255 }, { 49, 67, 148, 255 } },
+        { { 161, 132, 235, 255 }, { 67, 62, 141, 255 } },
+        { { 183, 126, 210, 255 }, { 77, 55, 126, 255 } },
+        { { 206, 126, 171, 255 }, { 94, 57, 106, 255 } }
     };
     static uint32_t selectedSeed = 0;
     static uint32_t index = 0;
@@ -2448,7 +2473,8 @@ static void drawVirtualButton(const VirtualControlButton& button)
         const int spread = minSide / 5;
         const int depth = minSide / 7;
         SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
-        SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, pressed ? 255 : 235);
+        SDL_SetRenderDrawColor(g_renderer, 255, 255, 255,
+            virtualControlAlpha(pressed ? 255 : 235));
         const int tipX = centerX + (int)lround(directionX * depth);
         const int tipY = centerY + (int)lround(directionY * depth);
         const int baseX = centerX - (int)lround(directionX * depth);
@@ -2476,20 +2502,24 @@ static void drawVirtualButton(const VirtualControlButton& button)
         int radius = std::min(button.rect.w, button.rect.h) / 2 - 2;
         int centerX = button.rect.x + button.rect.w / 2;
         int centerY = button.rect.y + button.rect.h / 2;
-        SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, pressed ? 112 : 42);
+        SDL_SetRenderDrawColor(g_renderer, 255, 255, 255,
+            virtualControlAlpha(pressed ? 112 : 42));
         renderVirtualFillCircle(centerX, centerY, radius);
-        SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, pressed ? 255 : 210);
+        SDL_SetRenderDrawColor(g_renderer, 255, 255, 255,
+            virtualControlAlpha(pressed ? 255 : 210));
         renderVirtualDrawCircle(centerX, centerY, radius);
     }
     else
     {
-        SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, pressed ? 112 : 42);
+        SDL_SetRenderDrawColor(g_renderer, 255, 255, 255,
+            virtualControlAlpha(pressed ? 112 : 42));
         renderVirtualFillRect(button.rect);
-        SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, pressed ? 255 : 210);
+        SDL_SetRenderDrawColor(g_renderer, 255, 255, 255,
+            virtualControlAlpha(pressed ? 255 : 210));
         renderVirtualDrawRect(button.rect);
     }
 
-    SDL_Color color = { 255, 255, 255, 235 };
+    SDL_Color color = { 255, 255, 255, virtualControlAlpha(235) };
 #ifdef _WIN32
     if (drawVirtualSystemTextCentered(button, color))
     {
@@ -2519,12 +2549,12 @@ static void drawVirtualSegmentedRingDpad(
     int outerRadius = unit * 140 / 100;
     int arcInnerRadius = unit;
     int arcOuterRadius = unit * 124 / 100;
-    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, 24);
+    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, virtualControlAlpha(24));
     renderVirtualFillCircle(centerX, centerY, outerRadius);
-    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, 190);
+    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, virtualControlAlpha(190));
     renderVirtualDrawCircle(centerX, centerY, outerRadius);
 
-    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, 74);
+    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, virtualControlAlpha(74));
     int separatorInnerRadius = unit * 40 / 100;
     for (int i = 0; i < 4; ++i)
     {
@@ -2543,12 +2573,12 @@ static void drawVirtualSegmentedRingDpad(
         virtualDpadButtonDirection(buttons[i], centerX, centerY,
             &directionX, &directionY);
         SDL_SetRenderDrawColor(g_renderer, 255, 255, 255,
-            virtualButtonPressed(buttons[i]) ? 230 : 112);
+            virtualControlAlpha(virtualButtonPressed(buttons[i]) ? 230 : 112));
         renderVirtualFillArcBand(centerX, centerY,
             arcInnerRadius, arcOuterRadius, directionX, directionY);
     }
 
-    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, 145);
+    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, virtualControlAlpha(145));
     renderVirtualFillCircle(centerX, centerY, std::max(2, unit * 7 / 100));
 }
 
@@ -2556,17 +2586,17 @@ static void drawVirtualJoystickDpad(int unit, int centerX, int centerY)
 {
     int radius = unit * 3 / 2 - 3;
     SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, 24);
+    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, virtualControlAlpha(24));
     renderVirtualFillCircle(centerX, centerY, radius);
-    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, 190);
+    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, virtualControlAlpha(190));
     renderVirtualDrawCircle(centerX, centerY, radius);
 
     updateVirtualDpadVisualPosition();
     int offsetX = (int)lround(g_virtualDpadVisualOffsetX);
     int offsetY = (int)lround(g_virtualDpadVisualOffsetY);
-    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, 58);
+    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, virtualControlAlpha(58));
     renderVirtualFillCircle(centerX + offsetX, centerY + offsetY, unit / 2);
-    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, 235);
+    SDL_SetRenderDrawColor(g_renderer, 255, 255, 255, virtualControlAlpha(235));
     renderVirtualDrawCircle(centerX + offsetX, centerY + offsetY, unit / 2);
 }
 
@@ -5111,10 +5141,11 @@ void frontendApplyInputSettings(const EmulatorSettings& settings)
     inputApplyKeyboardMapping(settings.keyboardMapping);
     applyGameControllerMappingSettings(settings.controllerMapping);
     applyControllerCalibrationSettings(settings.controllerCalibration);
-    printf("frontend: input settings system_ime_disabled=%u show_virtual_controls=%u virtual_control_scale=%d virtual_dpad_type=%s keyboard_mapping=%s controller_mapping=%s controller_calibration=%s\n",
+    printf("frontend: input settings system_ime_disabled=%u show_virtual_controls=%u virtual_control_scale=%d virtual_control_opacity=%d virtual_dpad_type=%s keyboard_mapping=%s controller_mapping=%s controller_calibration=%s\n",
         settings.systemImeDisabled ? 1u : 0u,
         settings.showVirtualControls ? 1u : 0u,
         settings.virtualControlScalePercent,
+        settings.virtualControlOpacityPercent,
         emulatorVirtualDpadTypeName(settings.virtualDpadType),
         settings.keyboardMapping.empty() ? "(default)" : settings.keyboardMapping.c_str(),
         settings.controllerMapping.empty() ? "(default)" : settings.controllerMapping.c_str(),
@@ -6739,13 +6770,13 @@ void frontendRunLoop(const EmulatorOptions& options)
         uint64_t activePresentIntervalMs = minimizedThrottle ?
             kMinimizedThrottlePresentIntervalMs : minPresentIntervalMs;
         bool gameRunning = frontendMenuGameRunning();
-        GameFormat activeFormat = gameRuntimeActiveFormat();
-        if (gameRunning && activeFormat != GAME_FORMAT_UNKNOWN)
+        GameFileFormat activeFormat = gameRuntimeActiveFileFormat();
+        if (gameRunning && activeFormat != GAME_FILE_FORMAT_UNKNOWN)
         {
             runtimeWasActive = true;
         }
         else if (gameRunning && runtimeWasActive &&
-            activeFormat == GAME_FORMAT_UNKNOWN)
+            activeFormat == GAME_FILE_FORMAT_UNKNOWN)
         {
             printf("frontend: game runtime completed; returning to idle screen\n");
             frontendMenuSetGameRunning(false);

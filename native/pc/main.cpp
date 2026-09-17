@@ -8,11 +8,12 @@
 #include "config/settings/emulator_settings.h"
 #include "frontend_menu.h"
 #include "shared/diagnostics/runtime_log.h"
-#include "sdl_frontend.h"
+#include "frontend_shell.h"
 #include "platform_win32.h"
 #include "startup_command_line.h"
 #include "startup_game_selection.h"
 #include "app_metadata.h"
+#include "shared/game/game_paths.h"
 #include "shared/game/game_runtime.h"
 
 #include <stdio.h>
@@ -96,13 +97,15 @@ static bool runCoreRegressionTests(void)
         ccScaleTargetIps(15000000u, 1.0) == 15000000u &&
         ccInstructionsToMicros(9750000u, 9750000u) == 1000000u;
     bool commandLinePassed = startupCommandLineRunRegressionTests();
-    printf("core-regression: semaphore=%s save_state=%s cc_timing=%s command_line=%s result=%s\n",
+    bool gamePathsPassed = gamePathsRunRegressionTests();
+    printf("core-regression: semaphore=%s save_state=%s cc_timing=%s command_line=%s game_paths=%s result=%s\n",
         semaphorePassed ? "pass" : "fail",
         saveStatePassed ? "pass" : "fail",
         ccTimingPassed ? "pass" : "fail",
         commandLinePassed ? "pass" : "fail",
-        semaphorePassed && saveStatePassed && ccTimingPassed && commandLinePassed ? "pass" : "fail");
-    return semaphorePassed && saveStatePassed && ccTimingPassed && commandLinePassed;
+        gamePathsPassed ? "pass" : "fail",
+        semaphorePassed && saveStatePassed && ccTimingPassed && commandLinePassed && gamePathsPassed ? "pass" : "fail");
+    return semaphorePassed && saveStatePassed && ccTimingPassed && commandLinePassed && gamePathsPassed;
 }
 
 int main(int argc, char* argv[])

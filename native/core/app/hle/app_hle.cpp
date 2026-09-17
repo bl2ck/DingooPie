@@ -12,7 +12,7 @@
 #include <assert.h>
 #include "frontend/video/framebuffer.h"
 #include "shared/execution/pause_gate.h"
-#include "sdl_frontend.h"
+#include "frontend_shell.h"
 #include "shared/services/guest_filesystem.h"
 #include "app/hle/app_task_scheduler.h"
 #include "shared/services/guest_audio.h"
@@ -20,8 +20,8 @@
 #include "config/compatibility/compat_profile.h"
 #include "shared/diagnostics/runtime_log.h"
 #include "shared/diagnostics/profile_counter.h"
-#include "shared/diagnostics/runtime_shared_text.h"
-#include "runtime_resource_monitor.h"
+#include "shared/execution/thread_safe_text.h"
+#include "shared/diagnostics/runtime_resource_events.h"
 #include "shared/execution/runtime_tick_clock.h"
 #include <chrono>
 #include <atomic>
@@ -43,8 +43,8 @@
 static void returnToRa(NativeRuntime* runtime);
 static GuestPackage* s_bridgeApp = NULL;
 static std::string s_bridgeAppSha256;
-static RuntimeSharedText<192> s_lastTaskStopSummary;
-static RuntimeSharedText<192> s_lastStoppedHleSummary;
+static ThreadSafeText<192> s_lastTaskStopSummary;
+static ThreadSafeText<192> s_lastStoppedHleSummary;
 static thread_local char s_threadLastHleSummary[192] = "";
 static RuntimeTickClock s_osTickClock;
 static std::atomic<bool> s_bridgeProfileEnabled(false);
@@ -1335,7 +1335,6 @@ static void br_waveout_open(NativeRuntime* runtime)
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &pc);
 }
 
-//extern int waveout_write(waveout_inst* inst, char* buffer, int count);
 static void br_waveout_write(NativeRuntime* runtime)
 {
     uint32_t instPtr;
@@ -1368,8 +1367,6 @@ static void br_waveout_write(NativeRuntime* runtime)
     nativeRuntimeWriteRegister(runtime, RUNTIME_REG_PC, &pc);
 }
 
-//typedef void waveout_inst;
-//int waveout_close(waveout_inst*);
 static void br_waveout_close(NativeRuntime* runtime)
 {
     uint32_t ptr;
@@ -1643,7 +1640,7 @@ static void br_fread(NativeRuntime* runtime)
                 bool shouldRecordResourceLoad = runtimeResourceMonitorIsCapturing();
                 uint32_t positionBefore = shouldRecordResourceLoad ?
                     fsys_stream_position(guestFile->data) : 0;
-                read_ret = vm_fread(buff, size, count, guestFile->data);
+                read_ret = fsys_fread(buff, size, count, guestFile->data);
                 if (shouldRecordResourceLoad && read_ret != (uint32_t)-1)
                 {
                     fsys_record_load_to_guest(guestFile->data, ptr, buff, positionBefore);
@@ -1815,7 +1812,7 @@ static void br_fsys_fread(NativeRuntime* runtime)
             bool shouldRecordResourceLoad = runtimeResourceMonitorIsCapturing();
             uint32_t positionBefore = shouldRecordResourceLoad ?
                 fsys_stream_position(stream) : 0;
-            read_ret = vm_fread(buff, size, count, stream);
+            read_ret = fsys_fread(buff, size, count, stream);
             if (shouldRecordResourceLoad && read_ret != (uint32_t)-1)
             {
                 fsys_record_load_to_guest(stream, ptr, buff, positionBefore);
@@ -2498,8 +2495,6 @@ struct HookCodeFunction
     const char* name;
     br_func func;
     uint32_t lock;
-    uint32_t reserved_trigger_count;
-    uint32_t reserved_profile_count;
     uint32_t fast_return_enabled;
     uint32_t fast_return_value;
 }s_hookCodeFunctions[] =
@@ -2552,8 +2547,8 @@ struct HookCodeFunction
     {0,"fsys_fopen_flash",br_none, 1},
     {0,"fsys_fclose_flash",br_none, 1},
     {0,"get_dl_handle",br_get_dl_handle, 1},
-    {0,"get_game_vol",br_get_game_vol, 0, 0, 0, 1, 31},
-    {0,"get_current_language",br_get_current_language, 0, 0, 0, 1, 0},
+    {0,"get_game_vol",br_get_game_vol, 0, 1, 31},
+    {0,"get_current_language",br_get_current_language, 0, 1, 0},
     {0,"fsys_fopen",br_fsys_fopen, 1},
     {0,"fsys_fclose",br_fsys_fclose, 1},
     {0,"fsys_fread",br_fsys_fread, 1},

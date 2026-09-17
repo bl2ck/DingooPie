@@ -2,8 +2,20 @@
 
 ## 中文
 
-丁果派 DingooPie 是 Windows 平台的丁果游戏模拟器，支持运行丁果 A320、歌美 X760+、歌美 A330 的 `.app` 与 `.cc` 游戏。
+丁果派 DingooPie 是 Windows 平台的丁果游戏模拟器，支持运行丁果 A320、歌美 X760+、歌美 A330 的 `.app`、`.cc`、`.c2m`、`.c2s` 与 `.c3s` 游戏。
 本发行版不包含游戏文件，请使用自行合法取得的游戏样本。
+
+### 支持的游戏样本后缀
+
+| 后缀 | 类型与处理方式 |
+| --- | --- |
+| `.app` | 丁果 APP 游戏包，使用 APP MIPS 运行时。 |
+| `.cc` | 歌美 CC 系列游戏包，使用 CC ARM32 运行时。 |
+| `.c2m` | 使用的 CC 系列容器后缀，按 `.cc` 同类格式加载。 |
+| `.c2s` | 使用的 CC 系列容器后缀，按 `.cc` 同类格式加载。 |
+| `.c3s` | 使用的 CC 系列容器后缀，按 `.cc` 同类格式加载。 |
+
+后缀用于识别原始游戏样本的容器形式；`.c2m`、`.c2s` 和 `.c3s` 不使用独立模拟内核。
 
 - Powered by：BL2CK Software
 - 版权：Copyright (c) 2026 BL2CK
@@ -13,19 +25,19 @@
 ### 快速使用
 
 1. 解压完整发行包后，双击 `DingooPie.exe`。
-2. 通过 `文件 > 打开游戏` 选择 `.app` 或 `.cc` 文件，也可以将游戏文件拖入模拟器窗口。
+2. 通过 `文件 > 打开游戏` 选择 `.app`、`.cc`、`.c2m`、`.c2s` 或 `.c3s` 文件，也可以将游戏文件拖入模拟器窗口。
 3. 已运行的游戏会显示在 `文件 > 最近游戏` 中；不传入游戏启动时，模拟器会自动继续最近一次运行的游戏。
 4. 未运行游戏时会显示随机动态背景；打开游戏后自动切换到游戏画面。
 
 ### 命令行参数
 
 ```text
-DingooPie.exe [选项] [game.app|game.cc]
+DingooPie.exe [选项] [game.app|game.cc|game.c2m|game.c2s|game.c3s]
 ```
 
 | 参数 | 说明 |
 | --- | --- |
-| `-g, --game <路径>` | 启动一个 `.app` 或 `.cc` 游戏。 |
+| `-g, --game <路径>` | 启动一个受支持的游戏文件。 |
 | `-c, --config <路径>` | 本次运行从指定 INI 读取设置，并将后续设置写回该文件。 |
 | `--no-recent` | 本次启动不自动加载最近游戏，不会清空最近游戏列表。 |
 | `-h, --help` | 显示帮助。 |
@@ -43,7 +55,7 @@ DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc" --config "D:\DingooPie\Porta
 游戏路径只能指定一次，可直接填写路径，也可使用 `--game`。路径含空格时必须加引号。
 未指定 `--config` 时使用程序目录中的 `DingooPie.ini`。
 
-默认建议使用 `CPU 执行模式 > 自动`。如果个别游戏运行异常，可切换为 `兼容模式` 后重试。
+默认建议使用 `CPU 执行模式 > 自动`。如果个别游戏运行异常，可切换为 `兼容` 后重试。
 
 ### 默认设置
 
@@ -67,6 +79,7 @@ DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc" --config "D:\DingooPie\Porta
 | 禁用系统输入法 | 开启 |
 | 显示虚拟按键 | 关闭 |
 | 虚拟按键大小 | 100% |
+| 虚拟按键透明度 | 100% |
 | 方向键类型 | 摇杆 |
 | CPU 执行模式 | 自动 |
 | CPU 时钟 | 自动 |
@@ -80,10 +93,10 @@ DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc" --config "D:\DingooPie\Porta
 - `文件`：打开游戏、最近游戏/清除最近游戏、重启游戏、暂停/恢复游戏、保存截图、保存即时存档、读取即时存档、存档管理器、退出模拟器。
 - `选项 > 视频`：窗口缩放、全屏、抗锯齿、滤镜、画面参数、最小化行为、屏幕方向、画面填充和 FPS 显示。
 - `选项 > 音频`：主音量、音频缓冲、音频缓冲延迟、音频效果、数字降噪和禁用音频。
-- `选项 > 输入`：禁用系统输入法、显示虚拟按键、虚拟按键大小、方向键类型、键盘与手柄映射和手柄摇杆校准。
+- `选项 > 输入`：禁用系统输入法、显示虚拟按键、虚拟按键大小、虚拟按键透明度、方向键类型、键盘与手柄映射和手柄摇杆校准。
 - `设置`：CPU 执行模式、CPU 时钟、游戏速度、系统延迟比例、金手指、金手指管理器、语言和恢复默认设置。
 - `调试`：显示调试控制台、启用性能日志、打开调试日志、资源监视器、内存搜索器和调试器。
-- `帮助`：作者主页、项目主页和关于丁果派。
+- `帮助`：作者主页、项目主页和关于丁果派；关于页显示版本、适用机型、游戏文件格式归属和软件信息。
 
 设置会自动保存到 `DingooPie.exe` 同目录的 `DingooPie.ini`。大多数选项会立即生效；切换 CPU 执行模式时，当前游戏会自动重启。
 
@@ -153,8 +166,21 @@ PC 版保留以下用户可操作的调试功能：
 
 ## English
 
-DingooPie is a Windows emulator for Dingoo A320, Gemei X760+, and Gemei A330 `.app` and `.cc` games.
+DingooPie is a Windows emulator for Dingoo A320, Gemei X760+, and Gemei A330 `.app`, `.cc`, `.c2m`, `.c2s`, and `.c3s` games.
 Game files are not included. Use legally obtained game samples.
+
+### Supported Game Sample Suffixes
+
+| Suffix | Type And Handling |
+| --- | --- |
+| `.app` | Dingoo APP game package handled by the APP MIPS runtime. |
+| `.cc` | CC-family game package handled by the CC ARM32 runtime. |
+| `.c2m` | CC-family container suffix used by Gemei samples; loaded like `.cc`. |
+| `.c2s` | CC-family container suffix used by Gemei samples; loaded like `.cc`. |
+| `.c3s` | CC-family container suffix used by Gemei samples; loaded like `.cc`. |
+
+The suffix identifies the original sample container. `.c2m`, `.c2s`, and `.c3s`
+do not use separate emulation cores.
 
 - Powered by: BL2CK Software
 - Copyright (c) 2026 BL2CK
@@ -164,19 +190,19 @@ Game files are not included. Use legally obtained game samples.
 ### Quick Start
 
 1. Extract the complete release package and run `DingooPie.exe`.
-2. Select an `.app` or `.cc` file from `File > Open Game`, or drag the game file onto the emulator window.
+2. Select an `.app`, `.cc`, `.c2m`, `.c2s`, or `.c3s` file from `File > Open Game`, or drag the game file onto the emulator window.
 3. Previously launched games appear under `File > Recent Games`. Starting without a game automatically resumes the most recent game.
 4. A randomized animated background is shown while no game is running; opening a game switches to gameplay automatically.
 
 ### Command-Line Options
 
 ```text
-DingooPie.exe [options] [game.app|game.cc]
+DingooPie.exe [options] [game.app|game.cc|game.c2m|game.c2s|game.c3s]
 ```
 
 | Option | Description |
 | --- | --- |
-| `-g, --game <path>` | Launch one `.app` or `.cc` game. |
+| `-g, --game <path>` | Launch one supported game file. |
 | `-c, --config <path>` | Read settings from this INI and write later changes back to it. |
 | `--no-recent` | Skip automatic recent-game startup for this run without clearing the recent list. |
 | `-h, --help` | Show help. |
@@ -194,7 +220,7 @@ DingooPie.exe --game "D:\Games\Dingoo\Your Game.cc" --config "D:\DingooPie\Porta
 Specify one game either directly or with `--game`, and quote paths containing spaces.
 Without `--config`, `DingooPie.ini` beside the executable is used.
 
-`CPU Execution Mode > Auto` is recommended. If a game does not run correctly, retry with `Compatibility Mode`.
+`CPU Execution Mode > Auto` is recommended. If a game does not run correctly, retry with `Compatibility`.
 
 ### Default Settings
 
@@ -218,6 +244,7 @@ Without `--config`, `DingooPie.ini` beside the executable is used.
 | Disable system IME | On |
 | Show virtual controls | Off |
 | Virtual control size | 100% |
+| Virtual control opacity | 100% |
 | D-pad type | Joystick |
 | CPU execution mode | Auto |
 | CPU clock | Auto |
@@ -231,10 +258,10 @@ Without `--config`, `DingooPie.ini` beside the executable is used.
 - `File`: Open Game, Recent Games/Clear Recent Games, Restart Game, Pause/Resume Game, Save Screenshot, Save State, Load State, Save Manager, and Exit Emulator.
 - `Options > Video`: window scale, fullscreen, anti-aliasing, filters, image adjustments, minimized behavior, screen orientation, screen fill, and FPS display.
 - `Options > Audio`: master volume, audio buffer, audio buffer latency, audio effect, digital noise reduction, and audio disable.
-- `Options > Input`: Disable System IME, Show Virtual Controls, Virtual Control Size, D-pad Type, Input Mapping, and Joystick Calibration.
+- `Options > Input`: Disable System IME, Show Virtual Controls, Virtual Control Size, Virtual Control Opacity, D-pad Type, Input Mapping, and Joystick Calibration.
 - `Settings`: CPU Execution Mode, CPU Clock, Game Speed, System Delay Scale, Cheats, Cheat Manager, Language, and Restore Default Settings.
 - `Debug`: Show Debug Console, Enable Performance Log, Open Debug Log, Resource Monitor, Memory Searcher, and Debugger.
-- `Help`: Author Homepage, Project Homepage, and About DingooPie.
+- `Help`: Author Homepage, Project Homepage, and About DingooPie. About displays the version, supported devices, supported formats, game file format ownership, and software information.
 
 Settings are saved automatically in `DingooPie.ini` beside `DingooPie.exe`. Most options apply immediately. Changing CPU Execution Mode automatically restarts the current game.
 
@@ -294,7 +321,7 @@ Resource Monitor, Memory Searcher, and Debugger are available while a game is ru
 
 ### Troubleshooting
 
-- Game does not start correctly: switch `CPU Execution Mode` to `Compatibility Mode`.
+- Game does not start correctly: switch `CPU Execution Mode` to `Compatibility`.
 - No audio: make sure `Disable Audio` is off, then check master and system volume.
 - Keyboard input problems: enable `Disable System IME` or reset Input Mapping.
 - Instant save cannot be loaded: confirm it belongs to the current game and return to the same game phase.

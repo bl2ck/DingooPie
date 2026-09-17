@@ -1,5 +1,5 @@
 #include "app/runtime/app_runtime_debug.h"
-#include "debug_console.h"
+#include "shared/diagnostics/debug_log.h"
 #include <time.h>
 #include "app/memory/app_memory.h"
 #include <capstone/capstone.h>

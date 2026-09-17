@@ -4,9 +4,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <mutex>
-#include "app_runtime_debug.h"
 #include "frontend/video/framebuffer.h"
 #include <pthread.h>
+
+static uint32_t alignUp(uint32_t value, uint32_t alignment)
+{
+    return (value + alignment - 1u) & ~(alignment - 1u);
+}
+
 static const uint32_t kCpuRegisterBaseAddress = 0xB0000000;
 static const uint32_t kCpuRegisterSize = 0x04000000;
 static const uint32_t kVmHeapSize = 64 * 1024 * 1024;
@@ -195,7 +200,7 @@ int appMemoryInitialize(NativeRuntime* runtime, GuestPackage* app)
 	s_appProgramData = app->bin_data;
 	s_appProgramSize = app->bin_size;
 
-	s_heapBeginAddress = ALIGN((app->prog_size + app->origin), 4096);
+	s_heapBeginAddress = alignUp(app->prog_size + app->origin, 4096u);
 
 	memset(s_heapMemory, 0x00, kVmHeapSize);
 	initializeVmHeapAllocator(s_heapMemory, kVmHeapSize);
@@ -531,11 +536,6 @@ bool vmHeapRestoreSnapshot(const VmHeapSnapshot& snapshot)
     return true;
 }
 
-// Framebuffer memory is owned by framebuffer.cpp and can also be translated
-// through the generic VM pointer helpers below.
-extern uint32_t kLcdFramebufferAddress;
-extern uint8_t s_framebufferPixels[VM_LCD_FB_SIZE];
-
 static bool guestRangeFits(uint32_t addr, uint32_t size, uint32_t base, uint32_t regionSize)
 {
     uint64_t rangeBegin = addr;
@@ -591,7 +591,7 @@ void* toHostPtrRange(uint32_t addr, uint32_t size)
     void* framebufferPtr = NULL;
     if (framebufferHostPointer(addr, &framebufferPtr))
     {
-        size_t framebufferOffset = (size_t)framebufferPtr - (size_t)s_framebufferPixels;
+        size_t framebufferOffset = (size_t)framebufferPtr - (size_t)framebufferPixels();
         uint64_t framebufferEnd = (uint64_t)framebufferOffset + (size ? size : 1u);
         if (framebufferOffset < VM_LCD_FB_SIZE && framebufferEnd <= VM_LCD_FB_SIZE)
         {
@@ -634,7 +634,7 @@ uint32_t toHostPtrRemaining(uint32_t addr, void** out)
     uint32_t remaining = hostRegionRemaining(*out, s_heapMemory, kVmHeapSize);
     if (!remaining) remaining = hostRegionRemaining(*out, s_stackMemory, kVmStackSize);
     if (!remaining) remaining = hostRegionRemaining(*out, s_appProgramData, s_appProgramSize);
-    if (!remaining) remaining = hostRegionRemaining(*out, s_framebufferPixels, VM_LCD_FB_SIZE);
+    if (!remaining) remaining = hostRegionRemaining(*out, framebufferPixels(), VM_LCD_FB_SIZE);
     if (!remaining)
     {
         *out = NULL;

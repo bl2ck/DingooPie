@@ -15,8 +15,8 @@ const wchar_t* uiText(UiLanguage language, UiTextId id)
         return zh ? L"\u6253\u5f00\u6e38\u620f" : L"Open Game";
     case TXT_DIALOG_APP_FILTER:
         return zh ?
-            L"\u4e01\u679c\u6e38\u620f (*.app;*.cc)\0*.app;*.cc\0\u6240\u6709\u6587\u4ef6 (*.*)\0*.*\0" :
-            L"Dingoo Games (*.app;*.cc)\0*.app;*.cc\0All Files (*.*)\0*.*\0";
+            L"\u4e01\u679c\u6e38\u620f (*.app;*.cc;*.c2m;*.c2s;*.c3s)\0*.app;*.cc;*.c2m;*.c2s;*.c3s\0\u6240\u6709\u6587\u4ef6 (*.*)\0*.*\0" :
+            L"Dingoo Games (*.app;*.cc;*.c2m;*.c2s;*.c3s)\0*.app;*.cc;*.c2m;*.c2s;*.c3s\0All Files (*.*)\0*.*\0";
     case TXT_ERROR_LAUNCH_FAILED:
         return zh ? L"\u542f\u52a8\u6240\u9009\u6e38\u620f\u5931\u8d25\u3002" : L"Failed to launch the selected game.";
     case TXT_FILE_RECENT:
@@ -213,6 +213,8 @@ const wchar_t* uiText(UiLanguage language, UiTextId id)
         return zh ? L"\u663e\u793a\u865a\u62df\u6309\u952e(&V)" : L"Show Virtual Controls(&V)";
     case TXT_INPUT_VIRTUAL_CONTROL_SCALE:
         return zh ? L"\u865a\u62df\u6309\u952e\u5927\u5c0f(&S)" : L"Virtual Control Size(&S)";
+    case TXT_INPUT_VIRTUAL_CONTROL_OPACITY:
+        return zh ? L"\u865a\u62df\u6309\u952e\u900f\u660e\u5ea6(&O)" : L"Virtual Control Opacity(&O)";
     case TXT_INPUT_VIRTUAL_DPAD_TYPE:
         return zh ? L"\u65b9\u5411\u952e\u7c7b\u578b(&D)" : L"D-pad Type(&D)";
     case TXT_INPUT_VIRTUAL_DPAD_JOYSTICK:
@@ -228,7 +230,7 @@ const wchar_t* uiText(UiLanguage language, UiTextId id)
     case TXT_SETTINGS_EXECUTION_MODE_AUTO:
         return zh ? L"\u81ea\u52a8" : L"Auto";
     case TXT_SETTINGS_EXECUTION_MODE_COMPATIBILITY:
-        return zh ? L"\u517c\u5bb9\u6a21\u5f0f" : L"Compatibility Mode";
+        return zh ? L"\u517c\u5bb9" : L"Compatibility";
     case TXT_SETTINGS_CPU_CLOCK:
         return zh ? L"CPU \u65f6\u949f(&H)" : L"CPU Clock(&H)";
     case TXT_SETTINGS_AUTO:
@@ -296,11 +298,11 @@ const wchar_t* uiText(UiLanguage language, UiTextId id)
         return zh ?
             L"\u4e01\u679c\u6d3e DingooPie PC " DINGOO_PIE_VERSION_TEXT_W L"\n"
             L"\u9002\u7528\u4e8e\u4e01\u679c A320\u3001\u6b4c\u7f8e X760+ \u548c\u6b4c\u7f8e A330 \u7684\u6e38\u620f\u6a21\u62df\u5668\n"
-            L".app \u548c .cc \u683c\u5f0f\u5f52\u4e01\u679c\u79d1\u6280\u6240\u6709\u3002\n"
+            L"\u6e38\u620f\u6587\u4ef6\u683c\u5f0f\u5f52\u539f\u5382\u5546\u6240\u6709\n"
             L"\u7531 BL2CK Software \u63d0\u4f9b\u652f\u6301" :
             L"DingooPie PC " DINGOO_PIE_VERSION_TEXT_W L"\n"
             L"Game emulator for Dingoo A320, Gemei X760+, and Gemei A330\n"
-            L"The .app and .cc formats are owned by Dingoo Technology.\n"
+            L"Game file formats belong to their original vendors\n"
             L"Powered by BL2CK Software";
     default:
         return L"";

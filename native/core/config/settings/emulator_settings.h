@@ -10,6 +10,7 @@ static const int EMULATOR_VIDEO_PERCENT_VALUES[] = { 50, 75, 90, 100, 110, 125, 
 static const int EMULATOR_AUDIO_VOLUME_VALUES[] = { 0, 25, 50, 75, 100, 125, 150 };
 static const int EMULATOR_AUDIO_BUFFER_VALUES[] = { 512, 1024, 2048, 4096, 8192 };
 static const int EMULATOR_VIRTUAL_CONTROL_SCALE_VALUES[] = { 75, 100, 125, 150 };
+static const int EMULATOR_VIRTUAL_CONTROL_OPACITY_VALUES[] = { 25, 50, 75, 100 };
 static const char* const EMULATOR_CPU_CLOCK_VALUES[] = {
     "", "200000000", "336000000", "360000000", "400000000", "430000000"
 };
@@ -197,6 +198,7 @@ struct EmulatorSettings
     bool systemImeDisabled;
     bool showVirtualControls;
     int virtualControlScalePercent;
+    int virtualControlOpacityPercent;
     VirtualDpadType virtualDpadType;
     std::string keyboardMapping;
     std::string controllerMapping;

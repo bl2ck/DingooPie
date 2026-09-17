@@ -1,9 +1,9 @@
 #include "app/memory/app_framebuffer_mapping.h"
 
+#include <stdio.h>
+
 #include "app/cpu/mips_runtime.h"
 #include "frontend/video/framebuffer.h"
-
-#include <stdio.h>
 
 int appFramebufferInitialize(NativeRuntime* runtime)
 {

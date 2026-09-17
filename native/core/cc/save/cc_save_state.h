@@ -2,7 +2,7 @@
 #define DINGOO_PIE_CC_SAVE_CC_SAVE_STATE_H
 
 #include "cc/cpu/arm32_interpreter.h"
-#include "shared/save/save_slots.h"
+#include "shared/save/save_state_slots.h"
 
 #include <stdint.h>
 #include <string>
@@ -89,10 +89,10 @@ struct CcRuntimeState
     bool dvcAudioStarted;
 };
 
-bool saveStateWriteCcSlot(const std::string& appPath, int slot,
+bool saveStateWriteCcSlot(const std::string& gamePath, int slot,
     const CcRuntimeState& state, std::string* error,
     SaveStateProgressCallback progressCallback = 0, void* progressUserData = 0);
-bool saveStateReadCcSlot(const std::string& appPath, int slot,
+bool saveStateReadCcSlot(const std::string& gamePath, int slot,
     CcRuntimeState* state, std::string* error,
     SaveStateProgressCallback progressCallback = 0, void* progressUserData = 0);
 

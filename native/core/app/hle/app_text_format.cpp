@@ -1,10 +1,11 @@
+#include "app/hle/app_text_format.h"
+
 #include "app/hle/app_hle.h"
 #include <ctype.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "app/cpu/mips_runtime.h"
-#include "app/hle/app_text_format.h"
 #include "app/memory/app_memory.h"
 
 #include <float.h>

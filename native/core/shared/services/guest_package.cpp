@@ -175,6 +175,7 @@ static bool hasKnownResourceExtension(const char* name)
 
 	static const char* knownExtensions[] = {
 		".ani",
+		".asc",
 		".bin",
 		".bmp",
 		".dat",
@@ -190,6 +191,7 @@ static bool hasKnownResourceExtension(const char* name)
 		".mid",
 		".midi",
 		".mkf",
+		".msg",
 		".mp3",
 		".pak",
 		".pcm",

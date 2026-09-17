@@ -11,7 +11,7 @@
 #include "cc/runtime/cc_timing.h"
 #include "cc/hle/cc_input_mapping.h"
 #include "config/cheats/cheat_runtime.h"
-#include "shared/config/runtime_constants.h"
+#include "shared/config/guest_runtime_constants.h"
 #include "shared/execution/execution_backend.h"
 #include "cc/runtime/cc_crash_report.h"
 #include "frontend/video/framebuffer.h"
@@ -22,7 +22,7 @@
 #include "shared/execution/pause_gate.h"
 #include "shared/platform/storage_services.h"
 #include "shared/diagnostics/runtime_log.h"
-#include "runtime_resource_monitor.h"
+#include "shared/diagnostics/runtime_resource_events.h"
 #include "Common/Crypto/sha256.h"
 
 #include <algorithm>
@@ -1701,7 +1701,7 @@ static bool handleSvc(void* userData, Arm32State* state, uint32_t immediate)
             resolveMemory(runtime, state->r[0], (uint32_t)requested) : NULL;
         uint32_t stream = fileStream(runtime, state->r[3]);
         state->r[0] = data ? (!strcmp(name, "fsys_fread") ?
-            vm_fread(data, state->r[1], state->r[2], stream) :
+            fsys_fread(data, state->r[1], state->r[2], stream) :
             fsys_fwrite(data, state->r[1], state->r[2], stream)) : 0;
         return true;
     }
@@ -2533,6 +2533,7 @@ bool ccRuntimeRunFile(const char* path,
                         stats->faultWrite = runtime.faultWrite;
                         stats->faultFetch = runtime.faultFetch;
                         stats->unsupportedPc = task.state.unsupportedPc;
+                        stats->failedTaskValid = true;
                         stats->failedTaskIndex = (uint32_t)i;
                         stats->failedTaskEntry = task.entry;
                         stats->failedTaskStack = task.stack;
@@ -2580,6 +2581,7 @@ bool ccRuntimeRunFile(const char* path,
         crashContext.faultSize = stats->faultSize;
         crashContext.faultWrite = stats->faultWrite;
         crashContext.faultFetch = stats->faultFetch;
+        crashContext.failedTaskValid = stats->failedTaskValid;
         crashContext.lastImportPc = stats->lastImportPc;
         crashContext.lastImportReturnAddress = stats->lastImportReturnAddress;
         crashContext.failedTaskIndex = stats->failedTaskIndex;

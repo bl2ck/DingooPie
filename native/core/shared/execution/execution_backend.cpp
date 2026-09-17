@@ -39,7 +39,8 @@ ExecutionBackend executionBackendFromName(const char* value, bool* recognized)
         return EXECUTION_BACKEND_COMPATIBILITY;
     }
 
-    if (executionValueEquals(value, "ppsspp_irjit") || executionValueEquals(value, "irjit"))
+    if (executionValueEquals(value, "ppsspp_irjit") ||
+        executionValueEquals(value, "irjit"))
     {
         return EXECUTION_BACKEND_PPSSPP_IRJIT;
     }

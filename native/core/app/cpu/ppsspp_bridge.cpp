@@ -20,7 +20,7 @@
 #include "frontend/input/input_state.h"
 #include "shared/services/guest_filesystem.h"
 #include "shared/diagnostics/runtime_log.h"
-#include "runtime_resource_monitor.h"
+#include "shared/diagnostics/runtime_resource_events.h"
 #include "Common/CPUDetect.h"
 #include "Common/File/FileUtil.h"
 #include "Common/File/VFS/VFS.h"
@@ -1779,7 +1779,7 @@ static bool tryRunFastHle(uint32_t address)
                 }
                 else
                 {
-                    ret = vm_fread(dst, size, count, file.data);
+                    ret = fsys_fread(dst, size, count, file.data);
                 }
                 fsys_end_fast_hle_call();
                 if (ret != (uint32_t)-1)
@@ -1872,7 +1872,7 @@ static bool tryRunFastHle(uint32_t address)
             }
             else
             {
-                ret = dst ? vm_fread(dst, size, count, stream) : (uint32_t)-1;
+                ret = dst ? fsys_fread(dst, size, count, stream) : (uint32_t)-1;
             }
             fsys_end_fast_hle_call();
             if (dst && ret != (uint32_t)-1)

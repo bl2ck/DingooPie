@@ -31,6 +31,7 @@ struct CcCrashLogContext
     uint32_t failedTaskDelayTicks;
     bool faultWrite;
     bool faultFetch;
+    bool failedTaskValid;
     const char* lastImport;
 };
 

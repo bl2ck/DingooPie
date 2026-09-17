@@ -5,10 +5,11 @@
 #include <stdio.h>
 
 bool platformFileExists(const std::string& path);
-FILE* platformOpenHostFile(const std::string& path, const char* mode);
+FILE* platformOpenFile(const std::string& path, const char* mode);
 bool platformChangeToGameDirectory(const std::string& gamePath);
 FILE* platformOpenGameFile(const std::string& path);
-FILE* platformOpenGameSiblingFile(const std::string& gamePath, const std::string& fileName);
+FILE* platformOpenGameSiblingFile(const std::string& gamePath,
+    const std::string& fileName, const char* mode = "rb");
 std::string platformGetAppSaveDirectory(const std::string& gamePath,
     const std::string& gameIdentity);
 std::string platformGetCcSaveDirectory(const std::string& gamePath,

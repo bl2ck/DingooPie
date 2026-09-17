@@ -229,10 +229,10 @@ function Stop-RunDingooPieProcesses($OutputDir) {
 }
 
 $apps = Get-ChildItem -LiteralPath $SampleDir -File |
-    Where-Object { $_.Extension -ieq ".app" -or $_.Extension -ieq ".cc" } |
+    Where-Object { $_.Extension -in @(".app", ".cc", ".c2m", ".c2s", ".c3s") } |
     Sort-Object Name
 if ($apps.Count -eq 0) {
-    throw "No .app or .cc samples found under $SampleDir"
+    throw "No supported game samples found under $SampleDir"
 }
 
 $runStamp = Get-Date -Format "yyyyMMdd-HHmmss"

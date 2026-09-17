@@ -15,14 +15,14 @@ The executable is named `DingooPie.exe`; its Windows version resource reports
 `Copyright (c) 2026 BL2CK`.
 Starting without a game argument does not show a file picker. Empty
 `recent.last_app` opens the frontend only; an existing `recent.last_app` is
-auto-loaded; a command-line `.app` or `.cc` path takes priority.
+auto-loaded; a command-line supported game path takes priority.
 Selecting a game from `File -> Open Game`, choosing `File -> Recent Games`,
-or dropping an `.app` or `.cc` file onto the window saves the chosen UTF-8 path to
+or dropping a supported game file onto the window saves the chosen UTF-8 path to
 `recent.last_app` and promotes it into `recent.app1` through `recent.app10`.
 `File -> Recent Games -> Clear Recent Games` clears both `recent.last_app` and
 the ordered `recent.app1`...`recent.app10` list.
 Automatic `recent.last_app` startup clears the matching recent entry when the
-path is missing, does not end in `.app` or `.cc`, or fails during package open/parse.
+path is missing, has an unsupported extension, or fails during package open/parse.
 Command-line startup failures are diagnostic-only and do not modify
 `DingooPie.ini`.
 
@@ -31,12 +31,12 @@ Command-line startup failures are diagnostic-only and do not modify
 The supported syntax is:
 
 ```text
-DingooPie.exe [options] [game.app|game.cc]
+DingooPie.exe [options] [game.app|game.cc|game.c2m|game.c2s|game.c3s]
 ```
 
 | Option | Behavior |
 | --- | --- |
-| `-g, --game <path>` | Start one APP or CC game. `--game=<path>` is also accepted. |
+| `-g, --game <path>` | Start one supported game. `--game=<path>` is also accepted. |
 | `-c, --config <path>` | Use the specified settings file. `--config=<path>` is also accepted. |
 | `--no-recent` | Skip recent-game auto-start without clearing the recent list. |
 | `-h, --help`, `/?` | Print usage. |

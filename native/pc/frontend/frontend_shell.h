@@ -1,5 +1,5 @@
-#ifndef DINGOO_PIE_SDL_FRONTEND_H
-#define DINGOO_PIE_SDL_FRONTEND_H
+#ifndef DINGOO_PIE_FRONTEND_SHELL_H
+#define DINGOO_PIE_FRONTEND_SHELL_H
 
 #include "emulator_options.h"
 #include "emulator_settings.h"

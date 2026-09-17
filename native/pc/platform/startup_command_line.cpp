@@ -184,9 +184,9 @@ void startupCommandLinePrintUsage(FILE* output)
     FILE* target = output ? output : stdout;
     fprintf(target,
         "Usage:\n"
-        "  DingooPie.exe [options] [game.app|game.cc]\n\n"
+        "  DingooPie.exe [options] [game.app|game.cc|game.c2m|game.c2s|game.c3s]\n\n"
         "Options:\n"
-        "  -g, --game <path>       Open one APP or CC game file.\n"
+        "  -g, --game <path>       Open one supported game file.\n"
         "  -c, --config <path>     Read and write settings using this INI file.\n"
         "      --no-recent         Do not auto-load the most recent game.\n"
         "  -h, --help              Show this help text.\n"
@@ -218,6 +218,8 @@ bool startupCommandLineRunRegressionTests(void)
     passed = passed && optionsMatch(startupCommandLineParse(
         { "--game", "game.cc", "--config", "portable.ini", "--no-recent" }),
         STARTUP_COMMAND_RUN, "game.cc", "portable.ini", true);
+    passed = passed && optionsMatch(startupCommandLineParse({ "game.c3s" }),
+        STARTUP_COMMAND_RUN, "game.c3s", "", false);
     passed = passed && optionsMatch(startupCommandLineParse(
         { "--game=game.app", "--config=portable.ini" }),
         STARTUP_COMMAND_RUN, "game.app", "portable.ini", false);

@@ -25,12 +25,12 @@ static const uint8_t kSaveStateTokenFill = 1;
 static const size_t kSaveStateMinFillRun = 16;
 static const size_t kSaveStateMaxRawBlock = 0xffffu;
 
-static std::string g_cachedAppPath;
-static std::string g_cachedAppId;
+static std::string g_cachedGamePath;
+static std::string g_cachedGameId;
 
 // On disk: fixed header followed by the current compressed payload layout.
 // The payload stores small runtime records first, then a compact writable
-// memory region table followed by contiguous region data. appId verifies the
+// memory region table followed by contiguous region data. gameId verifies the
 // save still belongs to the running game.
 struct SaveStateHeapHeader
 {
@@ -148,9 +148,9 @@ static std::string sha256Hex(const uint8_t* data, size_t size)
     return digestHex(digest, sizeof(digest));
 }
 
-static std::string fallbackAppId(const std::string& appPath)
+static std::string fallbackGameId(const std::string& gamePath)
 {
-    std::string normalized = gamePathNormalize(appPath.c_str());
+    std::string normalized = gamePathNormalize(gamePath.c_str());
     return sha256Hex((const uint8_t*)normalized.data(), normalized.size());
 }
 
@@ -878,41 +878,33 @@ static size_t boundedStringLength(const char* text, size_t maxLength)
     return length;
 }
 
-static std::string saveStateFileStemForPath(const std::string& appPath)
+static std::string saveStateFileStemForPath(const std::string& gamePath)
 {
-    std::string name = gameFileNameFromPath(gamePathNormalize(appPath.c_str()));
-    if (gamePathHasAppExtension(name))
-    {
-        name.resize(name.size() - 4);
-    }
-    else if (gamePathHasCcExtension(name))
-    {
-        name.resize(name.size() - 3);
-    }
+    std::string name = gamePathStemFromPath(gamePathNormalize(gamePath.c_str()));
     return name.empty() ? "game" : name;
 }
 
-std::string saveStateAppIdForPath(const std::string& appPath)
+std::string saveStateGameIdForPath(const std::string& gamePath)
 {
-    std::string normalized = gamePathNormalize(appPath.c_str());
-    if (!normalized.empty() && normalized == g_cachedAppPath && !g_cachedAppId.empty())
+    std::string normalized = gamePathNormalize(gamePath.c_str());
+    if (!normalized.empty() && normalized == g_cachedGamePath && !g_cachedGameId.empty())
     {
-        return g_cachedAppId;
+        return g_cachedGameId;
     }
 
-    std::string appId;
-    if (normalized.empty() || !hashGameFile(normalized, &appId))
+    std::string gameId;
+    if (normalized.empty() || !hashGameFile(normalized, &gameId))
     {
-        appId = fallbackAppId(normalized);
+        gameId = fallbackGameId(normalized);
     }
 
-    g_cachedAppPath = normalized;
-    g_cachedAppId = appId;
-    return appId;
+    g_cachedGamePath = normalized;
+    g_cachedGameId = gameId;
+    return gameId;
 }
 
-static std::string saveStateNativePathForSlot(const std::string& appPath,
-    SaveStateGameFormat format, int slot)
+static std::string saveStateNativePathForSlot(const std::string& gamePath,
+    SaveStateFormat format, int slot)
 {
     if (slot < 1 || slot > kSaveStateSlotCount)
     {
@@ -920,8 +912,8 @@ static std::string saveStateNativePathForSlot(const std::string& appPath,
     }
 
     std::string dir = format == SAVE_STATE_FORMAT_CC ?
-        platformGetCcSaveDirectory(appPath, saveStateAppIdForPath(appPath)) :
-        platformGetAppSaveDirectory(appPath, saveStateAppIdForPath(appPath));
+        platformGetCcSaveDirectory(gamePath, saveStateGameIdForPath(gamePath)) :
+        platformGetAppSaveDirectory(gamePath, saveStateGameIdForPath(gamePath));
     if (dir.empty())
     {
         return "";
@@ -930,13 +922,13 @@ static std::string saveStateNativePathForSlot(const std::string& appPath,
 
     char slotSuffix[16] = {};
     snprintf(slotSuffix, sizeof(slotSuffix), ".slot%d.dps", slot);
-    return dir + "\\" + saveStateFileStemForPath(appPath) + slotSuffix;
+    return dir + "\\" + saveStateFileStemForPath(gamePath) + slotSuffix;
 }
 
-std::string saveStatePathForSlot(const std::string& appPath,
-    SaveStateGameFormat format, int slot)
+std::string saveStatePathForSlot(const std::string& gamePath,
+    SaveStateFormat format, int slot)
 {
-    std::string path = saveStateNativePathForSlot(appPath, format, slot);
+    std::string path = saveStateNativePathForSlot(gamePath, format, slot);
     if (path.empty() || format != SAVE_STATE_FORMAT_CC)
     {
         return path;
@@ -950,17 +942,17 @@ std::string saveStatePathForSlot(const std::string& appPath,
     return saveFilePathJoin(path.substr(0, slash), path.substr(slash + 1));
 }
 
-SaveStateGameFormat saveStateFormatForPath(const std::string& appPath)
+SaveStateFormat saveStateFormatForPath(const std::string& gamePath)
 {
-    std::string normalized = gamePathNormalize(appPath.c_str());
-    return gamePathHasCcExtension(normalized) ?
+    std::string normalized = gamePathNormalize(gamePath.c_str());
+    return gamePathHasCcFamilyExtension(normalized) ?
         SAVE_STATE_FORMAT_CC : SAVE_STATE_FORMAT_APP;
 }
 
-std::string saveStateThumbnailPathForSlot(const std::string& appPath,
-    SaveStateGameFormat format, int slot)
+std::string saveStateThumbnailPathForSlot(const std::string& gamePath,
+    SaveStateFormat format, int slot)
 {
-    std::string path = saveStateNativePathForSlot(appPath, format, slot);
+    std::string path = saveStateNativePathForSlot(gamePath, format, slot);
     if (path.empty())
     {
         return "";
@@ -975,19 +967,19 @@ std::string saveStateThumbnailPathForSlot(const std::string& appPath,
     return path;
 }
 
-bool saveStateSlotExists(const std::string& appPath,
-    SaveStateGameFormat format, int slot)
+bool saveStateSlotExists(const std::string& gamePath,
+    SaveStateFormat format, int slot)
 {
-    const std::string path = saveStatePathForSlot(appPath, format, slot);
+    const std::string path = saveStatePathForSlot(gamePath, format, slot);
     return !path.empty() && (format == SAVE_STATE_FORMAT_CC ?
         saveFileExists(path) : fileExists(path));
 }
 
-bool saveStateDeleteSlot(const std::string& appPath,
-    SaveStateGameFormat format, int slot)
+bool saveStateDeleteSlot(const std::string& gamePath,
+    SaveStateFormat format, int slot)
 {
-    const std::string statePath = saveStatePathForSlot(appPath, format, slot);
-    const std::string thumbnailPath = saveStateThumbnailPathForSlot(appPath, format, slot);
+    const std::string statePath = saveStatePathForSlot(gamePath, format, slot);
+    const std::string thumbnailPath = saveStateThumbnailPathForSlot(gamePath, format, slot);
     if (statePath.empty() || thumbnailPath.empty())
     {
         return false;
@@ -1014,18 +1006,18 @@ bool saveStateDeleteSlot(const std::string& appPath,
     return stateDeleted && thumbnailDeleted;
 }
 
-SaveStateSlotInfo saveStateSlotInfo(const std::string& appPath,
-    SaveStateGameFormat format, int slot)
+SaveStateSlotInfo saveStateSlotInfo(const std::string& gamePath,
+    SaveStateFormat format, int slot)
 {
     SaveStateSlotInfo info;
     info.exists = false;
-    info.path = saveStateNativePathForSlot(appPath, format, slot);
+    info.path = saveStateNativePathForSlot(gamePath, format, slot);
     info.modifiedTime = 0;
     info.runtimeCountValid = false;
     info.runtimeCount = 0;
     if (!info.path.empty())
     {
-        const std::string storagePath = saveStatePathForSlot(appPath, format, slot);
+        const std::string storagePath = saveStatePathForSlot(gamePath, format, slot);
         info.exists = format == SAVE_STATE_FORMAT_CC ?
             saveFileExists(storagePath) : fileExists(info.path);
         if (info.exists)
@@ -1057,7 +1049,7 @@ SaveStateSlotInfo saveStateSlotInfo(const std::string& appPath,
     return info;
 }
 
-bool saveStateWriteSlot(const std::string& appPath, SaveStateGameFormat format, int slot,
+bool saveStateWriteSlot(const std::string& gamePath, SaveStateFormat format, int slot,
     const AppRuntimeState& state, std::string* error,
     SaveStateProgressCallback progressCallback, void* progressUserData)
 {
@@ -1067,7 +1059,7 @@ bool saveStateWriteSlot(const std::string& appPath, SaveStateGameFormat format, 
         return false;
     }
 
-    std::string path = saveStatePathForSlot(appPath, format, slot);
+    std::string path = saveStatePathForSlot(gamePath, format, slot);
     if (path.empty())
     {
         if (error) *error = "invalid slot";
@@ -1109,9 +1101,9 @@ bool saveStateWriteSlot(const std::string& appPath, SaveStateGameFormat format, 
     header.semaphoreCount = (uint32_t)state.hleSemaphoreCounts.size();
     header.osTicks = state.osTicks;
 
-    std::string appId = saveStateAppIdForPath(appPath);
-    memcpy(header.appId, appId.c_str(),
-        appId.size() < sizeof(header.appId) ? appId.size() : sizeof(header.appId));
+    std::string gameId = saveStateGameIdForPath(gamePath);
+    memcpy(header.gameId, gameId.c_str(),
+        gameId.size() < sizeof(header.gameId) ? gameId.size() : sizeof(header.gameId));
 
     std::vector<uint8_t> bytes;
     bytes.reserve(sizeof(header) + compressedPayload.size());
@@ -1146,7 +1138,7 @@ bool saveStateWriteSlot(const std::string& appPath, SaveStateGameFormat format, 
     return true;
 }
 
-bool saveStateReadSlot(const std::string& appPath, SaveStateGameFormat format, int slot,
+bool saveStateReadSlot(const std::string& gamePath, SaveStateFormat format, int slot,
     AppRuntimeState* state, std::string* error,
     SaveStateProgressCallback progressCallback, void* progressUserData)
 {
@@ -1161,7 +1153,7 @@ bool saveStateReadSlot(const std::string& appPath, SaveStateGameFormat format, i
     memset(&state->heap, 0, sizeof(state->heap));
     state->osTicks = 0;
 
-    std::string path = saveStatePathForSlot(appPath, format, slot);
+    std::string path = saveStatePathForSlot(gamePath, format, slot);
     std::vector<uint8_t> bytes;
     if (path.empty() || !readWholeFile(path, &bytes))
     {
@@ -1186,10 +1178,10 @@ bool saveStateReadSlot(const std::string& appPath, SaveStateGameFormat format, i
         return false;
     }
 
-    std::string expectedAppId = saveStateAppIdForPath(appPath);
-    std::string savedAppId(header.appId,
-        header.appId + boundedStringLength(header.appId, sizeof(header.appId)));
-    if (savedAppId != expectedAppId)
+    std::string expectedGameId = saveStateGameIdForPath(gamePath);
+    std::string savedGameId(header.gameId,
+        header.gameId + boundedStringLength(header.gameId, sizeof(header.gameId)));
+    if (savedGameId != expectedGameId)
     {
         if (error) *error = "save-state belongs to a different game";
         return false;

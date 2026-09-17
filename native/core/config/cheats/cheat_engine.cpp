@@ -1,32 +1,11 @@
 #include "config/cheats/cheat_engine.h"
+#include "shared/platform/storage_services.h"
 
 #include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#endif
-
-#ifdef _WIN32
-static std::wstring utf8ToWide(const std::string& text)
-{
-    int size = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, NULL, 0);
-    if (size <= 0)
-    {
-        return L"";
-    }
-
-    std::wstring out((size_t)size - 1, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, &out[0], size);
-    return out;
-}
-#endif
 
 static std::string trimText(const std::string& text)
 {
@@ -481,11 +460,7 @@ bool cheatLoadStream(FILE* file, const std::string& sourcePath, CheatSet* out, s
 
 bool cheatLoadFile(const std::string& path, CheatSet* out, std::string* error)
 {
-#ifdef _WIN32
-    FILE* file = _wfopen(utf8ToWide(path).c_str(), L"rb");
-#else
-    FILE* file = fopen(path.c_str(), "rb");
-#endif
+    FILE* file = platformOpenFile(path, "rb");
     if (!file)
     {
         if (error)

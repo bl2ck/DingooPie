@@ -451,7 +451,7 @@ static bool decodePayload(const std::vector<uint8_t>& data,
     return offset == data.size();
 }
 
-bool saveStateWriteCcSlot(const std::string& appPath, int slot,
+bool saveStateWriteCcSlot(const std::string& gamePath, int slot,
     const CcRuntimeState& state, std::string* error,
     SaveStateProgressCallback progressCallback, void* progressUserData)
 {
@@ -496,7 +496,7 @@ bool saveStateWriteCcSlot(const std::string& appPath, int slot,
     appendHeader(&file, header);
     appendRaw(&file, compressedPayload.data(), compressedPayload.size());
     if (!saveFileReplace(
-            saveStatePathForSlot(appPath, SAVE_STATE_FORMAT_CC, slot),
+            saveStatePathForSlot(gamePath, SAVE_STATE_FORMAT_CC, slot),
             file.data(), file.size()))
     {
         if (error) *error = "failed to write save-state file";
@@ -505,7 +505,7 @@ bool saveStateWriteCcSlot(const std::string& appPath, int slot,
     return true;
 }
 
-bool saveStateReadCcSlot(const std::string& appPath, int slot,
+bool saveStateReadCcSlot(const std::string& gamePath, int slot,
     CcRuntimeState* state, std::string* error,
     SaveStateProgressCallback progressCallback, void* progressUserData)
 {
@@ -515,7 +515,7 @@ bool saveStateReadCcSlot(const std::string& appPath, int slot,
         if (error) *error = "runtime state output is invalid";
         return false;
     }
-    const std::string savePath = saveStatePathForSlot(appPath, SAVE_STATE_FORMAT_CC, slot);
+    const std::string savePath = saveStatePathForSlot(gamePath, SAVE_STATE_FORMAT_CC, slot);
     const std::vector<std::string> candidatePaths =
         saveFileRecoveryCandidates(savePath);
     if (candidatePaths.empty())
@@ -545,7 +545,7 @@ bool saveStateReadCcSlot(const std::string& appPath, int slot,
             lastError = "unsupported save-state file";
             continue;
         }
-        std::string id = saveStateAppIdForPath(appPath);
+        std::string id = saveStateGameIdForPath(gamePath);
         if (id.size() != 64 ||
             memcmp(header.gameSha256, id.data(), sizeof(header.gameSha256)) != 0)
         {

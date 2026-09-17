@@ -1,86 +1,11 @@
 #include "app/runtime/app_crash_report.h"
 
-#include "shared/game/game_paths.h"
-#include "platform_win32.h"
+#include "shared/diagnostics/crash_report_writer.h"
 
 #include <capstone/capstone.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <string>
-#include <time.h>
-
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <process.h>
-#include <windows.h>
-#else
-#include <unistd.h>
-#endif
-
-static std::string crashLogTimestamp(void)
-{
-    time_t raw = time(NULL);
-    struct tm localTime;
-#ifdef _WIN32
-    localtime_s(&localTime, &raw);
-#else
-    localtime_r(&raw, &localTime);
-#endif
-
-    char text[32] = {};
-    strftime(text, sizeof(text), "%Y%m%d-%H%M%S", &localTime);
-    return text;
-}
-
-static unsigned long crashLogProcessId(void)
-{
-#ifdef _WIN32
-    return (unsigned long)GetCurrentProcessId();
-#else
-    return (unsigned long)getpid();
-#endif
-}
-
-static std::wstring crashLogPathNearExe(const wchar_t* fileName)
-{
-#ifdef _WIN32
-    wchar_t exePath[MAX_PATH] = {};
-    GetModuleFileNameW(NULL, exePath, MAX_PATH);
-    std::wstring path(exePath);
-    size_t slash = path.find_last_of(L"\\/");
-    if (slash != std::wstring::npos)
-    {
-        path.resize(slash + 1);
-    }
-    path += fileName;
-    return path;
-#else
-    return std::wstring(fileName);
-#endif
-}
-
-static FILE* crashLogOpen(const std::string& timestamp, std::string* outFileName)
-{
-    char fileName[96] = {};
-    snprintf(fileName, sizeof(fileName), "DingooPie-crash-%s-%lu.log",
-        timestamp.c_str(), crashLogProcessId());
-    fileName[sizeof(fileName) - 1] = '\0';
-    if (outFileName)
-    {
-        *outFileName = fileName;
-    }
-
-#ifdef _WIN32
-    std::wstring wideName = platformUtf8ToWide(fileName);
-    return _wfopen(crashLogPathNearExe(wideName.c_str()).c_str(), L"w");
-#else
-    return fopen(fileName, "w");
-#endif
-}
 
 static bool crashLogReadRegister(NativeRuntime* runtime, int reg, uint32_t* out)
 {
@@ -90,32 +15,6 @@ static bool crashLogReadRegister(NativeRuntime* runtime, int reg, uint32_t* out)
     }
     *out = 0;
     return runtime && nativeRuntimeReadRegister(runtime, reg, out) == RUNTIME_OK;
-}
-
-static void crashLogWriteUnderline(FILE* fp, char ch, size_t length)
-{
-    for (size_t i = 0; i < length; ++i)
-    {
-        fputc(ch, fp);
-    }
-    fputc('\n', fp);
-}
-
-static void crashLogWriteSection(FILE* fp, const char* title)
-{
-    fprintf(fp, "\n%s\n", title);
-    crashLogWriteUnderline(fp, '-', strlen(title));
-}
-
-static void crashLogWriteField(FILE* fp, const char* key, const char* format, ...)
-{
-    // Keep crash reports script-friendly: one compact key=value field per line.
-    fprintf(fp, "%s=", key);
-    va_list args;
-    va_start(args, format);
-    vfprintf(fp, format, args);
-    va_end(args);
-    fputc('\n', fp);
 }
 
 static std::string crashLogFormatInstruction(NativeRuntime* runtime, uint32_t address)
@@ -161,19 +60,6 @@ static std::string crashLogFormatInstruction(NativeRuntime* runtime, uint32_t ad
     return text;
 }
 
-static void crashLogWriteAddressOffset(FILE* fp, const char* key,
-    uint32_t address, uint32_t origin)
-{
-    if (origin && address >= origin)
-    {
-        crashLogWriteField(fp, key, "0x%08x", address - origin);
-    }
-    else
-    {
-        crashLogWriteField(fp, key, "unavailable");
-    }
-}
-
 static void crashLogWriteCrashLocation(FILE* fp, NativeRuntime* runtime,
     const CrashLogContext& context, uint32_t pc, uint32_t ra, uint32_t sp,
     uint32_t s4, uint32_t v0)
@@ -182,28 +68,40 @@ static void crashLogWriteCrashLocation(FILE* fp, NativeRuntime* runtime,
     std::string raInstruction = ra == pc ? "same-as-pc" :
         crashLogFormatInstruction(runtime, ra);
 
-    crashLogWriteSection(fp, "Crash Location");
-    crashLogWriteField(fp, "pc", "0x%08x", pc);
-    crashLogWriteAddressOffset(fp, "pc_offset", pc, context.origin);
-    crashLogWriteField(fp, "pc_instruction", "%s", pcInstruction.c_str());
-    crashLogWriteField(fp, "ra", "0x%08x", ra);
-    crashLogWriteAddressOffset(fp, "ra_offset", ra, context.origin);
-    crashLogWriteField(fp, "ra_instruction", "%s", raInstruction.c_str());
-    crashLogWriteField(fp, "sp", "0x%08x", sp);
-    crashLogWriteField(fp, "s4", "0x%08x", s4);
-    crashLogWriteField(fp, "v0", "0x%08x", v0);
+    uint64_t appEnd = (uint64_t)context.origin + context.appSize;
+    crashReportWriteSection(fp, "Crash Location");
+    crashReportWriteField(fp, "pc", "0x%08x", pc);
+    crashReportWriteAddressOffset(fp, "pc_offset", pc, context.origin);
+    crashReportWriteBoolean(fp, "pc_in_app",
+        pc >= context.origin && (uint64_t)pc < appEnd);
+    crashReportWriteField(fp, "pc_instruction", "%s", pcInstruction.c_str());
+    crashReportWriteField(fp, "ra", "0x%08x", ra);
+    crashReportWriteAddressOffset(fp, "ra_offset", ra, context.origin);
+    crashReportWriteBoolean(fp, "ra_in_app",
+        ra >= context.origin && (uint64_t)ra < appEnd);
+    crashReportWriteField(fp, "ra_instruction", "%s", raInstruction.c_str());
+    crashReportWriteField(fp, "sp", "0x%08x", sp);
+    crashReportWriteField(fp, "s4", "0x%08x", s4);
+    crashReportWriteField(fp, "v0", "0x%08x", v0);
 }
 
 static void crashLogWriteApp(FILE* fp, const CrashLogContext& context)
 {
-    crashLogWriteSection(fp, "App");
-    crashLogWriteField(fp, "app_path", "%s", context.appPath ? context.appPath : "");
-    crashLogWriteField(fp, "app_main_path", "%s", context.appMainPath ? context.appMainPath : "");
-    crashLogWriteField(fp, "app_sha256", "%s", context.appSha256 ? context.appSha256 : "");
-    crashLogWriteField(fp, "app_entry", "0x%08x", context.appEntry);
-    crashLogWriteField(fp, "boot_entry", "0x%08x", context.bootEntry);
-    crashLogWriteField(fp, "origin", "0x%08x", context.origin);
-    crashLogWriteField(fp, "app_size", "0x%08x", context.appSize);
+    uint64_t appEnd = (uint64_t)context.origin + context.appSize;
+    crashReportWriteSection(fp, "App");
+    crashReportWriteField(fp, "app_path", "%s", context.appPath ? context.appPath : "");
+    crashReportWriteField(fp, "app_main_path", "%s", context.appMainPath ? context.appMainPath : "");
+    crashReportWriteField(fp, "app_sha256", "%s", context.appSha256 ? context.appSha256 : "");
+    crashReportWriteField(fp, "save_directory", "%s",
+        context.saveDirectory ? context.saveDirectory : "");
+    crashReportWriteField(fp, "app_entry", "0x%08x", context.appEntry);
+    crashReportWriteAddressOffset(fp, "app_entry_offset", context.appEntry, context.origin);
+    crashReportWriteField(fp, "boot_entry", "0x%08x", context.bootEntry);
+    crashReportWriteAddressOffset(fp, "boot_entry_offset", context.bootEntry, context.origin);
+    crashReportWriteField(fp, "origin", "0x%08x", context.origin);
+    crashReportWriteField(fp, "app_size", "0x%08x", context.appSize);
+    crashReportWriteField(fp, "app_end_exclusive", "0x%llx",
+        (unsigned long long)appEnd);
 }
 
 static void crashLogWriteRegisters(FILE* fp, NativeRuntime* runtime)
@@ -215,39 +113,40 @@ static void crashLogWriteRegisters(FILE* fp, NativeRuntime* runtime)
         "t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra"
     };
 
-    crashLogWriteSection(fp, "Registers");
-    for (int i = 0; i < 32; i += 4)
+    crashReportWriteSection(fp, "MIPS Registers");
+    bool snapshotComplete = true;
+    for (int i = 0; i < 32; ++i)
     {
-        uint32_t values[4] = {};
-        for (int j = 0; j < 4; ++j)
-        {
-            crashLogReadRegister(runtime, i + j, &values[j]);
-        }
-        fprintf(fp, "%s=0x%08x    %s=0x%08x    %s=0x%08x    %s=0x%08x\n",
-            kNames[i], values[0],
-            kNames[i + 1], values[1],
-            kNames[i + 2], values[2],
-            kNames[i + 3], values[3]);
+        uint32_t value = 0;
+        snapshotComplete = crashLogReadRegister(runtime, i, &value) &&
+            snapshotComplete;
+        crashReportWriteField(fp, kNames[i], "0x%08x", value);
     }
 
     uint32_t pc = 0;
     uint32_t hi = 0;
     uint32_t lo = 0;
-    crashLogReadRegister(runtime, RUNTIME_REG_PC, &pc);
-    crashLogReadRegister(runtime, RUNTIME_REG_HI, &hi);
-    crashLogReadRegister(runtime, RUNTIME_REG_LO, &lo);
-    fprintf(fp, "pc=0x%08x    hi=0x%08x    lo=0x%08x\n", pc, hi, lo);
+    snapshotComplete = crashLogReadRegister(runtime, RUNTIME_REG_PC, &pc) &&
+        snapshotComplete;
+    snapshotComplete = crashLogReadRegister(runtime, RUNTIME_REG_HI, &hi) &&
+        snapshotComplete;
+    snapshotComplete = crashLogReadRegister(runtime, RUNTIME_REG_LO, &lo) &&
+        snapshotComplete;
+    crashReportWriteField(fp, "pc", "0x%08x", pc);
+    crashReportWriteField(fp, "hi", "0x%08x", hi);
+    crashReportWriteField(fp, "lo", "0x%08x", lo);
+    crashReportWriteBoolean(fp, "snapshot_complete", snapshotComplete);
 }
 
 static void crashLogWriteDisassemblyRange(FILE* fp, NativeRuntime* runtime, const char* label, uint32_t center)
 {
     char title[64] = {};
     snprintf(title, sizeof(title), "Disassembly (%s)", label);
-    crashLogWriteSection(fp, title);
-    fprintf(fp, "center=0x%08x\n\n", center);
+    crashReportWriteSection(fp, title);
+    crashReportWriteField(fp, "center", "0x%08x", center);
     if (!center)
     {
-        fprintf(fp, "unavailable\n");
+        crashReportWriteField(fp, "status", "unavailable");
         return;
     }
 
@@ -256,9 +155,12 @@ static void crashLogWriteDisassemblyRange(FILE* fp, NativeRuntime* runtime, cons
     csh handle = 0;
     if (cs_open(CS_ARCH_MIPS, CS_MODE_MIPS32, &handle) != CS_ERR_OK)
     {
-        fprintf(fp, "capstone-open-failed\n");
+        crashReportWriteField(fp, "status", "capstone-open-failed");
         return;
     }
+    crashReportWriteField(fp, "start", "0x%08x", start);
+    crashReportWriteField(fp, "end_exclusive", "0x%08x", end);
+    crashReportWriteField(fp, "status", "available");
 
     for (uint32_t address = start; address < end; address += 4)
     {
@@ -298,11 +200,12 @@ static void crashLogWriteMemory(FILE* fp, NativeRuntime* runtime, const char* la
 {
     char title[64] = {};
     snprintf(title, sizeof(title), "Memory (%s)", label);
-    crashLogWriteSection(fp, title);
-    fprintf(fp, "address=0x%08x    size=0x%zx\n\n", address, bytes);
+    crashReportWriteSection(fp, title);
+    crashReportWriteField(fp, "address", "0x%08x", address);
+    crashReportWriteField(fp, "requested_size", "0x%zx", bytes);
     if (!address)
     {
-        fprintf(fp, "unavailable\n");
+        crashReportWriteField(fp, "status", "unavailable");
         return;
     }
 
@@ -315,9 +218,14 @@ static void crashLogWriteMemory(FILE* fp, NativeRuntime* runtime, const char* la
     RuntimeError err = nativeRuntimeReadMemory(runtime, address, buffer, bytes);
     if (err != RUNTIME_OK)
     {
-        fprintf(fp, "unreadable err=%u (%s)\n", err, nativeRuntimeErrorString(err));
+        crashReportWriteField(fp, "status", "unreadable");
+        crashReportWriteField(fp, "read_error_code", "%u", err);
+        crashReportWriteField(fp, "read_error_name", "%s",
+            nativeRuntimeErrorString(err));
         return;
     }
+    crashReportWriteField(fp, "status", "available");
+    crashReportWriteField(fp, "dump_size", "0x%zx", bytes);
 
     for (size_t offset = 0; offset < bytes; offset += 16)
     {
@@ -341,14 +249,13 @@ bool crashLogWriteGuestFailure(
     const CrashLogContext& context,
     std::string* outFileName)
 {
-    std::string timestamp = crashLogTimestamp();
-    FILE* fp = crashLogOpen(timestamp, outFileName);
-    if (!fp)
+    FILE* fp = NULL;
+    if (!crashReportOpenForGame(
+        context.appPath ? context.appPath : "",
+        "guest-runtime-failure", outFileName, &fp))
     {
         return false;
     }
-
-    setvbuf(fp, NULL, _IONBF, 0);
 
     uint32_t pc = 0;
     uint32_t ra = 0;
@@ -361,15 +268,16 @@ bool crashLogWriteGuestFailure(
     crashLogReadRegister(runtime, RUNTIME_REG_S4, &s4);
     crashLogReadRegister(runtime, RUNTIME_REG_V0, &v0);
 
-    fprintf(fp, "DingooPie Crash Report\n");
-    crashLogWriteUnderline(fp, '=', strlen("DingooPie Crash Report"));
-
-    crashLogWriteSection(fp, "Summary");
-    crashLogWriteField(fp, "timestamp", "%s", timestamp.c_str());
-    crashLogWriteField(fp, "kind", "guest-runtime-failure");
-    crashLogWriteField(fp, "error", "%u (%s)", err, nativeRuntimeErrorString(err));
-    crashLogWriteField(fp, "backend", "%s", executionBackendName(context.backend));
-    crashLogWriteField(fp, "compat_profile", "%s", context.compatProfile ? context.compatProfile : "");
+    crashReportWriteSection(fp, "Summary");
+    crashReportWriteField(fp, "error", "%u (%s)", err,
+        nativeRuntimeErrorString(err));
+    crashReportWriteField(fp, "error_code", "%u", err);
+    crashReportWriteField(fp, "error_name", "%s",
+        nativeRuntimeErrorString(err));
+    crashReportWriteField(fp, "backend", "%s",
+        executionBackendName(context.backend));
+    crashReportWriteField(fp, "compat_profile", "%s",
+        context.compatProfile ? context.compatProfile : "");
 
     crashLogWriteCrashLocation(fp, runtime, context, pc, ra, sp, s4, v0);
     crashLogWriteDisassemblyRange(fp, runtime, "pc", pc);
@@ -383,6 +291,5 @@ bool crashLogWriteGuestFailure(
     crashLogWriteMemory(fp, runtime, "v0-callback", v0, 0x80);
     crashLogWriteApp(fp, context);
 
-    fclose(fp);
-    return true;
+    return crashReportClose(fp);
 }

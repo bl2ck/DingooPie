@@ -36,7 +36,7 @@ extern void fsys_set_save_directory(const char* directory);
 extern bool fsys_saw_suspicious_open_failure(void);
 extern bool fsys_saw_successful_save_write(void);
 extern uint32_t fsys_fopen(const char* name, const char* mode);
-extern uint32_t vm_fread(void* ptr, uint32_t size, uint32_t count, uint32_t stream);
+extern uint32_t fsys_fread(void* ptr, uint32_t size, uint32_t count, uint32_t stream);
 extern uint32_t fsys_fclose(uint32_t stream);
 extern uint32_t fsys_fseek(uint32_t stream, uint32_t offset, uint32_t origin);
 extern uint32_t fsys_ftell(uint32_t stream);

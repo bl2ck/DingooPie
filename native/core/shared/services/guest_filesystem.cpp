@@ -3,7 +3,7 @@
 #include "shared/platform/storage_services.h"
 #include "shared/save/guest_save_transaction.h"
 #include "shared/diagnostics/runtime_log.h"
-#include "runtime_resource_monitor.h"
+#include "shared/diagnostics/runtime_resource_events.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -494,7 +494,7 @@ static FILE* openGuestFile(const char* name, const char* mode)
     char hostMode[16];
     const char* effectiveMode = normalizedHostFileMode(
         mode, hostMode, sizeof(hostMode));
-    return name && effectiveMode ? platformOpenHostFile(name, effectiveMode) : NULL;
+    return name && effectiveMode ? platformOpenFile(name, effectiveMode) : NULL;
 }
 
 static FILE* tryOpenHostFile(const char* name, const char* mode,
@@ -980,7 +980,7 @@ static bool checkedReadSize(uint32_t size, uint32_t count, uint32_t* requested)
     return true;
 }
 
-uint32_t vm_fread(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
+uint32_t fsys_fread(void* ptr, uint32_t size, uint32_t count, uint32_t stream)
 {
     std::lock_guard<std::recursive_mutex> lock(s_filesystemMutex);
     s_filesystemProfile.freadCalls++;

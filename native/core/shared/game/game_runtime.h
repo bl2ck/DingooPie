@@ -4,7 +4,7 @@
 #include "config/settings/emulator_options.h"
 #include "shared/game/game_paths.h"
 #include "shared/game/game_runtime_types.h"
-#include "shared/save/save_slots.h"
+#include "shared/save/save_state_slots.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -18,7 +18,7 @@ bool gameRuntimeStop(void);
 void gameRuntimeApplySettings(void);
 void gameRuntimeCopyDiagnostics(char* identity, size_t identitySize,
     char* lastTask, size_t lastTaskSize, char* lastHle, size_t lastHleSize);
-GameFormat gameRuntimeActiveFormat(void);
+GameFileFormat gameRuntimeActiveFileFormat(void);
 uint32_t gameRuntimeActiveUnitCount(void);
 void gameRuntimeNotifyPauseRequested(void);
 bool gameRuntimeReadMemory(uint32_t address, void* out, size_t size);

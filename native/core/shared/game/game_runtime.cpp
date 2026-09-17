@@ -7,8 +7,8 @@
 #include "app/save/app_save_state.h"
 #include "shared/execution/thread_join.h"
 #include "shared/services/audio_output.h"
-#include "runtime_resource_monitor.h"
-#include "sdl_frontend.h"
+#include "shared/diagnostics/runtime_resource_events.h"
+#include "frontend_shell.h"
 
 #include <limits>
 #include <pthread.h>
@@ -18,7 +18,7 @@
 static pthread_mutex_t g_gameRuntimeMutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t g_ccRuntimeThread;
 static bool g_ccRuntimeThreadStarted = false;
-static GameFormat g_activeGameFormat = GAME_FORMAT_UNKNOWN;
+static GameFileFormat g_activeGameFileFormat = GAME_FILE_FORMAT_UNKNOWN;
 static std::string g_ccGamePath;
 static std::vector<std::string> g_ccCheatFeatureKeys;
 static RuntimeThreadCompletion g_ccRuntimeThreadCompletion =
@@ -63,18 +63,18 @@ bool gameRuntimeStart(const char* gamePath, const EmulatorOptions& options,
     const std::vector<std::string>& enabledCheatFeatureKeys)
 {
     const std::string normalizedPath = gamePathNormalize(gamePath);
-    const GameFormat format = gameFormatFromPath(normalizedPath);
+    const GameFileFormat format = gameFileFormatFromPath(normalizedPath);
     pthread_mutex_lock(&g_gameRuntimeMutex);
     const bool runtimeStarted = g_ccRuntimeThreadStarted;
     pthread_mutex_unlock(&g_gameRuntimeMutex);
-    if (gameRuntimeActiveFormat() != GAME_FORMAT_UNKNOWN || runtimeStarted)
+    if (gameRuntimeActiveFileFormat() != GAME_FILE_FORMAT_UNKNOWN || runtimeStarted)
     {
         if (!gameRuntimeStop())
         {
             return false;
         }
     }
-    if (format == GAME_FORMAT_APP)
+    if (format == GAME_FILE_FORMAT_APP)
     {
         bool started = appRuntimeStart(normalizedPath.c_str(), options,
             requireOptimizedBackend, resourceMonitorAutoOpen,
@@ -82,12 +82,12 @@ bool gameRuntimeStart(const char* gamePath, const EmulatorOptions& options,
         if (started)
         {
             pthread_mutex_lock(&g_gameRuntimeMutex);
-            g_activeGameFormat = GAME_FORMAT_APP;
+            g_activeGameFileFormat = GAME_FILE_FORMAT_APP;
             pthread_mutex_unlock(&g_gameRuntimeMutex);
         }
         return started;
     }
-    if (format != GAME_FORMAT_CC)
+    if (format != GAME_FILE_FORMAT_CC)
     {
         printf("game-runtime: unsupported game path: %s\n",
             normalizedPath.empty() ? "(empty)" : normalizedPath.c_str());
@@ -110,7 +110,7 @@ bool gameRuntimeStart(const char* gamePath, const EmulatorOptions& options,
     pthread_mutex_lock(&g_gameRuntimeMutex);
     g_ccRuntimeThread = thread;
     g_ccRuntimeThreadStarted = true;
-    g_activeGameFormat = GAME_FORMAT_CC;
+    g_activeGameFileFormat = GAME_FILE_FORMAT_CC;
     pthread_mutex_unlock(&g_gameRuntimeMutex);
     printf("game-runtime: starting CC game: %s\n", normalizedPath.c_str());
     return true;
@@ -121,20 +121,20 @@ bool gameRuntimeStop(void)
     pthread_t ccThread = {};
     bool joinCcThread = false;
     pthread_mutex_lock(&g_gameRuntimeMutex);
-    const GameFormat format = g_activeGameFormat;
+    const GameFileFormat format = g_activeGameFileFormat;
     if (g_ccRuntimeThreadStarted)
     {
         ccThread = g_ccRuntimeThread;
         joinCcThread = true;
     }
     pthread_mutex_unlock(&g_gameRuntimeMutex);
-    if (format == GAME_FORMAT_APP)
+    if (format == GAME_FILE_FORMAT_APP)
     {
         const bool stopped = appRuntimeStop();
         if (stopped)
         {
             pthread_mutex_lock(&g_gameRuntimeMutex);
-            g_activeGameFormat = GAME_FORMAT_UNKNOWN;
+            g_activeGameFileFormat = GAME_FILE_FORMAT_UNKNOWN;
             pthread_mutex_unlock(&g_gameRuntimeMutex);
             audioOutputResetAfterRuntimeStop();
         }
@@ -163,7 +163,7 @@ bool gameRuntimeStop(void)
     }
     pthread_mutex_lock(&g_gameRuntimeMutex);
     g_ccRuntimeThreadStarted = false;
-    g_activeGameFormat = GAME_FORMAT_UNKNOWN;
+    g_activeGameFileFormat = GAME_FILE_FORMAT_UNKNOWN;
     pthread_mutex_unlock(&g_gameRuntimeMutex);
     audioOutputResetAfterRuntimeStop();
     return true;
@@ -171,12 +171,12 @@ bool gameRuntimeStop(void)
 
 void gameRuntimeApplySettings(void)
 {
-    GameFormat format = gameRuntimeActiveFormat();
-    if (format == GAME_FORMAT_APP)
+    GameFileFormat format = gameRuntimeActiveFileFormat();
+    if (format == GAME_FILE_FORMAT_APP)
     {
         appRuntimeApplySettings();
     }
-    else if (format == GAME_FORMAT_CC)
+    else if (format == GAME_FILE_FORMAT_CC)
     {
         ccRuntimeApplySettings();
     }
@@ -188,10 +188,10 @@ void gameRuntimeCopyDiagnostics(char* identity, size_t identitySize,
     if (identity && identitySize)
     {
         snprintf(identity, identitySize, "%s",
-            gameRuntimeActiveFormat() == GAME_FORMAT_APP ?
+            gameRuntimeActiveFileFormat() == GAME_FILE_FORMAT_APP ?
                 bridge_get_game_identity() : "");
     }
-    if (gameRuntimeActiveFormat() == GAME_FORMAT_APP)
+    if (gameRuntimeActiveFileFormat() == GAME_FILE_FORMAT_APP)
     {
         bridge_copy_last_task_stop_summary(lastTask, lastTaskSize);
         bridge_copy_last_hle_summary(lastHle, lastHleSize);
@@ -207,18 +207,18 @@ void gameRuntimeCopyDiagnostics(char* identity, size_t identitySize,
     }
 }
 
-GameFormat gameRuntimeActiveFormat(void)
+GameFileFormat gameRuntimeActiveFileFormat(void)
 {
     pthread_mutex_lock(&g_gameRuntimeMutex);
-    const GameFormat format = g_activeGameFormat;
+    const GameFileFormat format = g_activeGameFileFormat;
     pthread_mutex_unlock(&g_gameRuntimeMutex);
     return format;
 }
 
 uint32_t gameRuntimeActiveUnitCount(void)
 {
-    GameFormat format = gameRuntimeActiveFormat();
-    if (format == GAME_FORMAT_CC)
+    GameFileFormat format = gameRuntimeActiveFileFormat();
+    if (format == GAME_FILE_FORMAT_CC)
     {
         // CC schedules all guest tasks on one host runtime thread, so the
         // pause gate observes one waiter regardless of guest task count.
@@ -229,7 +229,7 @@ uint32_t gameRuntimeActiveUnitCount(void)
 
 void gameRuntimeNotifyPauseRequested(void)
 {
-    if (gameRuntimeActiveFormat() == GAME_FORMAT_APP)
+    if (gameRuntimeActiveFileFormat() == GAME_FILE_FORMAT_APP)
     {
         appRuntimeNotifyPauseRequested();
     }
@@ -237,14 +237,14 @@ void gameRuntimeNotifyPauseRequested(void)
 
 bool gameRuntimeReadMemory(uint32_t address, void* out, size_t size)
 {
-    return gameRuntimeActiveFormat() == GAME_FORMAT_CC ?
+    return gameRuntimeActiveFileFormat() == GAME_FILE_FORMAT_CC ?
         ccRuntimeReadMemory(address, out, size) :
         appRuntimeReadMemory(address, out, size);
 }
 
 bool gameRuntimeWriteMemory(uint32_t address, const void* in, size_t size)
 {
-    return gameRuntimeActiveFormat() == GAME_FORMAT_CC ?
+    return gameRuntimeActiveFileFormat() == GAME_FILE_FORMAT_CC ?
         ccRuntimeWriteMemory(address, in, size) :
         appRuntimeWriteMemory(address, in, size);
 }
@@ -256,7 +256,7 @@ bool gameRuntimeGetRegisterSnapshot(
     {
         *arm32 = false;
     }
-    if (gameRuntimeActiveFormat() != GAME_FORMAT_CC)
+    if (gameRuntimeActiveFileFormat() != GAME_FILE_FORMAT_CC)
     {
         return appRuntimeGetRegisterSnapshot(out);
     }
@@ -284,13 +284,13 @@ bool gameRuntimeGetRegisterSnapshot(
 bool gameRuntimeDisassemble(uint32_t address, uint32_t instructionCount,
     std::vector<AppRuntimeDisassemblyLine>* out)
 {
-    return gameRuntimeActiveFormat() != GAME_FORMAT_CC &&
+    return gameRuntimeActiveFileFormat() != GAME_FILE_FORMAT_CC &&
         appRuntimeDisassemble(address, instructionCount, out);
 }
 
 bool gameRuntimeGetGameInfo(AppRuntimeInfo* out)
 {
-    if (gameRuntimeActiveFormat() != GAME_FORMAT_CC)
+    if (gameRuntimeActiveFileFormat() != GAME_FILE_FORMAT_CC)
     {
         return appRuntimeGetInfo(out);
     }
@@ -380,7 +380,7 @@ bool gameRuntimeSearchMemoryValue(uint32_t begin, uint32_t end, int width,
     uint32_t target, size_t maxCandidates,
     std::vector<AppRuntimeMemorySearchCandidate>* out, bool* capped)
 {
-    if (gameRuntimeActiveFormat() != GAME_FORMAT_CC)
+    if (gameRuntimeActiveFileFormat() != GAME_FILE_FORMAT_CC)
     {
         return appRuntimeSearchMemoryValue(begin, end, width, target,
             maxCandidates, out, capped);
@@ -403,7 +403,7 @@ bool gameRuntimeFilterMemorySearchCandidates(int width, uint32_t target,
     AppRuntimeMemorySearchFilter filter,
     std::vector<AppRuntimeMemorySearchCandidate>* candidates)
 {
-    if (gameRuntimeActiveFormat() != GAME_FORMAT_CC)
+    if (gameRuntimeActiveFileFormat() != GAME_FILE_FORMAT_CC)
     {
         return appRuntimeFilterMemorySearchCandidates(
             width, target, filter, candidates);
@@ -439,12 +439,12 @@ bool gameRuntimeFilterMemorySearchCandidates(int width, uint32_t target,
 
 bool gameRuntimeSupportsBreakpoints(void)
 {
-    return gameRuntimeActiveFormat() == GAME_FORMAT_APP;
+    return gameRuntimeActiveFileFormat() == GAME_FILE_FORMAT_APP;
 }
 
 bool gameRuntimeEnableResourceMonitor(void)
 {
-    if (gameRuntimeActiveFormat() == GAME_FORMAT_CC)
+    if (gameRuntimeActiveFileFormat() == GAME_FILE_FORMAT_CC)
     {
         runtimeResourceMonitorSetActive(true);
         return ccRuntimeIsRunning();
@@ -456,7 +456,7 @@ bool gameRuntimeWriteState(const std::string& gamePath, int slot,
     std::string* error, SaveStateProgressCallback progressCallback,
     void* progressUserData)
 {
-    const SaveStateGameFormat format = saveStateFormatForPath(gamePath);
+    const SaveStateFormat format = saveStateFormatForPath(gamePath);
     if (format == SAVE_STATE_FORMAT_CC)
     {
         CcRuntimeState state;
@@ -474,7 +474,7 @@ bool gameRuntimeReadState(const std::string& gamePath, int slot,
     std::string* error, SaveStateProgressCallback progressCallback,
     void* progressUserData)
 {
-    const SaveStateGameFormat format = saveStateFormatForPath(gamePath);
+    const SaveStateFormat format = saveStateFormatForPath(gamePath);
     if (format == SAVE_STATE_FORMAT_CC)
     {
         CcRuntimeState state;

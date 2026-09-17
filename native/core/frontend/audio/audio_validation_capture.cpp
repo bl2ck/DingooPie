@@ -128,7 +128,8 @@ void audioValidationBegin(const SDL_AudioSpec& audioSpec)
         audioSpec.format != AUDIO_F32LSB) ||
         audioSpec.freq <= 0 || !audioSpec.channels)
     {
-        SDL_Log("Audio validation unsupported output format=%x rate=%d channels=%u",
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "Audio validation unsupported output format=%x rate=%d channels=%u",
             audioSpec.format, audioSpec.freq, (unsigned int)audioSpec.channels);
         return;
     }
@@ -140,7 +141,8 @@ void audioValidationBegin(const SDL_AudioSpec& audioSpec)
     g_capture.eventFile = logDirectory.empty() ? NULL : fopen(eventPath.c_str(), "w");
     if (!g_capture.waveFile || !g_capture.eventFile)
     {
-        SDL_Log("Audio validation output open failed");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+            "Audio validation output open failed");
         audioValidationClose();
         return;
     }

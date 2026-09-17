@@ -1,5 +1,5 @@
-#ifndef DINGOO_PIE_MEMORY_SEARCHER_H
-#define DINGOO_PIE_MEMORY_SEARCHER_H
+#ifndef DINGOO_PIE_MEMORY_SEARCHER_UI_H
+#define DINGOO_PIE_MEMORY_SEARCHER_UI_H
 
 #include "emulator_settings.h"
 

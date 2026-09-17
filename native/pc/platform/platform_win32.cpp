@@ -3,6 +3,8 @@
 #include "shared/services/guest_package.h"
 #include "app_runtime_debug.h"
 
+#include <string.h>
+
 #ifdef _WIN32
 #include <windows.h>
 #include <commdlg.h>
@@ -105,7 +107,7 @@ std::string platformSelectAppPathLocalized(const wchar_t* title, const wchar_t* 
     ofn.lStructSize = sizeof(ofn);
     ofn.lpstrFile = fileName;
     ofn.nMaxFile = sizeof(fileName);
-    ofn.lpstrFilter = filter ? filter : L"Dingoo Games (*.app;*.cc)\0*.app;*.cc\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFilter = filter ? filter : L"Dingoo Games (*.app;*.cc;*.c2m;*.c2s;*.c3s)\0*.app;*.cc;*.c2m;*.c2s;*.c3s\0All Files (*.*)\0*.*\0";
     ofn.nFilterIndex = 1;
     ofn.lpstrTitle = title ? title : L"Select Dingoo game";
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
@@ -183,10 +185,12 @@ FILE* platformOpenGameFile(const std::string& path)
 }
 
 FILE* platformOpenGameSiblingFile(const std::string& gamePath,
-    const std::string& fileName)
+    const std::string& fileName, const char* mode)
 {
+    const char* effectiveMode = mode ? mode : "rb";
     std::string path = platformParentDirectory(gamePath) + "\\" + fileName;
-    return _wfopen(platformUtf8ToWide(path).c_str(), L"rb");
+    std::wstring wideMode = platformUtf8ToWide(effectiveMode);
+    return _wfopen(platformUtf8ToWide(path).c_str(), wideMode.c_str());
 }
 
 static std::string platformGetSaveDirectory(const std::string& gamePath,
@@ -195,6 +199,11 @@ static std::string platformGetSaveDirectory(const std::string& gamePath,
     std::string identity = gameIdentity.empty() ? "default" : gameIdentity;
     std::string directory = platformParentDirectory(gamePath) + "\\saves\\" + identity;
     return platformEnsureDirectory(directory) ? directory : "";
+}
+
+static bool platformStorageModeWrites(const char* mode)
+{
+    return mode && (strchr(mode, 'w') || strchr(mode, 'a') || strchr(mode, '+'));
 }
 
 std::string platformGetAppSaveDirectory(const std::string& gamePath,
@@ -224,7 +233,7 @@ bool platformIsPrivateStorageDirectory(const std::string& directoryUri)
 FILE* platformOpenStorageFile(const std::string& directoryUri,
     const std::string& fileName, const char* mode)
 {
-    if (!platformEnsureDirectory(directoryUri))
+    if (platformStorageModeWrites(mode) && !platformEnsureDirectory(directoryUri))
     {
         return NULL;
     }
@@ -257,7 +266,7 @@ uint64_t platformGetStorageFileModifiedTime(const std::string& directoryUri,
     return value.QuadPart;
 }
 
-FILE* platformOpenHostFile(const std::string& path, const char* mode)
+FILE* platformOpenFile(const std::string& path, const char* mode)
 {
 #ifdef _WIN32
     std::wstring wideMode = platformUtf8ToWide(mode ? mode : "rb");

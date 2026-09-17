@@ -16,8 +16,6 @@ typedef struct {
 	uint8_t  volume;
 } waveout_args;
 
-typedef void waveout_inst;
-
 // Host-side implementations of the guest waveout API.
 extern uint32_t waveout_open(waveout_args* args);
 extern uint32_t waveout_write(uint32_t inst, char* buffer, int count);

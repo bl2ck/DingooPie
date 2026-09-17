@@ -2,15 +2,14 @@
 
 #include <SDL2/SDL.h>
 #include <stdint.h>
-#include <string.h>
 #include <stdio.h>
+#include <string.h>
 #include <vector>
 
 #include "app/memory/app_memory.h"
 #include "app/runtime/app_runtime_context.h"
 #include "frontend/video/framebuffer.h"
 #include "shared/diagnostics/runtime_log.h"
-
 
 static EmulatorOptions g_options;
 static std::vector<uint32_t> g_objectFlagsPredicateAddresses;
@@ -2206,9 +2205,14 @@ RuntimeError runtimeCompatInstallHooks(NativeRuntime* runtime, GuestPackage* app
 
     if (runtimeLogProfileEnabled())
     {
-        printf("profile:compat precise_hooks=%u blit16_hooks=%u indexed8_hooks=%u indexed_transform_hooks=%u pixel16_hooks=%u mem_hooks=%u rowcopy_hooks=%u tiny_hooks=%u object_predicate_hooks=%u scan_size=0x%x\n",
-            hookCount, blitHookCount, indexedBlitHookCount, indexedTransformBlitHookCount, pixelLoopHookCount, memoryRoutineHookCount,
-            rowCopyHookCount, tinyPredicateHookCount, objectPredicateAggregateHookCount, scanSize);
+        printf(
+            "profile:compat precise_hooks=%u blit16_hooks=%u indexed8_hooks=%u "
+            "indexed_transform_hooks=%u pixel16_hooks=%u mem_hooks=%u "
+            "rowcopy_hooks=%u tiny_hooks=%u object_predicate_hooks=%u scan_size=0x%x\n",
+            hookCount, blitHookCount, indexedBlitHookCount,
+            indexedTransformBlitHookCount, pixelLoopHookCount, memoryRoutineHookCount,
+            rowCopyHookCount, tinyPredicateHookCount,
+            objectPredicateAggregateHookCount, scanSize);
     }
     return RUNTIME_OK;
 }

@@ -64,9 +64,11 @@ function Copy-MatchingArtifacts($SourceDir, $Name, $DestinationDir) {
         }
 }
 
-$apps = Get-ChildItem -LiteralPath $SampleDir -Filter "*.app" -File | Sort-Object Name
+$apps = Get-ChildItem -LiteralPath $SampleDir -File |
+    Where-Object { $_.Extension -in @(".app", ".cc", ".c2m", ".c2s", ".c3s") } |
+    Sort-Object Name
 if ($apps.Count -eq 0) {
-    throw "No .app samples found under $SampleDir"
+    throw "No supported game samples found under $SampleDir"
 }
 
 $backends = if ($Backend -eq "both") { @("ppsspp_irjit", "interpreter") } else { @($Backend) }

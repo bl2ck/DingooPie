@@ -12,6 +12,10 @@ $VerifyRoot = Join-Path $DistDir '_verify'
 
 $ExcludedFilePatterns = @(
     '*.app',
+    '*.cc',
+    '*.c2m',
+    '*.c2s',
+    '*.c3s',
     '*.apk',
     '*.bmp',
     '*.dll',
@@ -122,6 +126,21 @@ function Assert-NoForbiddenFiles($Root) {
             throw "Package contains forbidden files matching ${pattern}: $($matches.FullName -join ', ')"
         }
     }
+
+    $ccPackages = Get-ChildItem -LiteralPath $Root -Recurse -File -Filter '*.cc' -ErrorAction SilentlyContinue |
+        Where-Object {
+            $stream = [System.IO.File]::OpenRead($_.FullName)
+            try {
+                $header = New-Object byte[] 4
+                $stream.Read($header, 0, $header.Length) -eq $header.Length -and
+                    [System.Text.Encoding]::ASCII.GetString($header) -eq 'CCDL'
+            } finally {
+                $stream.Dispose()
+            }
+        }
+    if ($ccPackages.Count -gt 0) {
+        throw "Package contains forbidden CCDL game files: $($ccPackages.FullName -join ', ')"
+    }
 }
 
 function Test-Manifest($Root) {
@@ -186,7 +205,7 @@ $required = @(
     'LICENSE',
     'README.md',
     'THIRD_PARTY.md',
-    'native\core\main.cpp',
+    'native\pc\main.cpp',
     'native\core\config\compatibility\compat_profile.cpp',
     'native\core\app\hle\app_hle.cpp',
     'native\core\app\memory\app_framebuffer_mapping.cpp',

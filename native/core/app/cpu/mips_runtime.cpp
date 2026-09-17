@@ -1,7 +1,5 @@
 #include "app/cpu/mips_runtime.h"
 
-#include "app/cpu/ppsspp_backend.h"
-
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -13,9 +11,10 @@
 #include <unordered_map>
 #include <vector>
 
+#include "app/cpu/ppsspp_backend.h"
 #include "frontend/video/framebuffer.h"
-#include "shared/execution/pause_gate.h"
 #include "shared/diagnostics/runtime_log.h"
+#include "shared/execution/pause_gate.h"
 
 struct MemoryRegion
 {
@@ -514,7 +513,10 @@ static void profileInterpreterInstruction(NativeRuntime* runtime)
             return;
         }
 
-        printf("profile:interpreter ips=%llu hooks=%llu/s fb_submit=%llu fb_copy_us=%llu fb_interval_us=%llu/%llu over25=%llu over33=%llu pc=0x%08x ra=0x%08x\n",
+        printf(
+            "profile:interpreter ips=%llu hooks=%llu/s fb_submit=%llu "
+            "fb_copy_us=%llu fb_interval_us=%llu/%llu over25=%llu over33=%llu "
+            "pc=0x%08x ra=0x%08x\n",
             (unsigned long long)ips,
             (unsigned long long)runtimeLogRatePerSecondUs(
                 runtime->interpreterProfileHooks, elapsedMicros),

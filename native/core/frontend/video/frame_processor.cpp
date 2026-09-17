@@ -1,6 +1,6 @@
 #include "frontend/video/frame_processor.h"
 
-#include "shared/config/runtime_constants.h"
+#include "shared/config/guest_runtime_constants.h"
 
 #include <math.h>
 #include <string.h>

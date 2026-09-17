@@ -14,6 +14,6 @@ This project builds with the following third-party components.
 | Dingoo SDK references | `flatmush/dingoo-sdk` snapshot, when available | SDK import names and constants. |
 | MinGW pthread runtime | MSYS2 package `mingw-w64-x86_64-libwinpthread 14.0.0.r98.g19f5121a2-1`, `libwinpthread-1.dll` | Runtime support for host pthread-backed guest task scheduling. |
 
-The package does not include game `.app` files. The `.app` package format
-belongs to Dingoo Technology, and users must provide their own legally obtained
-samples for Dingoo A320 or compatible Gemei X760+ software.
+The package does not include game `.app`, `.cc`, `.c2m`, `.c2s`, or `.c3s`
+files. Users must provide their own legally obtained samples for Dingoo A320 or
+compatible Gemei handheld software.

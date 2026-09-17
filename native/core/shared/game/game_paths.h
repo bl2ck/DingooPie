@@ -4,26 +4,29 @@
 #include <string>
 #include <vector>
 
-enum GameFormat
+enum GameFileFormat
 {
-    GAME_FORMAT_APP = 0,
-    GAME_FORMAT_CC,
-    GAME_FORMAT_UNKNOWN
+    GAME_FILE_FORMAT_APP = 0,
+    GAME_FILE_FORMAT_CC,
+    GAME_FILE_FORMAT_UNKNOWN
 };
 
-static_assert(GAME_FORMAT_APP == 0 && GAME_FORMAT_CC == 1 &&
-    GAME_FORMAT_UNKNOWN == 2,
-    "GameFormat values must stay aligned across frontends");
+static_assert(GAME_FILE_FORMAT_APP == 0 && GAME_FILE_FORMAT_CC == 1 &&
+    GAME_FILE_FORMAT_UNKNOWN == 2,
+    "GameFileFormat values must stay aligned across frontends");
 
-GameFormat gameFormatFromPath(const std::string& path);
+GameFileFormat gameFileFormatFromPath(const std::string& path);
+const char* gamePathExtension(const std::string& path);
 bool gamePathHasAppExtension(const std::string& path);
-bool gamePathHasCcExtension(const std::string& path);
+bool gamePathHasCcFamilyExtension(const std::string& path);
 bool gamePathHasSupportedExtension(const std::string& path);
+bool gamePathsRunRegressionTests(void);
 std::string gamePathNormalize(const char* gamePath);
 std::string gameFileNameFromPath(const std::string& path);
+std::string gamePathStemFromPath(const std::string& path);
 std::string gameCheatFileNameFromPath(const std::string& path);
 std::string gameLegacyCheatFileNameFromPath(const std::string& path);
 std::vector<std::string> gameCheatFileNamesFromPath(const std::string& path);
-std::string appGuestMainPathFromGamePath(const std::string& path);
+std::string guestMainPathFromGamePath(const std::string& path);
 
 #endif

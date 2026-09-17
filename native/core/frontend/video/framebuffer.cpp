@@ -392,6 +392,7 @@ void framebufferReset(void)
     s_hasDeferredFrame = false;
     s_transientPartialProtectionEnabled.store(false, std::memory_order_release);
     s_presentedFrameIndex.store(0, std::memory_order_release);
+    s_updateRequested.store(0, std::memory_order_release);
     s_submittedFrameCount.store(0, std::memory_order_release);
     resetFramebufferPacing();
 }

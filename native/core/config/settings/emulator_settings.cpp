@@ -852,6 +852,9 @@ static bool writeOrderedSettingsFile(const EmulatorSettings& settings, const std
     appendIniValue(&text, L"show_virtual_controls", settings.showVirtualControls);
     appendIniValue(&text, L"virtual_control_scale", normalizeIntPreset(
         settings.virtualControlScalePercent, EMULATOR_VIRTUAL_CONTROL_SCALE_VALUES, 100));
+    appendIniValue(&text, L"virtual_control_opacity", normalizeIntPreset(
+        settings.virtualControlOpacityPercent,
+        EMULATOR_VIRTUAL_CONTROL_OPACITY_VALUES, 100));
     appendIniValue(&text, L"virtual_dpad_type",
         emulatorVirtualDpadTypeName(settings.virtualDpadType));
     appendIniValue(&text, L"keyboard_mapping", settings.keyboardMapping);
@@ -1321,6 +1324,7 @@ EmulatorSettings emulatorDefaultSettings(void)
     settings.systemImeDisabled = true;
     settings.showVirtualControls = false;
     settings.virtualControlScalePercent = 100;
+    settings.virtualControlOpacityPercent = 100;
     settings.virtualDpadType = VIRTUAL_DPAD_JOYSTICK;
     settings.keyboardMapping = "";
     settings.controllerMapping = "";
@@ -1475,6 +1479,11 @@ EmulatorSettings emulatorLoadSettings(void)
     settings.virtualControlScalePercent = normalizeIntPreset(
         readIniInt("input", "virtual_control_scale", defaults.virtualControlScalePercent, path),
         EMULATOR_VIRTUAL_CONTROL_SCALE_VALUES, defaults.virtualControlScalePercent);
+    settings.virtualControlOpacityPercent = normalizeIntPreset(
+        readIniInt("input", "virtual_control_opacity",
+            defaults.virtualControlOpacityPercent, path),
+        EMULATOR_VIRTUAL_CONTROL_OPACITY_VALUES,
+        defaults.virtualControlOpacityPercent);
     settings.virtualDpadType = parseVirtualDpadType(readIniString(
         "input", "virtual_dpad_type",
         emulatorVirtualDpadTypeName(defaults.virtualDpadType), path),
@@ -1583,6 +1592,9 @@ bool emulatorSaveSettings(const EmulatorSettings& settings)
     ok = writeIniString("input", "show_virtual_controls", settings.showVirtualControls ? "1" : "0", path) && ok;
     ok = writeIniInt("input", "virtual_control_scale", normalizeIntPreset(
         settings.virtualControlScalePercent, EMULATOR_VIRTUAL_CONTROL_SCALE_VALUES, 100), path) && ok;
+    ok = writeIniInt("input", "virtual_control_opacity", normalizeIntPreset(
+        settings.virtualControlOpacityPercent,
+        EMULATOR_VIRTUAL_CONTROL_OPACITY_VALUES, 100), path) && ok;
     ok = writeIniString("input", "virtual_dpad_type",
         emulatorVirtualDpadTypeName(settings.virtualDpadType), path) && ok;
     ok = writeIniString("input", "keyboard_mapping", settings.keyboardMapping, path) && ok;
@@ -1804,12 +1816,14 @@ void emulatorTraceSettings(const char* reason, const EmulatorSettings& settings)
         emulatorAudioEffectName(audioEffect),
         emulatorDigitalNoiseReductionName(digitalNoiseReduction),
         settings.audioDisabled ? 1u : 0u);
-    printf("settings-trace:%s input.system_ime_disabled=%u input.show_virtual_controls=%u input.virtual_control_scale=%d input.virtual_dpad_type=%s input.keyboard_mapping=\"%s\" input.controller_mapping=\"%s\" input.controller_calibration=\"%s\"\n",
+    printf("settings-trace:%s input.system_ime_disabled=%u input.show_virtual_controls=%u input.virtual_control_scale=%d input.virtual_control_opacity=%d input.virtual_dpad_type=%s input.keyboard_mapping=\"%s\" input.controller_mapping=\"%s\" input.controller_calibration=\"%s\"\n",
         label,
         settings.systemImeDisabled ? 1u : 0u,
         settings.showVirtualControls ? 1u : 0u,
         normalizeIntPreset(settings.virtualControlScalePercent,
             EMULATOR_VIRTUAL_CONTROL_SCALE_VALUES, 100),
+        normalizeIntPreset(settings.virtualControlOpacityPercent,
+            EMULATOR_VIRTUAL_CONTROL_OPACITY_VALUES, 100),
         emulatorVirtualDpadTypeName(settings.virtualDpadType),
         settings.keyboardMapping.empty() ? "(default)" : settings.keyboardMapping.c_str(),
         settings.controllerMapping.empty() ? "(default)" : settings.controllerMapping.c_str(),

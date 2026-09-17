@@ -16,11 +16,12 @@
 #include "shared/execution/pause_gate.h"
 #include "platform_win32.h"
 #include "app/cpu/mips_compat.h"
+#include "app/cpu/mips_runtime.h"
 #include "app/memory/app_memory.h"
 #include "app/cpu/ppsspp_backend.h"
 #include "app/runtime/app_runtime_debug.h"
-#include "runtime_resource_monitor.h"
-#include "sdl_frontend.h"
+#include "shared/diagnostics/runtime_resource_events.h"
+#include "frontend_shell.h"
 #include "app/hle/app_task_scheduler.h"
 #include "shared/services/guest_filesystem.h"
 #include "shared/execution/thread_join.h"
@@ -40,7 +41,6 @@
 #include <string>
 #include <string.h>
 #include <capstone/capstone.h>
-#include "app/cpu/mips_runtime.h"
 
 static std::string g_appLoadPath;
 static std::string g_appMainPath;
@@ -1186,6 +1186,7 @@ static NativeRuntime* initDingooPie(void)
     crashContext.appPath = g_appLoadPath.c_str();
     crashContext.appMainPath = g_appMainPath.c_str();
     crashContext.appSha256 = appSha256.c_str();
+    crashContext.saveDirectory = saveDirectory.c_str();
     crashContext.compatProfile = compatProfileName(appSha256.c_str());
     crashContext.backend = effectiveBackend;
     crashContext.appEntry = appMainEntry;
@@ -1290,7 +1291,7 @@ bool appRuntimeStart(
         printf("app-runtime: invalid APP path: %s\n", "(empty)");
         return false;
     }
-    g_appMainPath = appGuestMainPathFromGamePath(g_appLoadPath);
+    g_appMainPath = guestMainPathFromGamePath(g_appLoadPath);
 
     printf("app-runtime: start APP: %s\n", g_appLoadPath.c_str());
     printf("app-runtime: AppMain path: %s\n", g_appMainPath.c_str());
@@ -1586,19 +1587,13 @@ bool appRuntimeRestoreState(const AppRuntimeState& state, std::string* error)
     }
     std::vector<NativeRuntime*> taskRuntimes;
     taskSchedulerSnapshotRuntimes(&taskRuntimes);
-    if (taskRuntimes.size() < state.taskRegisters.size())
+    if (taskRuntimes.size() != state.taskRegisters.size())
     {
-        printf("save-state: insufficient task runtimes current=%u saved=%u\n",
+        printf("save-state: runtime thread count mismatch current=%u saved=%u\n",
             (unsigned)taskRuntimes.size(), (unsigned)state.taskRegisters.size());
         pthread_mutex_unlock(&g_runtimeThreadMutex);
         setSaveStateRuntimeError(error, "runtime thread count does not match save state");
         return false;
-    }
-    if (taskRuntimes.size() > state.taskRegisters.size())
-    {
-        printf("save-state: preserving %u task runtime(s) created after save current=%u saved=%u\n",
-            (unsigned)(taskRuntimes.size() - state.taskRegisters.size()),
-            (unsigned)taskRuntimes.size(), (unsigned)state.taskRegisters.size());
     }
 
     size_t count = nativeRuntimeMemoryRegionCount(runtime);

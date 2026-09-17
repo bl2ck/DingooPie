@@ -9,7 +9,7 @@
 #include "runtime_log.h"
 #include "app_save_state.h"
 #include "save_state_manager_ui.h"
-#include "sdl_frontend.h"
+#include "frontend_shell.h"
 #include "platform_win32.h"
 #include "ui_strings.h"
 #include "shared/game/game_runtime.h"
@@ -162,6 +162,10 @@ enum FrontendMenuCommand
     MENU_INPUT_VIRTUAL_SCALE_100,
     MENU_INPUT_VIRTUAL_SCALE_125,
     MENU_INPUT_VIRTUAL_SCALE_150,
+    MENU_INPUT_VIRTUAL_OPACITY_25,
+    MENU_INPUT_VIRTUAL_OPACITY_50,
+    MENU_INPUT_VIRTUAL_OPACITY_75,
+    MENU_INPUT_VIRTUAL_OPACITY_100,
     MENU_INPUT_VIRTUAL_DPAD_JOYSTICK,
     MENU_INPUT_VIRTUAL_DPAD_SEGMENTED_RING,
     MENU_INPUT_MAPPING_WINDOW,
@@ -253,6 +257,10 @@ static_assert(MENU_INPUT_VIRTUAL_SCALE_150 == MENU_INPUT_VIRTUAL_SCALE_75 +
     sizeof(EMULATOR_VIRTUAL_CONTROL_SCALE_VALUES) /
         sizeof(EMULATOR_VIRTUAL_CONTROL_SCALE_VALUES[0]) - 1,
     "Virtual control scale commands must match menu order");
+static_assert(MENU_INPUT_VIRTUAL_OPACITY_100 == MENU_INPUT_VIRTUAL_OPACITY_25 +
+    sizeof(EMULATOR_VIRTUAL_CONTROL_OPACITY_VALUES) /
+        sizeof(EMULATOR_VIRTUAL_CONTROL_OPACITY_VALUES[0]) - 1,
+    "Virtual control opacity commands must match menu order");
 static_assert(MENU_INPUT_VIRTUAL_DPAD_SEGMENTED_RING ==
     MENU_INPUT_VIRTUAL_DPAD_JOYSTICK + VIRTUAL_DPAD_TYPE_COUNT - 1,
     "Virtual D-pad commands must match menu order");
@@ -926,7 +934,7 @@ static bool validateAppPathForOpen(const std::string& appPath, const char* sourc
     }
     if (!gamePathHasSupportedExtension(appPath))
     {
-        printf("frontend: rejected %s game without .app or .cc extension: %s\n",
+        printf("frontend: rejected %s game with unsupported extension: %s\n",
             source ? source : "selected", appPath.c_str());
         return false;
     }
@@ -1170,6 +1178,7 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
     HMENU audioNoiseReductionMenu = CreatePopupMenu();
     HMENU inputMenu = CreatePopupMenu();
     HMENU virtualControlScaleMenu = CreatePopupMenu();
+    HMENU virtualControlOpacityMenu = CreatePopupMenu();
     HMENU virtualDpadTypeMenu = CreatePopupMenu();
     HMENU settingsMenu = CreatePopupMenu();
     HMENU executionModeMenu = CreatePopupMenu();
@@ -1331,6 +1340,12 @@ void frontendMenuAttach(void* nativeWindow, EmulatorSettings* settings, const st
     appendMenuItem(virtualControlScaleMenu, MENU_INPUT_VIRTUAL_SCALE_150, L"150%");
     AppendMenuW(inputMenu, MF_POPUP, (UINT_PTR)virtualControlScaleMenu,
         uiText(TXT_INPUT_VIRTUAL_CONTROL_SCALE));
+    appendMenuItem(virtualControlOpacityMenu, MENU_INPUT_VIRTUAL_OPACITY_25, L"25%");
+    appendMenuItem(virtualControlOpacityMenu, MENU_INPUT_VIRTUAL_OPACITY_50, L"50%");
+    appendMenuItem(virtualControlOpacityMenu, MENU_INPUT_VIRTUAL_OPACITY_75, L"75%");
+    appendMenuItem(virtualControlOpacityMenu, MENU_INPUT_VIRTUAL_OPACITY_100, L"100%");
+    AppendMenuW(inputMenu, MF_POPUP, (UINT_PTR)virtualControlOpacityMenu,
+        uiText(TXT_INPUT_VIRTUAL_CONTROL_OPACITY));
     appendMenuItem(virtualDpadTypeMenu, MENU_INPUT_VIRTUAL_DPAD_JOYSTICK,
         uiText(TXT_INPUT_VIRTUAL_DPAD_JOYSTICK));
     appendMenuItem(virtualDpadTypeMenu, MENU_INPUT_VIRTUAL_DPAD_SEGMENTED_RING,
@@ -1553,6 +1568,10 @@ void frontendMenuRefresh(void)
     setMenuCheck(MENU_INPUT_VIRTUAL_SCALE_100, g_menuSettings->virtualControlScalePercent == 100);
     setMenuCheck(MENU_INPUT_VIRTUAL_SCALE_125, g_menuSettings->virtualControlScalePercent == 125);
     setMenuCheck(MENU_INPUT_VIRTUAL_SCALE_150, g_menuSettings->virtualControlScalePercent == 150);
+    setMenuCheck(MENU_INPUT_VIRTUAL_OPACITY_25, g_menuSettings->virtualControlOpacityPercent == 25);
+    setMenuCheck(MENU_INPUT_VIRTUAL_OPACITY_50, g_menuSettings->virtualControlOpacityPercent == 50);
+    setMenuCheck(MENU_INPUT_VIRTUAL_OPACITY_75, g_menuSettings->virtualControlOpacityPercent == 75);
+    setMenuCheck(MENU_INPUT_VIRTUAL_OPACITY_100, g_menuSettings->virtualControlOpacityPercent == 100);
     setMenuCheck(MENU_INPUT_VIRTUAL_DPAD_JOYSTICK,
         g_menuSettings->virtualDpadType == VIRTUAL_DPAD_JOYSTICK);
     setMenuCheck(MENU_INPUT_VIRTUAL_DPAD_SEGMENTED_RING,
@@ -2196,7 +2215,7 @@ static bool loadStateSlotNow(int slot, std::string* errorOut, bool showProgress)
     SaveStateSlotInfo info = saveStateSlotInfo(g_currentAppPath,
         saveStateFormatForPath(g_currentAppPath), slot);
     bool runtimeCountMatches = paused &&
-        (gameRuntimeActiveFormat() == GAME_FORMAT_CC ||
+        (gameRuntimeActiveFileFormat() == GAME_FILE_FORMAT_CC ||
             validateSaveStateRuntimeCount(info, expected, &error));
     std::chrono::steady_clock::time_point readBegin = std::chrono::steady_clock::now();
     bool readOk = runtimeCountMatches && gameRuntimeReadState(
@@ -2857,6 +2876,17 @@ bool frontendMenuHandleCommand(unsigned int commandId)
             commandId == MENU_INPUT_VIRTUAL_SCALE_75 ? 75 :
             commandId == MENU_INPUT_VIRTUAL_SCALE_125 ? 125 :
             commandId == MENU_INPUT_VIRTUAL_SCALE_150 ? 150 : 100;
+        emulatorSaveSettings(*g_menuSettings);
+        frontendMenuRefresh();
+        return true;
+    case MENU_INPUT_VIRTUAL_OPACITY_25:
+    case MENU_INPUT_VIRTUAL_OPACITY_50:
+    case MENU_INPUT_VIRTUAL_OPACITY_75:
+    case MENU_INPUT_VIRTUAL_OPACITY_100:
+        g_menuSettings->virtualControlOpacityPercent =
+            commandId == MENU_INPUT_VIRTUAL_OPACITY_25 ? 25 :
+            commandId == MENU_INPUT_VIRTUAL_OPACITY_50 ? 50 :
+            commandId == MENU_INPUT_VIRTUAL_OPACITY_75 ? 75 : 100;
         emulatorSaveSettings(*g_menuSettings);
         frontendMenuRefresh();
         return true;

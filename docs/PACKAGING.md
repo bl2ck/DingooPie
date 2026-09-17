@@ -1,7 +1,7 @@
 # Packaging
 
 This project has two packaging paths: a runnable Windows release and a source
-archive. Game `.app` files are never packaged.
+archive. Game `.app`, `.cc`, `.c2m`, `.c2s`, and `.c3s` files are never packaged.
 
 ## Runnable Release
 
@@ -67,7 +67,7 @@ present.
 The source archive excludes local workspaces and generated artifacts such as
 `downloads\`, `third_party\`, `deps_extract\`, `w64devkit\`, `build\`,
 `release\`, and `dist\`. The script fails if the staged or verified package
-contains forbidden files such as `.app`, `.apk`, `.exe`, `.dll`, logs, debug
+contains forbidden files such as game packages, `.apk`, `.exe`, `.dll`, logs, debug
 screenshots, or framebuffer dumps.
 
 ## Third-Party Code
